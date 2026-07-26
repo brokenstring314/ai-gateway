@@ -119,4 +119,76 @@ describe("ConditionalStrategy", () => {
     }
     expect(chunks).toHaveLength(1);
   });
+
+  it("handles regex patterns correctly", async () => {
+    const openai = createMockProvider("openai");
+    const lookup = (name: string) => name === "openai" ? openai : undefined;
+
+    const strategy = new ConditionalStrategy(lookup, {
+      rules: [{ field: "model", pattern: "^gpt-4(o|-turbo)", target: "openai" }],
+      defaultTarget: "openai",
+    });
+
+    const resp = await strategy.execute(
+      { metadata: {} },
+      createReq({ model: "gpt-4o" }),
+    );
+    expect(resp.provider).toBe("openai");
+
+    const resp2 = await strategy.execute(
+      { metadata: {} },
+      createReq({ model: "gpt-3.5" }),
+    );
+    expect(resp2.provider).toBe("openai");
+  });
+
+  it("matches first rule that matches", async () => {
+    const openai = createMockProvider("openai");
+    const groq = createMockProvider("groq");
+    const lookup = (name: string) =>
+      name === "openai" ? openai : name === "groq" ? groq : undefined;
+
+    const strategy = new ConditionalStrategy(lookup, {
+      rules: [
+        { field: "model", pattern: "gpt-", target: "openai" },
+        { field: "model", pattern: "gpt-4", target: "groq" },
+      ],
+    });
+
+    const resp = await strategy.execute(
+      { metadata: {} },
+      createReq({ model: "gpt-4" }),
+    );
+    expect(resp.provider).toBe("openai");
+  });
+
+  it("selectTargets includes matched + default + other unique targets", () => {
+    const lookup = (name: string) => createMockProvider(name);
+    const strategy = new ConditionalStrategy(lookup, {
+      rules: [
+        { field: "model", pattern: "gpt-", target: "openai" },
+        { field: "model", pattern: "llama", target: "groq" },
+      ],
+      defaultTarget: "deepseek",
+    });
+
+    const targets = strategy.selectTargets(createReq({ model: "gpt-4" }));
+    expect(targets[0]).toBe("openai");
+    expect(targets).toContain("deepseek");
+    expect(targets).toContain("groq");
+  });
+
+  it("invalid regex pattern throws at match time", async () => {
+    const openai = createMockProvider("openai");
+    const lookup = (name: string) => name === "openai" ? openai : undefined;
+
+    const strategy = new ConditionalStrategy(lookup, {
+      rules: [{ field: "model", pattern: "[invalid", target: "openai" }],
+      defaultTarget: "openai",
+    });
+
+    await expect(
+      strategy.execute({ metadata: {} }, createReq({ model: "test" })),
+    ).rejects.toThrow();
+  });
 });

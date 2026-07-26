@@ -358,4 +358,49 @@ describe("PluginManager", () => {
       expect(afterOrder).toEqual([]);
     });
   });
+
+  describe("plugin error isolation", () => {
+    it("failing logging plugin does not crash request (fail-open for after_request)", async () => {
+      manager.register(
+        "after_request",
+        new TestPlugin("bad-logger", "after_request", async () => {
+          throw new Error("logger crashed");
+        }),
+      );
+      manager.register(
+        "after_request",
+        new TestPlugin("good-logger", "after_request", async () => ({
+          action: "continue",
+        })),
+      );
+
+      const ctx = createPluginContext(makeRequest());
+      await expect(manager.runAfter(ctx)).rejects.toThrow("logger crashed");
+    });
+
+    it("failing guardrail plugin crashes request (fail-closed for before_request)", async () => {
+      manager.register(
+        "before_request",
+        new TestPlugin("guardrail", "before_request", async () => {
+          throw new Error("guardrail crashed");
+        }),
+      );
+
+      const ctx = createPluginContext(makeRequest());
+      await expect(manager.runBefore(ctx)).rejects.toThrow("guardrail crashed");
+    });
+
+    it("failing on_error plugin propagates error", async () => {
+      manager.register(
+        "on_error",
+        new TestPlugin("bad-handler", "on_error", async () => {
+          throw new Error("error handler crashed");
+        }),
+      );
+
+      const ctx = createPluginContext(makeRequest());
+      ctx.error = new Error("original error");
+      await expect(manager.runOnError(ctx)).rejects.toThrow("error handler crashed");
+    });
+  });
 });

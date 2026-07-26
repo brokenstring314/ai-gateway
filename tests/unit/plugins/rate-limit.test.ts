@@ -122,4 +122,44 @@ describe("RateLimitPlugin", () => {
       reason: "Rate limit exceeded: 3 requests per minute",
     });
   });
+
+  it("per-key rate limiting isolates different API keys", async () => {
+    const plugin = new RateLimitPlugin({ maxRequestsPerMinute: 1 });
+    const ctxA = makeContext();
+    ctxA.metadata["api_key"] = "key-a";
+    const ctxB = makeContext();
+    ctxB.metadata["api_key"] = "key-b";
+
+    const r1 = await plugin.execute(ctxA);
+    expect(r1.action).toBe("continue");
+
+    const r2 = await plugin.execute(ctxA);
+    expect(r2.action).toBe("reject");
+
+    const r3 = await plugin.execute(ctxB);
+    expect(r3.action).toBe("continue");
+  });
+
+  it("per-user rate limiting via user field in metadata", async () => {
+    const plugin = new RateLimitPlugin({ maxRequestsPerMinute: 1, key: "user-123" });
+    const ctx1 = makeContext();
+    const ctx2 = makeContext();
+
+    const r1 = await plugin.execute(ctx1);
+    expect(r1.action).toBe("continue");
+
+    const r2 = await plugin.execute(ctx2);
+    expect(r2.action).toBe("reject");
+  });
+
+  it("cleans up expired timestamps on each request", async () => {
+    const plugin = new RateLimitPlugin({ maxRequestsPerMinute: 2 });
+    const ctx = makeContext();
+
+    await plugin.execute(ctx);
+    vi.advanceTimersByTime(61_000);
+
+    const result = await plugin.execute(ctx);
+    expect(result.action).toBe("continue");
+  });
 });

@@ -68,4 +68,47 @@ describe("CostOptimizedStrategy", () => {
       strategy.execute({ metadata: {} }, createReq()),
     ).rejects.toThrow("no priced targets");
   });
+
+  it("routes to cheapest provider that supports the model", async () => {
+    const cheap = createMockProvider("cheap");
+    const expensive = createMockProvider("expensive");
+    const lookup = (name: string) =>
+      name === "cheap" ? cheap : name === "expensive" ? expensive : undefined;
+
+    const strategy = new CostOptimizedStrategy(lookup, {
+      targets: [
+        { name: "expensive", costPer1kInputTokens: 0.05, costPer1kOutputTokens: 0.10 },
+        { name: "cheap", costPer1kInputTokens: 0.001, costPer1kOutputTokens: 0.002 },
+      ],
+    });
+
+    const resp = await strategy.execute({ metadata: {} }, createReq());
+    expect(resp.provider).toBe("cheap");
+  });
+
+  it("falls back to unpriced providers when none have prices", async () => {
+    const free = createMockProvider("free");
+    const lookup = (name: string) => name === "free" ? free : undefined;
+
+    const strategy = new CostOptimizedStrategy(lookup, {
+      targets: [
+        { name: "free", costPer1kInputTokens: 0, costPer1kOutputTokens: 0 },
+      ],
+    });
+
+    const resp = await strategy.execute({ metadata: {} }, createReq());
+    expect(resp.provider).toBe("free");
+  });
+
+  it("sorts by input cost first, then output cost as tiebreaker", () => {
+    const lookup = (name: string) => createMockProvider(name);
+    const strategy = new CostOptimizedStrategy(lookup, {
+      targets: [
+        { name: "a", costPer1kInputTokens: 0.01, costPer1kOutputTokens: 0.10 },
+        { name: "b", costPer1kInputTokens: 0.01, costPer1kOutputTokens: 0.05 },
+      ],
+    });
+
+    expect(strategy.selectTargets(createReq())).toEqual(["b", "a"]);
+  });
 });

@@ -82,6 +82,10 @@ export class CachePlugin implements IPlugin {
     const raw = JSON.stringify({
       model: ctx.request.model,
       messages: ctx.request.messages,
+      temperature: ctx.request.temperature,
+      tools: ctx.request.tools,
+      seed: ctx.request.seed,
+      maxTokens: ctx.request.maxTokens,
     });
     return hashString(raw);
   }

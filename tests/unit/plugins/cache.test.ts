@@ -124,4 +124,81 @@ describe("CachePlugin", () => {
     const result = await beforeCache.execute(ctxFirst);
     expect(result.action).toBe("continue");
   });
+
+  it("cache key includes temperature", async () => {
+    const beforeCache = new CachePlugin({ ttlSeconds: 60 }, "before_request");
+    const ctx1 = createPluginContext(makeRequest({ temperature: 0.7 }));
+    const ctx2 = createPluginContext(makeRequest({ temperature: 1.0 }));
+
+    await beforeCache.execute(ctx1);
+    await beforeCache.execute(ctx2);
+
+    expect(ctx1.metadata["_cacheKey"]).not.toBe(ctx2.metadata["_cacheKey"]);
+  });
+
+  it("different temperature for same messages produces cache miss", async () => {
+    const beforeCache = new CachePlugin({ ttlSeconds: 60 }, "before_request");
+    const afterCache = new CachePlugin({ ttlSeconds: 60 }, "after_request");
+    const response = makeResponse();
+
+    const ctx1 = createPluginContext(makeRequest({ temperature: 0.5 }));
+    await beforeCache.execute(ctx1);
+    ctx1.response = response;
+    await afterCache.execute(ctx1);
+
+    const ctx2 = createPluginContext(makeRequest({ temperature: 0.9 }));
+    const result = await beforeCache.execute(ctx2);
+    expect(result.action).toBe("continue");
+  });
+
+  it("same all params produces cache hit", async () => {
+    const beforeCache = new CachePlugin({ ttlSeconds: 60 }, "before_request");
+    const afterCache = new CachePlugin({ ttlSeconds: 60 }, "after_request");
+    const response = makeResponse();
+
+    const baseReq = makeRequest({ temperature: 0.7, seed: 42, maxTokens: 100 });
+    const ctx1 = createPluginContext(baseReq);
+    await beforeCache.execute(ctx1);
+    ctx1.response = response;
+    await afterCache.execute(ctx1);
+
+    const ctx2 = createPluginContext(makeRequest({ temperature: 0.7, seed: 42, maxTokens: 100 }));
+    const result = await beforeCache.execute(ctx2);
+    expect(result.action).toBe("short_circuit");
+  });
+
+  it("cache key differs when tools are present vs absent", async () => {
+    const beforeCache = new CachePlugin({ ttlSeconds: 60 }, "before_request");
+    const ctx1 = createPluginContext(makeRequest());
+    const ctx2 = createPluginContext(makeRequest({
+      tools: [{ type: "function", function: { name: "get_weather" } }],
+    }));
+
+    await beforeCache.execute(ctx1);
+    await beforeCache.execute(ctx2);
+
+    expect(ctx1.metadata["_cacheKey"]).not.toBe(ctx2.metadata["_cacheKey"]);
+  });
+
+  it("cache key differs when seed differs", async () => {
+    const beforeCache = new CachePlugin({ ttlSeconds: 60 }, "before_request");
+    const ctx1 = createPluginContext(makeRequest({ seed: 1 }));
+    const ctx2 = createPluginContext(makeRequest({ seed: 2 }));
+
+    await beforeCache.execute(ctx1);
+    await beforeCache.execute(ctx2);
+
+    expect(ctx1.metadata["_cacheKey"]).not.toBe(ctx2.metadata["_cacheKey"]);
+  });
+
+  it("cache key differs when maxTokens differs", async () => {
+    const beforeCache = new CachePlugin({ ttlSeconds: 60 }, "before_request");
+    const ctx1 = createPluginContext(makeRequest({ maxTokens: 100 }));
+    const ctx2 = createPluginContext(makeRequest({ maxTokens: 200 }));
+
+    await beforeCache.execute(ctx1);
+    await beforeCache.execute(ctx2);
+
+    expect(ctx1.metadata["_cacheKey"]).not.toBe(ctx2.metadata["_cacheKey"]);
+  });
 });
