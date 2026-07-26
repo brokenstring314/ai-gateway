@@ -24,7 +24,8 @@ import { registerCompletionsHandler } from "./handlers/completions.js";
 import { registerEmbeddingsHandler } from "./handlers/embeddings.js";
 import { registerImagesHandler } from "./handlers/images.js";
 import { registerModelsHandler } from "./handlers/models.js";
-import { registerHealthHandler } from "./handlers/health.js";
+import { registerHealthHandler, registerLivenessHandler, registerReadinessHandler } from "./handlers/health.js";
+import { registerCapabilitiesHandler } from "./handlers/capabilities.js";
 import { createAdminApp } from "./admin/handlers.js";
 import { getMetrics } from "./observability/metrics.js";
 
@@ -51,6 +52,9 @@ export function createApp(gateway: Gateway, config: GatewayConfig, configPath?: 
 
   // ── Handlers ──
   registerHealthHandler(app);
+  registerLivenessHandler(app);
+  registerReadinessHandler(app, gateway);
+  registerCapabilitiesHandler(app, gateway);
   registerChatHandler(app, gateway);
   registerCompletionsHandler(app, gateway);
   registerEmbeddingsHandler(app, gateway);

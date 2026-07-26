@@ -5,6 +5,18 @@
 import type { StrategyMode } from "../routing/types.js";
 import type { Stage } from "../plugins/types.js";
 
+export interface RetryConfig {
+  attempts?: number;
+  initialBackoffMs?: number;
+  onStatusCodes?: number[];
+}
+
+export interface CircuitBreakerConfig {
+  failureThreshold?: number;
+  successThreshold?: number;
+  timeoutMs?: number;
+}
+
 export interface TargetConfig {
   name: string;
   provider: string;
@@ -16,6 +28,8 @@ export interface TargetConfig {
   budget?: number;
   costPer1kInputTokens?: number;
   costPer1kOutputTokens?: number;
+  retry?: RetryConfig;
+  circuitBreaker?: CircuitBreakerConfig;
 }
 
 export interface StrategyConfig {

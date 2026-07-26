@@ -111,6 +111,7 @@ export function registerChatHandler(app: AppType, gateway: Gateway): void {
 
     const req = parsed.data as ChatCompletionRequest;
     const signal = c.get("abortController")?.signal;
+    const startTime = Date.now();
 
     const ctx = {
       signal,
@@ -122,12 +123,16 @@ export function registerChatHandler(app: AppType, gateway: Gateway): void {
     if (req.stream) {
       try {
         const stream = gateway.routeStream(ctx, req);
+        let providerName = "unknown";
         return new Response(
           new ReadableStream({
             async start(controller) {
               const encoder = new TextEncoder();
               try {
                 for await (const chunk of stream) {
+                  if (providerName === "unknown" && chunk.model) {
+                    providerName = chunk.model;
+                  }
                   controller.enqueue(encoder.encode(serializeChunk(chunk)));
                 }
                 controller.enqueue(encoder.encode(DONE_MESSAGE));
@@ -147,6 +152,8 @@ export function registerChatHandler(app: AppType, gateway: Gateway): void {
               "Cache-Control": "no-cache",
               Connection: "keep-alive",
               "X-Accel-Buffering": "no",
+              "X-Gateway-Provider": providerName,
+              "X-Gateway-Overhead-Ms": String(Date.now() - startTime),
             },
           },
         );
@@ -158,7 +165,11 @@ export function registerChatHandler(app: AppType, gateway: Gateway): void {
     // Non-streaming path
     try {
       const response = await gateway.route(ctx, req);
-      return c.json(response, 200);
+      const overheadMs = Date.now() - startTime;
+      return c.json(response, 200, {
+        "X-Gateway-Provider": response.provider,
+        "X-Gateway-Overhead-Ms": String(overheadMs),
+      });
     } catch (err) {
       return handleGatewayError(c, err);
     }

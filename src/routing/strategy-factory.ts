@@ -12,6 +12,7 @@ import { LeastLatencyStrategy } from "./least-latency.js";
 import { CostOptimizedStrategy } from "./cost-optimized.js";
 import { ContentBasedStrategy } from "./content-based.js";
 import { AbTestStrategy } from "./abtest.js";
+import type { RetryConfig } from "../config/types.js";
 
 // ── Strategy config types ──
 
@@ -21,6 +22,7 @@ export interface SingleConfig {
 
 export interface FallbackConfig {
   readonly targets: readonly string[];
+  readonly retryConfigs?: ReadonlyMap<string, RetryConfig>;
 }
 
 export interface LoadBalanceTarget {

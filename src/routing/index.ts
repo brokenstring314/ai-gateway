@@ -31,3 +31,5 @@ export { LeastLatencyStrategy } from "./least-latency.js";
 export { CostOptimizedStrategy } from "./cost-optimized.js";
 export { ContentBasedStrategy } from "./content-based.js";
 export { AbTestStrategy } from "./abtest.js";
+export { retryWithBackoff, RetryExhaustedError } from "./retry.js";
+export { CircuitBreaker, CircuitBreakerRegistry, CircuitOpenError } from "./circuit-breaker.js";

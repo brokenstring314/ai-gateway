@@ -46,6 +46,7 @@ import { getTracer } from "./observability/tracing.js";
 import { getRequestLogger } from "./observability/request-log.js";
 import { McpRegistry } from "./mcp/registry.js";
 import { McpExecutor } from "./mcp/executor.js";
+import { CircuitBreakerRegistry } from "./routing/circuit-breaker.js";
 
 // ── Provider factory registry ──
 
@@ -220,7 +221,13 @@ function buildStrategyConfig(config: GatewayConfig): {
       return { mode: "single", config: { target } };
     }
     case "fallback": {
-      return { mode: "fallback", config: { targets: sc.targets ?? targetNames } };
+      const fallbackTargets = sc.targets ?? targetNames;
+      const retryConfigs = new Map<string, import("./config/types.js").RetryConfig>();
+      for (const name of fallbackTargets) {
+        const t = config.targets.find((tgt) => tgt.name === name);
+        if (t?.retry) retryConfigs.set(name, t.retry);
+      }
+      return { mode: "fallback", config: { targets: fallbackTargets, retryConfigs } };
     }
     case "loadbalance": {
       const targets = (sc.targets ?? targetNames).map((name) => {
@@ -285,6 +292,7 @@ export class Gateway {
   private config: GatewayConfig;
   private mcpRegistry: McpRegistry;
   private mcpExecutor: McpExecutor | null;
+  private circuitBreakers: CircuitBreakerRegistry;
 
   constructor(config: GatewayConfig) {
     this.config = config;
@@ -293,10 +301,14 @@ export class Gateway {
     this.pluginManager = new PluginManager();
     this.mcpRegistry = new McpRegistry();
     this.mcpExecutor = null;
+    this.circuitBreakers = new CircuitBreakerRegistry();
 
     for (const target of config.targets) {
       const provider = createProviderFromTarget(target);
       this.registry.register(provider);
+      if (target.circuitBreaker) {
+        this.circuitBreakers.getOrCreate(target.name, target.circuitBreaker);
+      }
     }
 
     const { mode, config: strategyConfig } = buildStrategyConfig(config);
@@ -357,7 +369,7 @@ export class Gateway {
 
     let response: ChatCompletionResponse;
     try {
-      response = await this.strategy.execute(ctx, finalReq);
+      response = await this.executeWithCircuitBreaker(ctx, finalReq);
     } catch (err) {
       pluginCtx.error = err instanceof Error ? err : new Error(String(err));
       await this.pluginManager.runOnError(pluginCtx);
@@ -441,11 +453,93 @@ export class Gateway {
       finalReq = this.mcpExecutor.injectTools(finalReq);
     }
 
+    const targets = this.strategy.selectTargets(finalReq);
+    for (const name of targets) {
+      const breaker = this.circuitBreakers.get(name);
+      if (breaker && !breaker.allow()) {
+        continue;
+      }
+    }
+
     try {
       yield* this.strategy.executeStream(ctx, finalReq);
+      const usedTargets = this.strategy.selectTargets(finalReq);
+      for (const name of usedTargets) {
+        this.circuitBreakers.get(name)?.recordSuccess();
+      }
+    } catch (err) {
+      const usedTargets = this.strategy.selectTargets(finalReq);
+      for (const name of usedTargets) {
+        this.circuitBreakers.get(name)?.recordFailure();
+      }
+      throw err;
     } finally {
       tracer.endSpan(span);
     }
+  }
+
+  /** Embedding request with plugin lifecycle. */
+  async embedWithPlugins(
+    ctx: RequestContext,
+    req: EmbeddingRequest,
+  ): Promise<EmbeddingResponse> {
+    const pluginCtx = createPluginContext({
+      model: req.model,
+      messages: [{ role: "user", content: typeof req.input === "string" ? req.input : req.input.join("\n") }],
+    });
+    pluginCtx.metadata["_surface"] = "embedding";
+
+    try {
+      await this.pluginManager.runBefore(pluginCtx);
+    } catch (err) {
+      if (err instanceof PluginRejectionError) throw err;
+      throw err;
+    }
+
+    let response: EmbeddingResponse;
+    try {
+      response = await this.embed(ctx, req);
+    } catch (err) {
+      pluginCtx.error = err instanceof Error ? err : new Error(String(err));
+      await this.pluginManager.runOnError(pluginCtx);
+      throw err;
+    }
+
+    pluginCtx.metadata["_embeddingResponse"] = response;
+    await this.pluginManager.runAfter(pluginCtx);
+    return response;
+  }
+
+  /** Image generation request with plugin lifecycle. */
+  async generateImageWithPlugins(
+    ctx: RequestContext,
+    req: ImageRequest,
+  ): Promise<ImageResponse> {
+    const pluginCtx = createPluginContext({
+      model: req.model,
+      messages: [{ role: "user", content: req.prompt }],
+    });
+    pluginCtx.metadata["_surface"] = "image";
+
+    try {
+      await this.pluginManager.runBefore(pluginCtx);
+    } catch (err) {
+      if (err instanceof PluginRejectionError) throw err;
+      throw err;
+    }
+
+    let response: ImageResponse;
+    try {
+      response = await this.generateImage(ctx, req);
+    } catch (err) {
+      pluginCtx.error = err instanceof Error ? err : new Error(String(err));
+      await this.pluginManager.runOnError(pluginCtx);
+      throw err;
+    }
+
+    pluginCtx.metadata["_imageResponse"] = response;
+    await this.pluginManager.runAfter(pluginCtx);
+    return response;
   }
 
   /** Embedding request — find provider and call embed(). */
@@ -500,9 +594,13 @@ export class Gateway {
     this.aliases = config.aliases ?? {};
 
     this.registry = new ProviderRegistry();
+    this.circuitBreakers = new CircuitBreakerRegistry();
     for (const target of config.targets) {
       const provider = createProviderFromTarget(target);
       this.registry.register(provider);
+      if (target.circuitBreaker) {
+        this.circuitBreakers.getOrCreate(target.name, target.circuitBreaker);
+      }
     }
 
     const { mode, config: strategyConfig } = buildStrategyConfig(config);
@@ -525,7 +623,41 @@ export class Gateway {
     return this.registry;
   }
 
+  /** Get the circuit breaker registry. */
+  getCircuitBreakerRegistry(): CircuitBreakerRegistry {
+    return this.circuitBreakers;
+  }
+
   // ── Internal ──
+
+  private async executeWithCircuitBreaker(
+    ctx: RequestContext,
+    req: ChatCompletionRequest,
+  ): Promise<ChatCompletionResponse> {
+    const targets = this.strategy.selectTargets(req);
+
+    for (const name of targets) {
+      const breaker = this.circuitBreakers.get(name);
+      if (breaker && !breaker.allow()) {
+        continue;
+      }
+    }
+
+    try {
+      const response = await this.strategy.execute(ctx, req);
+      const usedTargets = this.strategy.selectTargets(req);
+      for (const name of usedTargets) {
+        this.circuitBreakers.get(name)?.recordSuccess();
+      }
+      return response;
+    } catch (err) {
+      const usedTargets = this.strategy.selectTargets(req);
+      for (const name of usedTargets) {
+        this.circuitBreakers.get(name)?.recordFailure();
+      }
+      throw err;
+    }
+  }
 
   private resolveAlias(req: ChatCompletionRequest): ChatCompletionRequest {
     const alias = this.aliases[req.model];

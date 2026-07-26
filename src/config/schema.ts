@@ -18,6 +18,18 @@ export const StrategyModeSchema = z.enum([
 
 export const StageSchema = z.enum(["before_request", "after_request", "on_error"]);
 
+export const RetryConfigSchema = z.object({
+  attempts: z.number().int().positive().optional().default(3),
+  initialBackoffMs: z.number().positive().optional().default(100),
+  onStatusCodes: z.array(z.number().int()).optional().default([408, 429, 500, 502, 503, 504]),
+});
+
+export const CircuitBreakerConfigSchema = z.object({
+  failureThreshold: z.number().int().positive().optional().default(5),
+  successThreshold: z.number().int().positive().optional().default(1),
+  timeoutMs: z.number().positive().optional().default(30000),
+});
+
 export const TargetConfigSchema = z.object({
   name: z.string().min(1),
   provider: z.string().min(1),
@@ -29,6 +41,8 @@ export const TargetConfigSchema = z.object({
   budget: z.number().positive().optional(),
   costPer1kInputTokens: z.number().nonnegative().optional(),
   costPer1kOutputTokens: z.number().nonnegative().optional(),
+  retry: RetryConfigSchema.optional(),
+  circuitBreaker: CircuitBreakerConfigSchema.optional(),
 });
 
 export const ConditionalRuleSchema = z.object({
