@@ -1,0 +1,25 @@
+apiVersion: v1
+server:
+  port: 3000
+  host: 0.0.0.0
+strategy:
+  mode: single
+  targets: ["openai-target"]
+targets:
+  - name: openai-target
+    provider: openai
+    apiKey: "sk-..."
+    baseURL: "https://api.openai.com/v1"
+    models: ["gpt-4o", "gpt-4o-mini"]
+auth:
+  enabled: false
+cors:
+  enabled: true
+  origins: ["*"]
+plugins:
+  - name: logger
+    stage: after_request
+    config:
+      logBody: false
+compatibility:
+  onUnsupportedParam: warn
