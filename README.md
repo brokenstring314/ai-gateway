@@ -244,30 +244,30 @@ String fields like `apiKey` and `adminSecret` are never auto-converted to number
 
 All providers use the OpenAI-compatible protocol. The gateway adapts request/response formats per provider.
 
-| Provider | Default Base URL |
-|----------|-----------------|
-| `openai` | `https://api.openai.com/v1` |
-| `deepseek` | `https://api.deepseek.com/v1` |
-| `groq` | `https://api.groq.com/openai/v1` |
-| `mistral` | `https://api.mistral.ai/v1` |
-| `xai` | `https://api.x.ai/v1` |
-| `qwen` | `https://dashscope.aliyuncs.com/compatible-mode/v1` |
-| `moonshot` | `https://api.moonshot.cn/v1` |
-| `together` | `https://api.together.xyz/v1` |
-| `fireworks` | `https://api.fireworks.ai/inference/v1` |
-| `deepinfra` | `https://api.deepinfra.com/v1/openai` |
-| `ai21` | `https://api.ai21.com/studio/v1` |
-| `cerebras` | `https://api.cerebras.ai/v1` |
-| `sambanova` | `https://api.sambanova.ai/v1` |
-| `novita` | `https://api.novita.ai/v3/openai` |
-| `nvidia_nim` | `https://integrate.api.nvidia.com/v1` |
-| `ollama` | `http://localhost:11434/v1` |
-| `openrouter` | `https://openrouter.ai/api/v1` |
-| `perplexity` | `https://api.perplexity.ai` |
-| `replicate` | `https://api.replicate.com/v1` |
-| `cloudflare` | `https://api.cloudflare.com/client/v4/accounts` |
-| `databricks` | `https://.databricks.com/serving-endpoints` |
-| `huggingface` | `https://api-inference.huggingface.co/v1` |
+| Provider      | Default Base URL                                    |
+| ------------- | --------------------------------------------------- |
+| `openai`      | `https://api.openai.com/v1`                         |
+| `deepseek`    | `https://api.deepseek.com/v1`                       |
+| `groq`        | `https://api.groq.com/openai/v1`                    |
+| `mistral`     | `https://api.mistral.ai/v1`                         |
+| `xai`         | `https://api.x.ai/v1`                               |
+| `qwen`        | `https://dashscope.aliyuncs.com/compatible-mode/v1` |
+| `moonshot`    | `https://api.moonshot.cn/v1`                        |
+| `together`    | `https://api.together.xyz/v1`                       |
+| `fireworks`   | `https://api.fireworks.ai/inference/v1`             |
+| `deepinfra`   | `https://api.deepinfra.com/v1/openai`               |
+| `ai21`        | `https://api.ai21.com/studio/v1`                    |
+| `cerebras`    | `https://api.cerebras.ai/v1`                        |
+| `sambanova`   | `https://api.sambanova.ai/v1`                       |
+| `novita`      | `https://api.novita.ai/v3/openai`                   |
+| `nvidia_nim`  | `https://integrate.api.nvidia.com/v1`               |
+| `ollama`      | `http://localhost:11434/v1`                         |
+| `openrouter`  | `https://openrouter.ai/api/v1`                      |
+| `perplexity`  | `https://api.perplexity.ai`                         |
+| `replicate`   | `https://api.replicate.com/v1`                      |
+| `cloudflare`  | `https://api.cloudflare.com/client/v4/accounts`     |
+| `databricks`  | `https://.databricks.com/serving-endpoints`         |
+| `huggingface` | `https://api-inference.huggingface.co/v1`           |
 
 Any unknown provider with an explicit `baseURL` is treated as a generic OpenAI-compatible endpoint.
 
@@ -401,11 +401,11 @@ Returns per-provider parameter support profiles (which OpenAI parameters each pr
 
 ### Health Probes
 
-| Endpoint | Purpose | Status Codes |
-|----------|---------|-------------|
-| `GET /health` | General health check | 200 |
-| `GET /livez` | Process liveness (Kubernetes liveness probe) | 200 |
-| `GET /readyz` | Readiness (config + providers loaded) | 200 / 503 |
+| Endpoint      | Purpose                                      | Status Codes |
+| ------------- | -------------------------------------------- | ------------ |
+| `GET /health` | General health check                         | 200          |
+| `GET /livez`  | Process liveness (Kubernetes liveness probe) | 200          |
+| `GET /readyz` | Readiness (config + providers loaded)        | 200 / 503    |
 
 ### Metrics
 
@@ -424,15 +424,15 @@ Prometheus-format metrics including:
 
 All admin endpoints require the `X-Admin-Secret` header (or `Authorization: Bearer <secret>`) matching the `adminSecret` config field. If no `adminSecret` is configured, admin endpoints return 403.
 
-| Method | Path | Description |
-|--------|------|-------------|
-| GET | `/admin/config` | Get current config (API keys redacted) |
-| PUT | `/admin/config` | Replace config (validated with Zod) |
-| POST | `/admin/config/reload` | Reload config from file |
-| GET | `/admin/keys` | List API keys (redacted) |
-| POST | `/admin/keys` | Add a new API key |
-| DELETE | `/admin/keys/:id` | Delete an API key by index |
-| GET | `/admin/logs` | View recent log entries |
+| Method | Path                   | Description                            |
+| ------ | ---------------------- | -------------------------------------- |
+| GET    | `/admin/config`        | Get current config (API keys redacted) |
+| PUT    | `/admin/config`        | Replace config (validated with Zod)    |
+| POST   | `/admin/config/reload` | Reload config from file                |
+| GET    | `/admin/keys`          | List API keys (redacted)               |
+| POST   | `/admin/keys`          | Add a new API key                      |
+| DELETE | `/admin/keys/:id`      | Delete an API key by index             |
+| GET    | `/admin/logs`          | View recent log entries                |
 
 **Example:**
 
@@ -452,13 +452,13 @@ curl -X POST \
 
 The gateway adds these headers to responses:
 
-| Header | Description |
-|--------|-------------|
-| `X-Gateway-Provider` | Name of the provider that handled the request |
-| `X-Gateway-Overhead-Ms` | Gateway processing time in milliseconds |
-| `X-Content-Type-Options` | `nosniff` |
-| `X-Frame-Options` | `DENY` |
-| `Referrer-Policy` | `strict-origin-when-cross-origin` |
+| Header                   | Description                                   |
+| ------------------------ | --------------------------------------------- |
+| `X-Gateway-Provider`     | Name of the provider that handled the request |
+| `X-Gateway-Overhead-Ms`  | Gateway processing time in milliseconds       |
+| `X-Content-Type-Options` | `nosniff`                                     |
+| `X-Frame-Options`        | `DENY`                                        |
+| `Referrer-Policy`        | `strict-origin-when-cross-origin`             |
 
 ---
 
@@ -812,11 +812,11 @@ observability:
 
 Available at `GET /metrics`:
 
-| Metric | Type | Labels |
-|--------|------|--------|
-| `ai_gateway_requests_total` | counter | `provider`, `model` |
-| `ai_gateway_tokens_input_total` | counter | `provider`, `model` |
-| `ai_gateway_tokens_output_total` | counter | `provider`, `model` |
+| Metric                           | Type      | Labels              |
+| -------------------------------- | --------- | ------------------- |
+| `ai_gateway_requests_total`      | counter   | `provider`, `model` |
+| `ai_gateway_tokens_input_total`  | counter   | `provider`, `model` |
+| `ai_gateway_tokens_output_total` | counter   | `provider`, `model` |
 | `ai_gateway_request_duration_ms` | histogram | `provider`, `model` |
 
 ### Structured Logging
@@ -963,20 +963,20 @@ gateway.close();
 
 ### Gateway API
 
-| Method | Description |
-|--------|-------------|
-| `route(ctx, req)` | Non-streaming chat completion |
-| `routeStream(ctx, req)` | Streaming chat completion (AsyncGenerator) |
-| `embed(ctx, req)` | Embedding generation |
-| `embedWithPlugins(ctx, req)` | Embedding with plugin lifecycle |
-| `generateImage(ctx, req)` | Image generation |
-| `generateImageWithPlugins(ctx, req)` | Image generation with plugin lifecycle |
-| `listModels()` | List all models |
-| `registerProvider(provider)` | Add a provider at runtime |
-| `registerPlugin(stage, plugin)` | Add a plugin at runtime |
-| `reloadConfig(config)` | Hot-reload configuration |
-| `getConfig()` | Get current config (read-only) |
-| `close()` | Graceful shutdown |
+| Method                               | Description                                |
+| ------------------------------------ | ------------------------------------------ |
+| `route(ctx, req)`                    | Non-streaming chat completion              |
+| `routeStream(ctx, req)`              | Streaming chat completion (AsyncGenerator) |
+| `embed(ctx, req)`                    | Embedding generation                       |
+| `embedWithPlugins(ctx, req)`         | Embedding with plugin lifecycle            |
+| `generateImage(ctx, req)`            | Image generation                           |
+| `generateImageWithPlugins(ctx, req)` | Image generation with plugin lifecycle     |
+| `listModels()`                       | List all models                            |
+| `registerProvider(provider)`         | Add a provider at runtime                  |
+| `registerPlugin(stage, plugin)`      | Add a plugin at runtime                    |
+| `reloadConfig(config)`               | Hot-reload configuration                   |
+| `getConfig()`                        | Get current config (read-only)             |
+| `close()`                            | Graceful shutdown                          |
 
 ---
 
@@ -1159,15 +1159,15 @@ bun run test:watch
 
 ## Migration from Go ai-gateway
 
-| Go Feature | TypeScript Equivalent |
-|------------|----------------------|
-| `ferrogw serve` | `ai-gateway serve -c config.yaml` |
-| 29 providers (incl. Anthropic/Gemini/Bedrock) | 20+ OpenAI-compatible providers |
-| Non-OpenAI-wire translation | Not supported (by design) |
-| Dashboard UI | Not included |
-| `NonOpenAIWireProvider` proxy rejection | Generic fallback with `baseURL` |
-| `sync.Pool` context pooling | Standard JS patterns |
-| `httputil.ReverseProxy` pass-through | Not included |
-| Per-target concurrency limiter | Not included (use circuit breaker) |
-| Model catalog / discovery | Static config only |
-| Config file watcher | Admin API reload (`PUT /admin/config`) |
+| Go Feature                                    | TypeScript Equivalent                  |
+| --------------------------------------------- | -------------------------------------- |
+| `ferrogw serve`                               | `ai-gateway serve -c config.yaml`      |
+| 29 providers (incl. Anthropic/Gemini/Bedrock) | 20+ OpenAI-compatible providers        |
+| Non-OpenAI-wire translation                   | Not supported (by design)              |
+| Dashboard UI                                  | Not included                           |
+| `NonOpenAIWireProvider` proxy rejection       | Generic fallback with `baseURL`        |
+| `sync.Pool` context pooling                   | Standard JS patterns                   |
+| `httputil.ReverseProxy` pass-through          | Not included                           |
+| Per-target concurrency limiter                | Not included (use circuit breaker)     |
+| Model catalog / discovery                     | Static config only                     |
+| Config file watcher                           | Admin API reload (`PUT /admin/config`) |
