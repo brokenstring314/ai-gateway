@@ -244,30 +244,30 @@ AI_GATEWAY_MAX_REQUEST_BYTES=20971520
 
 所有提供商均使用 OpenAI 兼容协议。网关根据提供商适配请求/响应格式。
 
-| 提供商 | 默认 Base URL |
-|--------|--------------|
-| `openai` | `https://api.openai.com/v1` |
-| `deepseek` | `https://api.deepseek.com/v1` |
-| `groq` | `https://api.groq.com/openai/v1` |
-| `mistral` | `https://api.mistral.ai/v1` |
-| `xai` | `https://api.x.ai/v1` |
-| `qwen` | `https://dashscope.aliyuncs.com/compatible-mode/v1` |
-| `moonshot` | `https://api.moonshot.cn/v1` |
-| `together` | `https://api.together.xyz/v1` |
-| `fireworks` | `https://api.fireworks.ai/inference/v1` |
-| `deepinfra` | `https://api.deepinfra.com/v1/openai` |
-| `ai21` | `https://api.ai21.com/studio/v1` |
-| `cerebras` | `https://api.cerebras.ai/v1` |
-| `sambanova` | `https://api.sambanova.ai/v1` |
-| `novita` | `https://api.novita.ai/v3/openai` |
-| `nvidia_nim` | `https://integrate.api.nvidia.com/v1` |
-| `ollama` | `http://localhost:11434/v1` |
-| `openrouter` | `https://openrouter.ai/api/v1` |
-| `perplexity` | `https://api.perplexity.ai` |
-| `replicate` | `https://api.replicate.com/v1` |
-| `cloudflare` | `https://api.cloudflare.com/client/v4/accounts` |
-| `databricks` | `https://.databricks.com/serving-endpoints` |
-| `huggingface` | `https://api-inference.huggingface.co/v1` |
+| 提供商           | 默认 Base URL                                         |
+| ------------- | --------------------------------------------------- |
+| `openai`      | `https://api.openai.com/v1`                         |
+| `deepseek`    | `https://api.deepseek.com/v1`                       |
+| `groq`        | `https://api.groq.com/openai/v1`                    |
+| `mistral`     | `https://api.mistral.ai/v1`                         |
+| `xai`         | `https://api.x.ai/v1`                               |
+| `qwen`        | `https://dashscope.aliyuncs.com/compatible-mode/v1` |
+| `moonshot`    | `https://api.moonshot.cn/v1`                        |
+| `together`    | `https://api.together.xyz/v1`                       |
+| `fireworks`   | `https://api.fireworks.ai/inference/v1`             |
+| `deepinfra`   | `https://api.deepinfra.com/v1/openai`               |
+| `ai21`        | `https://api.ai21.com/studio/v1`                    |
+| `cerebras`    | `https://api.cerebras.ai/v1`                        |
+| `sambanova`   | `https://api.sambanova.ai/v1`                       |
+| `novita`      | `https://api.novita.ai/v3/openai`                   |
+| `nvidia_nim`  | `https://integrate.api.nvidia.com/v1`               |
+| `ollama`      | `http://localhost:11434/v1`                         |
+| `openrouter`  | `https://openrouter.ai/api/v1`                      |
+| `perplexity`  | `https://api.perplexity.ai`                         |
+| `replicate`   | `https://api.replicate.com/v1`                      |
+| `cloudflare`  | `https://api.cloudflare.com/client/v4/accounts`     |
+| `databricks`  | `https://.databricks.com/serving-endpoints`         |
+| `huggingface` | `https://api-inference.huggingface.co/v1`           |
 
 任何未知的提供商，只要提供了 `baseURL`，就会被当作通用 OpenAI 兼容端点处理。
 
@@ -401,11 +401,11 @@ GET /v1/capabilities
 
 ### 健康探针
 
-| 端点 | 用途 | 状态码 |
-|------|------|--------|
-| `GET /health` | 通用健康检查 | 200 |
-| `GET /livez` | 进程存活（Kubernetes liveness 探针） | 200 |
-| `GET /readyz` | 就绪检查（配置 + 提供商已加载） | 200 / 503 |
+| 端点            | 用途                           | 状态码       |
+| ------------- | ---------------------------- | --------- |
+| `GET /health` | 通用健康检查                       | 200       |
+| `GET /livez`  | 进程存活（Kubernetes liveness 探针） | 200       |
+| `GET /readyz` | 就绪检查（配置 + 提供商已加载）            | 200 / 503 |
 
 ### 指标
 
@@ -424,15 +424,15 @@ Prometheus 格式的指标，包括：
 
 所有管理端点都需要 `X-Admin-Secret` 请求头（或 `Authorization: Bearer <密钥>`）匹配配置中的 `adminSecret`。如果未配置 `adminSecret`，管理端点返回 403。
 
-| 方法 | 路径 | 说明 |
-|------|------|------|
-| GET | `/admin/config` | 获取当前配置（API 密钥已脱敏） |
-| PUT | `/admin/config` | 替换配置（Zod 验证） |
-| POST | `/admin/config/reload` | 从文件重新加载配置 |
-| GET | `/admin/keys` | 列出 API 密钥（脱敏） |
-| POST | `/admin/keys` | 添加新的 API 密钥 |
-| DELETE | `/admin/keys/:id` | 按索引删除 API 密钥 |
-| GET | `/admin/logs` | 查看最近的日志条目 |
+| 方法     | 路径                     | 说明                |
+| ------ | ---------------------- | ----------------- |
+| GET    | `/admin/config`        | 获取当前配置（API 密钥已脱敏） |
+| PUT    | `/admin/config`        | 替换配置（Zod 验证）      |
+| POST   | `/admin/config/reload` | 从文件重新加载配置         |
+| GET    | `/admin/keys`          | 列出 API 密钥（脱敏）     |
+| POST   | `/admin/keys`          | 添加新的 API 密钥       |
+| DELETE | `/admin/keys/:id`      | 按索引删除 API 密钥      |
+| GET    | `/admin/logs`          | 查看最近的日志条目         |
 
 **示例：**
 
@@ -452,13 +452,13 @@ curl -X POST \
 
 网关在响应中添加以下头：
 
-| 头 | 说明 |
-|----|------|
-| `X-Gateway-Provider` | 处理请求的提供商名称 |
-| `X-Gateway-Overhead-Ms` | 网关处理时间（毫秒） |
-| `X-Content-Type-Options` | `nosniff` |
-| `X-Frame-Options` | `DENY` |
-| `Referrer-Policy` | `strict-origin-when-cross-origin` |
+| 头                        | 说明                                |
+| ------------------------ | --------------------------------- |
+| `X-Gateway-Provider`     | 处理请求的提供商名称                        |
+| `X-Gateway-Overhead-Ms`  | 网关处理时间（毫秒）                        |
+| `X-Content-Type-Options` | `nosniff`                         |
+| `X-Frame-Options`        | `DENY`                            |
+| `Referrer-Policy`        | `strict-origin-when-cross-origin` |
 
 ---
 
@@ -812,11 +812,11 @@ observability:
 
 通过 `GET /metrics` 获取：
 
-| 指标 | 类型 | 标签 |
-|------|------|------|
-| `ai_gateway_requests_total` | counter | `provider`, `model` |
-| `ai_gateway_tokens_input_total` | counter | `provider`, `model` |
-| `ai_gateway_tokens_output_total` | counter | `provider`, `model` |
+| 指标                               | 类型        | 标签                  |
+| -------------------------------- | --------- | ------------------- |
+| `ai_gateway_requests_total`      | counter   | `provider`, `model` |
+| `ai_gateway_tokens_input_total`  | counter   | `provider`, `model` |
+| `ai_gateway_tokens_output_total` | counter   | `provider`, `model` |
 | `ai_gateway_request_duration_ms` | histogram | `provider`, `model` |
 
 ### 结构化日志
@@ -963,20 +963,20 @@ gateway.close();
 
 ### Gateway API
 
-| 方法 | 说明 |
-|------|------|
-| `route(ctx, req)` | 非流式 Chat Completion |
-| `routeStream(ctx, req)` | 流式 Chat Completion（AsyncGenerator） |
-| `embed(ctx, req)` | Embedding 生成 |
-| `embedWithPlugins(ctx, req)` | 带插件生命周期的 Embedding |
-| `generateImage(ctx, req)` | 图片生成 |
-| `generateImageWithPlugins(ctx, req)` | 带插件生命周期的图片生成 |
-| `listModels()` | 列出所有模型 |
-| `registerProvider(provider)` | 运行时添加提供商 |
-| `registerPlugin(stage, plugin)` | 运行时添加插件 |
-| `reloadConfig(config)` | 热重载配置 |
-| `getConfig()` | 获取当前配置（只读） |
-| `close()` | 优雅关闭 |
+| 方法                                   | 说明                                 |
+| ------------------------------------ | ---------------------------------- |
+| `route(ctx, req)`                    | 非流式 Chat Completion                |
+| `routeStream(ctx, req)`              | 流式 Chat Completion（AsyncGenerator） |
+| `embed(ctx, req)`                    | Embedding 生成                       |
+| `embedWithPlugins(ctx, req)`         | 带插件生命周期的 Embedding                 |
+| `generateImage(ctx, req)`            | 图片生成                               |
+| `generateImageWithPlugins(ctx, req)` | 带插件生命周期的图片生成                       |
+| `listModels()`                       | 列出所有模型                             |
+| `registerProvider(provider)`         | 运行时添加提供商                           |
+| `registerPlugin(stage, plugin)`      | 运行时添加插件                            |
+| `reloadConfig(config)`               | 热重载配置                              |
+| `getConfig()`                        | 获取当前配置（只读）                         |
+| `close()`                            | 优雅关闭                               |
 
 ---
 
@@ -1159,15 +1159,15 @@ bun run test:watch
 
 ## 从 Go ai-gateway 迁移
 
-| Go 功能 | TypeScript 对应 |
-|---------|----------------|
-| `ferrogw serve` | `ai-gateway serve -c config.yaml` |
-| 29 个提供商（含 Anthropic/Gemini/Bedrock） | 20+ 个 OpenAI 兼容提供商 |
-| 非 OpenAI 线路协议翻译 | 不支持（设计决策） |
-| Dashboard UI | 不包含 |
-| `NonOpenAIWireProvider` 代理拒绝 | 带 `baseURL` 的通用回退 |
-| `sync.Pool` 上下文池 | 标准 JS 模式 |
-| `httputil.ReverseProxy` 透传代理 | 不包含 |
-| 每目标并发限制 | 不包含（使用熔断器替代） |
-| 模型目录 / 动态发现 | 仅静态配置 |
-| 配置文件监视 | 管理 API 重载（`PUT /admin/config`） |
+| Go 功能                               | TypeScript 对应                     |
+| ----------------------------------- | --------------------------------- |
+| `ferrogw serve`                     | `ai-gateway serve -c config.yaml` |
+| 29 个提供商（含 Anthropic/Gemini/Bedrock） | 20+ 个 OpenAI 兼容提供商                |
+| 非 OpenAI 线路协议翻译                     | 不支持（设计决策）                         |
+| Dashboard UI                        | 不包含                               |
+| `NonOpenAIWireProvider` 代理拒绝        | 带 `baseURL` 的通用回退                 |
+| `sync.Pool` 上下文池                    | 标准 JS 模式                          |
+| `httputil.ReverseProxy` 透传代理        | 不包含                               |
+| 每目标并发限制                             | 不包含（使用熔断器替代）                      |
+| 模型目录 / 动态发现                         | 仅静态配置                             |
+| 配置文件监视                              | 管理 API 重载（`PUT /admin/config`）    |
