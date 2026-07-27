@@ -1,25 +1,85 @@
 apiVersion: v1
+
 server:
   port: 3000
-  host: 0.0.0.0
+  host: "0.0.0.0"
+
 strategy:
-  mode: single
-  targets: ["openai-target"]
+  mode: fallback
+  targets: ["openai-main", "deepseek-backup"]
+
 targets:
-  - name: openai-target
+  - name: openai-main
     provider: openai
     apiKey: "sk-..."
-    baseURL: "https://api.openai.com/v1"
     models: ["gpt-4o", "gpt-4o-mini"]
+    retry:
+      attempts: 3
+      initialBackoffMs: 100
+      onStatusCodes: [429, 500, 502, 503]
+    circuitBreaker:
+      failureThreshold: 5
+      successThreshold: 1
+      timeoutMs: 30000
+
+  - name: deepseek-backup
+    provider: deepseek
+    apiKey: "sk-..."
+    models: ["deepseek-chat"]
+    costPer1kInputTokens: 0.0001
+    costPer1kOutputTokens: 0.0002
+
 auth:
   enabled: false
+  # keys:
+  #   - "sk-my-api-key-1"
+
+# adminSecret: "a-secure-secret-at-least-8-chars"
+
 cors:
   enabled: true
   origins: ["*"]
+
+aliases:
+  fast: "gpt-4o-mini"
+  smart: "gpt-4o"
+
 plugins:
+  - name: rate-limit
+    stage: before_request
+    config:
+      requestsPerSecond: 100
+      burst: 200
+      keyRpm: 60
+
+  - name: cache
+    stage: before_request
+    config:
+      maxAge: 300
+      maxEntries: 1000
+
   - name: logger
     stage: after_request
     config:
       logBody: false
+
+maxRequestBytes: 10485760
+requestTimeout: "30s"
+
 compatibility:
   onUnsupportedParam: warn
+
+# mcpServers:
+#   - name: filesystem
+#     type: stdio
+#     command: "npx"
+#     args: ["-y", "@modelcontextprotocol/server-filesystem", "/tmp"]
+
+# observability:
+#   tracing:
+#     enabled: true
+#     otlpEndpoint: "http://localhost:4318"
+#     otlpProtocol: http
+#     serviceName: "ai-gateway"
+#   metrics:
+#     enabled: true
