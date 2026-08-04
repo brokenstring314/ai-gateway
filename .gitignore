@@ -36,3 +36,6 @@ config.test.json
 
 # Finder (MacOS) folder config
 .DS_Store
+
+# runtime data (SQLite databases)
+.data/
