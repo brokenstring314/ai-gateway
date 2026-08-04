@@ -49,6 +49,13 @@ export interface RequestContext {
   signal?: AbortSignal;
   traceId?: string;
   metadata: Record<string, unknown>;
+  /**
+   * Forwardable upstream HTTP response headers published by the provider
+   * after its upstream call (whitelist-filtered; hop-by-hop excluded).
+   * Streaming requests have no response object, so headers travel back to
+   * the handler through the context instead.
+   */
+  upstreamHeaders?: Readonly<Record<string, string>>;
 }
 
 export interface ModelInfo {
@@ -131,6 +138,8 @@ export interface ChatCompletionResponse {
   usage: Usage;
   overheadMs?: number;
   metadata?: Record<string, unknown>;
+  /** Forwardable upstream HTTP response headers (whitelist-filtered). */
+  upstreamHeaders?: Readonly<Record<string, string>>;
 }
 
 export interface Choice {

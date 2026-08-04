@@ -21,6 +21,7 @@ import type {
 import type { CompatibilityConfig } from "../config/types.js";
 import { enforceUnsupportedParams } from "./capabilities.js";
 import { parseSSEStream } from "./sse-parser.js";
+import { extractForwardableHeaders } from "./response-headers.js";
 
 export interface OpenAiCompatOptions {
   name: string;
@@ -88,7 +89,12 @@ export function createOpenAICompatProvider(opts: OpenAiCompatOptions): IProvider
       }
 
       const raw = (await response.json()) as Record<string, unknown>;
-      return normalizeResponse(opts.name, raw, opts.extraResponseFields);
+      const normalized = normalizeResponse(opts.name, raw, opts.extraResponseFields);
+      const upstreamHeaders = extractForwardableHeaders(response.headers);
+      if (upstreamHeaders !== undefined) {
+        normalized.upstreamHeaders = upstreamHeaders;
+      }
+      return normalized;
     },
 
     async *completeStream(
@@ -130,6 +136,13 @@ export function createOpenAICompatProvider(opts: OpenAiCompatOptions): IProvider
 
       if (!response.body) {
         throw new ProviderError(opts.name, 0, "response body is null");
+      }
+
+      // No response object exists on the streaming path, so forwardable
+      // upstream headers are published back through the request context.
+      const upstreamHeaders = extractForwardableHeaders(response.headers);
+      if (upstreamHeaders !== undefined) {
+        ctx.upstreamHeaders = upstreamHeaders;
       }
 
       yield* parseSSEStream(response.body, ctx.signal);

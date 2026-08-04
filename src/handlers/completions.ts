@@ -10,7 +10,8 @@ import type { ContentfulStatusCode } from "hono/utils/http-status";
 import { z } from "zod";
 import type { AppType } from "../app.js";
 import type { Gateway } from "../gateway.js";
-import type { ChatCompletionRequest } from "../providers/types.js";
+import type { ChatCompletionRequest, RequestContext, StreamChunk } from "../providers/types.js";
+import { mergeForwardedHeaders } from "../providers/response-headers.js";
 import { ProviderError } from "../providers/openai-compat.js";
 import { PluginRejectionError } from "../plugins/error.js";
 
@@ -95,7 +96,7 @@ export function registerCompletionsHandler(app: AppType, gateway: Gateway): void
 
     const signal = c.get("abortController")?.signal;
     const apiKey = c.get("apiKey");
-    const ctx = {
+    const ctx: RequestContext = {
       signal,
       traceId: c.req.header("X-Request-Id") ?? crypto.randomUUID(),
       metadata: { apiKey },
@@ -105,12 +106,31 @@ export function registerCompletionsHandler(app: AppType, gateway: Gateway): void
     if (legacy.stream) {
       try {
         const stream = gateway.routeStream(ctx, chatReq);
+        const iterator = stream[Symbol.asyncIterator]();
+
+        // Prime the generator so the provider's upstream fetch completes and
+        // any forwardable upstream headers are published on the context before
+        // the SSE Response is constructed (headers must be fixed at
+        // construction time).
+        let firstChunk: StreamChunk | undefined;
+        try {
+          const first = await iterator.next();
+          if (!first.done) {
+            firstChunk = first.value;
+          }
+        } catch (err) {
+          return handleGatewayError(c, err);
+        }
+
         return new Response(
           new ReadableStream({
             async start(controller) {
               const encoder = new TextEncoder();
               try {
-                for await (const chunk of stream) {
+                if (firstChunk !== undefined) {
+                  controller.enqueue(encoder.encode(`data: ${JSON.stringify(firstChunk)}\n\n`));
+                }
+                for await (const chunk of iterator) {
                   controller.enqueue(encoder.encode(`data: ${JSON.stringify(chunk)}\n\n`));
                 }
                 controller.enqueue(encoder.encode("data: [DONE]\n\n"));
@@ -125,12 +145,15 @@ export function registerCompletionsHandler(app: AppType, gateway: Gateway): void
           }),
           {
             status: 200,
-            headers: {
-              "Content-Type": "text/event-stream",
-              "Cache-Control": "no-cache",
-              Connection: "keep-alive",
-              "X-Accel-Buffering": "no",
-            },
+            headers: mergeForwardedHeaders(
+              {
+                "Content-Type": "text/event-stream",
+                "Cache-Control": "no-cache",
+                Connection: "keep-alive",
+                "X-Accel-Buffering": "no",
+              },
+              ctx.upstreamHeaders,
+            ),
           },
         );
       } catch (err) {
@@ -141,7 +164,8 @@ export function registerCompletionsHandler(app: AppType, gateway: Gateway): void
     // Non-streaming path
     try {
       const response = await gateway.route(ctx, chatReq);
-      return c.json(response, 200);
+      const { upstreamHeaders, ...responseBody } = response;
+      return c.json(responseBody, 200, mergeForwardedHeaders({}, upstreamHeaders));
     } catch (err) {
       return handleGatewayError(c, err);
     }

@@ -10,7 +10,8 @@ import type { ContentfulStatusCode } from "hono/utils/http-status";
 import { z } from "zod";
 import type { AppType } from "../app.js";
 import type { Gateway } from "../gateway.js";
-import type { ChatCompletionRequest, StreamChunk } from "../providers/types.js";
+import type { ChatCompletionRequest, RequestContext, StreamChunk } from "../providers/types.js";
+import { mergeForwardedHeaders } from "../providers/response-headers.js";
 import { ProviderError } from "../providers/openai-compat.js";
 import { PluginRejectionError } from "../plugins/error.js";
 
@@ -113,7 +114,7 @@ export function registerChatHandler(app: AppType, gateway: Gateway): void {
     const signal = c.get("abortController")?.signal;
     const startTime = Date.now();
 
-    const ctx = {
+    const ctx: RequestContext = {
       signal,
       traceId: c.req.header("X-Request-Id") ?? crypto.randomUUID(),
       metadata: {},
@@ -123,16 +124,32 @@ export function registerChatHandler(app: AppType, gateway: Gateway): void {
     if (req.stream) {
       try {
         const stream = gateway.routeStream(ctx, req);
-        let providerName = "unknown";
+        const iterator = stream[Symbol.asyncIterator]();
+
+        // Prime the generator so the provider's upstream fetch completes and
+        // any forwardable upstream headers are published on the context before
+        // the SSE Response is constructed (headers must be fixed at
+        // construction time).
+        let firstChunk: StreamChunk | undefined;
+        try {
+          const first = await iterator.next();
+          if (!first.done) {
+            firstChunk = first.value;
+          }
+        } catch (err) {
+          return handleGatewayError(c, err);
+        }
+
+        const providerName = firstChunk?.model ?? "unknown";
         return new Response(
           new ReadableStream({
             async start(controller) {
               const encoder = new TextEncoder();
               try {
-                for await (const chunk of stream) {
-                  if (providerName === "unknown" && chunk.model) {
-                    providerName = chunk.model;
-                  }
+                if (firstChunk !== undefined) {
+                  controller.enqueue(encoder.encode(serializeChunk(firstChunk)));
+                }
+                for await (const chunk of iterator) {
                   controller.enqueue(encoder.encode(serializeChunk(chunk)));
                 }
                 controller.enqueue(encoder.encode(DONE_MESSAGE));
@@ -147,14 +164,17 @@ export function registerChatHandler(app: AppType, gateway: Gateway): void {
           }),
           {
             status: 200,
-            headers: {
-              "Content-Type": "text/event-stream",
-              "Cache-Control": "no-cache",
-              Connection: "keep-alive",
-              "X-Accel-Buffering": "no",
-              "X-Gateway-Provider": providerName,
-              "X-Gateway-Overhead-Ms": String(Date.now() - startTime),
-            },
+            headers: mergeForwardedHeaders(
+              {
+                "Content-Type": "text/event-stream",
+                "Cache-Control": "no-cache",
+                Connection: "keep-alive",
+                "X-Accel-Buffering": "no",
+                "X-Gateway-Provider": providerName,
+                "X-Gateway-Overhead-Ms": String(Date.now() - startTime),
+              },
+              ctx.upstreamHeaders,
+            ),
           },
         );
       } catch (err) {
@@ -166,10 +186,14 @@ export function registerChatHandler(app: AppType, gateway: Gateway): void {
     try {
       const response = await gateway.route(ctx, req);
       const overheadMs = Date.now() - startTime;
-      return c.json(response, 200, {
-        "X-Gateway-Provider": response.provider,
-        "X-Gateway-Overhead-Ms": String(overheadMs),
-      });
+      const { upstreamHeaders, ...responseBody } = response;
+      return c.json(responseBody, 200, mergeForwardedHeaders(
+        {
+          "X-Gateway-Provider": response.provider,
+          "X-Gateway-Overhead-Ms": String(overheadMs),
+        },
+        upstreamHeaders,
+      ));
     } catch (err) {
       return handleGatewayError(c, err);
     }
