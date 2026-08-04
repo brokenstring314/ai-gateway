@@ -17,15 +17,22 @@ import type {
   ToolCall,
 } from "../providers/types.js";
 import type { IStrategy } from "../routing/types.js";
-import type { McpToolResult } from "./types.js";
-import { McpRegistry } from "./registry.js";
+import type { McpToolResult, McpToolRegistry } from "./types.js";
 
-const DEFAULT_MAX_DEPTH = 5;
+export const DEFAULT_MAX_CALL_DEPTH = 5;
+
+/** Stable error thrown when the agentic loop exceeds its tool-call depth budget. */
+export class McpCallDepthError extends Error {
+  constructor(limit: number) {
+    super(`MCP tool call depth exceeded limit of ${limit}`);
+    this.name = "McpCallDepthError";
+  }
+}
 
 export class McpExecutor {
   constructor(
-    private readonly registry: McpRegistry,
-    private readonly maxDepth: number = DEFAULT_MAX_DEPTH,
+    private readonly registry: McpToolRegistry,
+    private readonly maxCallDepth: number = DEFAULT_MAX_CALL_DEPTH,
   ) {}
 
   /**
@@ -58,9 +65,10 @@ export class McpExecutor {
    * - Execute each tool call via the matching MCP server
    * - Append tool results as messages
    * - Re-invoke the strategy to get the next response
-   * - Repeat until no tool_calls or depth limit
+   * - Repeat until no tool_calls, or throw McpCallDepthError when the
+   *   configured depth limit is exceeded
    *
-   * Returns the final response (one without tool_calls, or the last one at depth limit).
+   * Returns the final response (one without tool_calls).
    */
   async executeAgenticLoop(
     ctx: RequestContext,
@@ -70,11 +78,17 @@ export class McpExecutor {
   ): Promise<ChatCompletionResponse> {
     let currentResponse = response;
     let messages = [...req.messages];
+    // Each independent request starts its agentic loop at depth 0.
     let depth = 0;
 
-    while (depth < this.maxDepth) {
+    // eslint-disable-next-line no-constant-condition
+    while (true) {
       const toolCalls = this.extractToolCalls(currentResponse);
       if (toolCalls.length === 0) break;
+
+      if (depth >= this.maxCallDepth) {
+        throw new McpCallDepthError(this.maxCallDepth);
+      }
 
       // Append the assistant message with tool_calls
       const assistantMessage: ChatMessage = {
