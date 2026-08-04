@@ -2,7 +2,40 @@
  * Admin API — barrel export.
  */
 
-export { createAdminApp } from "./handlers.js";
-export { type ConfigState, getConfigHandler, putConfigHandler, reloadConfigHandler } from "./config-handlers.js";
-export { getKeysHandler, addKeyHandler, deleteKeyHandler } from "./key-handlers.js";
-export { LogBuffer, logBuffer, getLogsHandler, type LogEntry } from "./log-handlers.js";
+export { createAdminApp, type AdminAppOptions } from "./handlers.js";
+export {
+  type ConfigHandlerState,
+  type ConfigState,
+  getConfigHandler,
+  putConfigHandler,
+  reloadConfigHandler,
+  deleteConfigHandler,
+  getConfigHistoryHandler,
+  rollbackConfigHandler,
+} from "./config-handlers.js";
+export { scrubConfig, scrubConfigJson } from "./config-scrub.js";
+export {
+  type KeyHandlerState,
+  SCOPE_ADMIN,
+  SCOPE_READ_ONLY,
+  requireScope,
+  listKeysHandler,
+  getKeyHandler,
+  createKeyHandler,
+  updateKeyHandler,
+  deleteKeyHandler,
+  revokeKeyHandler,
+  rotateKeyHandler,
+  keyUsageHandler,
+  getKeysHandler,
+  addKeyHandler,
+} from "./key-handlers.js";
+export {
+  type LogHandlerState,
+  LogBuffer,
+  logBuffer,
+  getLogsHandler,
+  getLogsStatsHandler,
+  deleteLogsHandler,
+  type LogEntry,
+} from "./log-handlers.js";

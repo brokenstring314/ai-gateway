@@ -1,8 +1,20 @@
 import { describe, it, expect, beforeAll, afterAll } from "vitest";
+import { Database } from "bun:sqlite";
 import { Gateway } from "../../src/gateway.js";
 import { createApp } from "../../src/app.js";
+import { KeyStore } from "../../src/persistence/key-store.js";
 import type { GatewayConfig } from "../../src/config/types.js";
 import type { IProvider, IStreamProvider, ChatCompletionRequest, ChatCompletionResponse, StreamChunk, RequestContext } from "../../src/providers/types.js";
+
+async function createTestKeyStore(keys: Array<{ name: string; scopes: string[] }>): Promise<{ store: KeyStore; keys: string[] }> {
+  const db = new Database(":memory:");
+  const store = await KeyStore.create(db);
+  const created: string[] = [];
+  for (const k of keys) {
+    created.push(store.create(k.name, k.scopes).key);
+  }
+  return { store, keys: created };
+}
 
 function createMockProvider(name: string, models: string[]): IProvider & IStreamProvider {
   const modelList = models.map((id) => ({ id, ownedBy: name }));
@@ -74,13 +86,22 @@ function createTestConfig(): GatewayConfig {
 describe("Integration: Full HTTP lifecycle", () => {
   let gateway: Gateway;
   let app: ReturnType<typeof createApp>;
+  let apiKey: string;
+  let keyStore: KeyStore;
 
-  beforeAll(() => {
+  beforeAll(async () => {
     const config = createTestConfig();
     gateway = new Gateway(config);
     const mockProvider = createMockProvider("test-provider", ["gpt-4", "gpt-3.5-turbo"]);
     gateway.registerProvider(mockProvider);
-    app = createApp(gateway, config);
+    const created = await createTestKeyStore([{ name: "test-key", scopes: ["admin"] }]);
+    keyStore = created.store;
+    apiKey = created.keys[0]!;
+    app = createApp(gateway, config, undefined, keyStore);
+  });
+
+  afterAll(() => {
+    keyStore.close();
   });
 
   it("GET /health returns ok", async () => {
@@ -92,7 +113,7 @@ describe("Integration: Full HTTP lifecycle", () => {
 
   it("GET /v1/models returns model list", async () => {
     const res = await app.request("/v1/models", {
-      headers: { Authorization: "Bearer sk-test-key-123" },
+      headers: { Authorization: `Bearer ${apiKey}` },
     });
     expect(res.status).toBe(200);
     const body = await res.json();
@@ -106,7 +127,7 @@ describe("Integration: Full HTTP lifecycle", () => {
       method: "POST",
       headers: {
         "Content-Type": "application/json",
-        Authorization: "Bearer sk-test-key-123",
+        Authorization: `Bearer ${apiKey}`,
       },
       body: JSON.stringify({
         model: "gpt-4",
@@ -125,7 +146,7 @@ describe("Integration: Full HTTP lifecycle", () => {
       method: "POST",
       headers: {
         "Content-Type": "application/json",
-        Authorization: "Bearer sk-test-key-123",
+        Authorization: `Bearer ${apiKey}`,
       },
       body: JSON.stringify({
         model: "gpt-4",
@@ -145,7 +166,7 @@ describe("Integration: Full HTTP lifecycle", () => {
       method: "POST",
       headers: {
         "Content-Type": "application/json",
-        Authorization: "Bearer sk-test-key-123",
+        Authorization: `Bearer ${apiKey}`,
       },
       body: "not json",
     });
@@ -159,7 +180,7 @@ describe("Integration: Full HTTP lifecycle", () => {
       method: "POST",
       headers: {
         "Content-Type": "application/json",
-        Authorization: "Bearer sk-test-key-123",
+        Authorization: `Bearer ${apiKey}`,
       },
       body: JSON.stringify({
         messages: [{ role: "user", content: "Hello" }],
@@ -175,7 +196,7 @@ describe("Integration: Full HTTP lifecycle", () => {
       method: "POST",
       headers: {
         "Content-Type": "application/json",
-        Authorization: "Bearer sk-test-key-123",
+        Authorization: `Bearer ${apiKey}`,
       },
       body: JSON.stringify({
         model: "gpt-4",
@@ -190,13 +211,22 @@ describe("Integration: Full HTTP lifecycle", () => {
 
 describe("Integration: Auth middleware", () => {
   let app: ReturnType<typeof createApp>;
+  let apiKey: string;
+  let keyStore: KeyStore;
 
-  beforeAll(() => {
+  beforeAll(async () => {
     const config = createTestConfig();
     const gateway = new Gateway(config);
     const mockProvider = createMockProvider("test-provider", ["gpt-4"]);
     gateway.registerProvider(mockProvider);
-    app = createApp(gateway, config);
+    const created = await createTestKeyStore([{ name: "test-key", scopes: ["admin"] }]);
+    keyStore = created.store;
+    apiKey = created.keys[0]!;
+    app = createApp(gateway, config, undefined, keyStore);
+  });
+
+  afterAll(() => {
+    keyStore.close();
   });
 
   it("rejects request without Authorization header", async () => {
@@ -235,7 +265,7 @@ describe("Integration: Auth middleware", () => {
       method: "POST",
       headers: {
         "Content-Type": "application/json",
-        Authorization: "Bearer sk-test-key-123",
+        Authorization: `Bearer ${apiKey}`,
       },
       body: JSON.stringify({
         model: "gpt-4",

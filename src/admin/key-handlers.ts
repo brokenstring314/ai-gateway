@@ -1,15 +1,294 @@
 /**
  * Admin API — API key management handlers.
  *
- * Keys are stored in memory via config.auth.keys. No database.
+ * KeyStore-backed handlers for the admin API:
+ *   GET    /admin/keys             — list all keys (display form, no plaintext)
+ *   GET    /admin/keys/:id         — get one key
+ *   POST   /admin/keys             — create a key (plaintext returned once)
+ *   PUT    /admin/keys/:id         — update name/scopes
+ *   DELETE /admin/keys/:id         — delete a key
+ *   POST   /admin/keys/:id/revoke  — revoke a key
+ *   POST   /admin/keys/:id/rotate  — rotate a key (plaintext returned)
+ *   GET    /admin/keys/usage       — usage aggregation
  *
- * GET    /admin/keys       — list configured keys (redacted)
- * POST   /admin/keys       — add a key
- * DELETE /admin/keys/:id   — remove a key by index
+ * Errors are always { error: { message, type, code } }.
  */
 
-import type { Context } from "hono";
+import type { Context, MiddlewareHandler } from "hono";
 import type { ConfigState } from "./config-handlers.js";
+import {
+  KeyNotFoundError,
+  type APIKey,
+  type KeyStore,
+} from "@/persistence/key-store";
+
+export const SCOPE_ADMIN = "admin";
+export const SCOPE_READ_ONLY = "read_only";
+
+export interface KeyHandlerState {
+  keyStore: KeyStore;
+}
+
+// ---------------------------------------------------------------------------
+// Scope enforcement
+// ---------------------------------------------------------------------------
+
+/** Reject requests whose keyScopes do not include any of the required scopes. */
+export function requireScope(...scopes: string[]): MiddlewareHandler {
+  return async function requireScopeMiddleware(c, next) {
+    const keyScopes: string[] = c.get("keyScopes") ?? [];
+    if (!keyScopes.some((s) => scopes.includes(s))) {
+      return c.json(
+        {
+          error: {
+            message: "Insufficient scope",
+            type: "authorization_error",
+            code: "insufficient_scope",
+          },
+        },
+        403,
+      );
+    }
+    await next();
+  };
+}
+
+// ---------------------------------------------------------------------------
+// Serialization
+// ---------------------------------------------------------------------------
+
+/** JSON-safe key shape; the plaintext secret is never included. */
+function serializeKey(key: APIKey) {
+  return {
+    id: key.id,
+    keyDisplay: key.keyDisplay,
+    name: key.name,
+    scopes: key.scopes,
+    createdAt: key.createdAt.toISOString(),
+    revokedAt: key.revokedAt !== null ? key.revokedAt.toISOString() : null,
+    expiresAt: key.expiresAt !== null ? key.expiresAt.toISOString() : null,
+    rotatedAt: key.rotatedAt !== null ? key.rotatedAt.toISOString() : null,
+    active: key.active,
+    usageCount: key.usageCount,
+    lastUsedAt: key.lastUsedAt !== null ? key.lastUsedAt.toISOString() : null,
+  };
+}
+
+function notFound(c: Context) {
+  return c.json(
+    {
+      error: {
+        message: "Key not found",
+        type: "not_found",
+        code: "key_not_found",
+      },
+    },
+    404,
+  );
+}
+
+// ---------------------------------------------------------------------------
+// Key handlers
+// ---------------------------------------------------------------------------
+
+/** GET /admin/keys — list all keys (display form, never plaintext). */
+export function listKeysHandler(state: KeyHandlerState) {
+  return (c: Context) => {
+    const keys = state.keyStore.list().map(serializeKey);
+    return c.json({ keys, total: keys.length });
+  };
+}
+
+/** GET /admin/keys/:id — get one key. 404 when absent. */
+export function getKeyHandler(state: KeyHandlerState) {
+  return (c: Context) => {
+    const id = c.req.param("id");
+    if (id === undefined) return notFound(c);
+    const key = state.keyStore.get(id);
+    if (key === null) return notFound(c);
+    return c.json(serializeKey(key));
+  };
+}
+
+/** POST /admin/keys — create a key. Body: { name, scopes?, expiresAt? }. */
+export function createKeyHandler(state: KeyHandlerState) {
+  return async (c: Context) => {
+    const body = (await c.req.json().catch(() => null)) as {
+      name?: unknown;
+      scopes?: unknown;
+      expiresAt?: unknown;
+    } | null;
+
+    if (typeof body?.name !== "string" || body.name.trim().length === 0) {
+      return c.json(
+        {
+          error: {
+            message: "Request body must include a non-empty 'name' string",
+            type: "invalid_request",
+            code: "invalid_request",
+          },
+        },
+        400,
+      );
+    }
+    const name = body.name;
+
+    let scopes: string[] = [];
+    if (body.scopes !== undefined) {
+      if (!Array.isArray(body.scopes)) {
+        return invalidRequest(c, "'scopes' must be an array of strings");
+      }
+      scopes = body.scopes.filter((s): s is string => typeof s === "string");
+    }
+
+    let expiresAt: Date | undefined;
+    if (body.expiresAt !== undefined && body.expiresAt !== null) {
+      if (typeof body.expiresAt !== "string") {
+        return invalidRequest(c, "'expiresAt' must be an ISO date string");
+      }
+      expiresAt = new Date(body.expiresAt);
+      if (Number.isNaN(expiresAt.getTime())) {
+        return invalidRequest(c, "'expiresAt' must be an ISO date string");
+      }
+    }
+
+    // Empty scopes default to ["admin"] inside the store.
+    const created = state.keyStore.create(name, scopes, expiresAt);
+    return c.json(
+      {
+        id: created.id,
+        key: created.key,
+        keyDisplay: created.keyDisplay,
+        name: created.name,
+        scopes: created.scopes,
+      },
+      201,
+    );
+  };
+}
+
+/** PUT /admin/keys/:id — update name and/or scopes. 404 when absent. */
+export function updateKeyHandler(state: KeyHandlerState) {
+  return async (c: Context) => {
+    const body = (await c.req.json().catch(() => null)) as {
+      name?: unknown;
+      scopes?: unknown;
+    } | null;
+
+    let scopes: string[] = [];
+    if (body?.scopes !== undefined) {
+      if (!Array.isArray(body.scopes)) {
+        return invalidRequest(c, "'scopes' must be an array of strings");
+      }
+      scopes = body.scopes.filter((s): s is string => typeof s === "string");
+    }
+
+    try {
+      const id = c.req.param("id");
+      if (id === undefined) return notFound(c);
+      const updated = state.keyStore.update(
+        id,
+        typeof body?.name === "string" ? body.name : "",
+        scopes,
+      );
+      return c.json(serializeKey(updated));
+    } catch (err) {
+      if (err instanceof KeyNotFoundError) return notFound(c);
+      throw err;
+    }
+  };
+}
+
+/**
+ * DELETE /admin/keys/:id — delete a key. 404 when absent.
+ *
+ * Accepts both KeyHandlerState (KeyStore-backed) and ConfigState (legacy
+ * config-backed); the two call sites are wired in createAdminApp and the
+ * KeyStore-based tests respectively.
+ */
+export function deleteKeyHandler(state: KeyHandlerState | ConfigState) {
+  return (c: Context) => {
+    if ("keyStore" in state) {
+      try {
+        const id = c.req.param("id");
+        if (id === undefined) return notFound(c);
+        state.keyStore.delete(id);
+        return c.json({ deleted: true, id });
+      } catch (err) {
+        if (err instanceof KeyNotFoundError) return notFound(c);
+        throw err;
+      }
+    }
+
+    const idParam = c.req.param("id");
+    const id = Number(idParam);
+
+    if (Number.isNaN(id) || !Number.isInteger(id) || id < 0) {
+      return c.json({ error: "Key id must be a non-negative integer" }, 400);
+    }
+
+    const keys = state.config.auth?.keys;
+    if (!keys || id >= keys.length) {
+      return c.json({ error: `Key id ${id} not found` }, 404);
+    }
+
+    keys.splice(id, 1);
+    return c.json({ deleted: true, id });
+  };
+}
+
+/** POST /admin/keys/:id/revoke — set active=false + revoked_at. */
+export function revokeKeyHandler(state: KeyHandlerState) {
+  return (c: Context) => {
+    try {
+      const id = c.req.param("id");
+      if (id === undefined) return notFound(c);
+      state.keyStore.revoke(id);
+      return c.json({ revoked: true, id });
+    } catch (err) {
+      if (err instanceof KeyNotFoundError) return notFound(c);
+      throw err;
+    }
+  };
+}
+
+/** POST /admin/keys/:id/rotate — new secret (plaintext returned once). */
+export function rotateKeyHandler(state: KeyHandlerState) {
+  return (c: Context) => {
+    try {
+      const id = c.req.param("id");
+      if (id === undefined) return notFound(c);
+      const rotated = state.keyStore.rotateKey(id);
+      return c.json({
+        id: rotated.id,
+        key: rotated.key,
+        keyDisplay: rotated.keyDisplay,
+        name: rotated.name,
+        scopes: rotated.scopes,
+      });
+    } catch (err) {
+      if (err instanceof KeyNotFoundError) return notFound(c);
+      throw err;
+    }
+  };
+}
+
+/** GET /admin/keys/usage — usage aggregation across all keys. */
+export function keyUsageHandler(state: KeyHandlerState) {
+  return (c: Context) => {
+    const keys = state.keyStore.list();
+    const totalUsageCount = keys.reduce((sum, k) => sum + k.usageCount, 0);
+    return c.json({
+      totalKeys: keys.length,
+      totalUsageCount,
+      keys: keys.map((k) => ({ id: k.id, name: k.name, usageCount: k.usageCount })),
+    });
+  };
+}
+
+// ---------------------------------------------------------------------------
+// Legacy handlers (config-backed) — kept for createAdminApp compatibility
+// ---------------------------------------------------------------------------
 
 /** Redact a key for display: show first 4 and last 4 chars. */
 function redactKey(key: string): string {
@@ -57,22 +336,15 @@ export function addKeyHandler(state: ConfigState) {
   };
 }
 
-/** DELETE /admin/keys/:id — remove a key by its index. */
-export function deleteKeyHandler(state: ConfigState) {
-  return (c: Context) => {
-    const idParam = c.req.param("id");
-    const id = Number(idParam);
-
-    if (Number.isNaN(id) || !Number.isInteger(id) || id < 0) {
-      return c.json({ error: "Key id must be a non-negative integer" }, 400);
-    }
-
-    const keys = state.config.auth?.keys;
-    if (!keys || id >= keys.length) {
-      return c.json({ error: `Key id ${id} not found` }, 404);
-    }
-
-    keys.splice(id, 1);
-    return c.json({ deleted: true, id });
-  };
+function invalidRequest(c: Context, message: string) {
+  return c.json(
+    {
+      error: {
+        message,
+        type: "invalid_request",
+        code: "invalid_request",
+      },
+    },
+    400,
+  );
 }

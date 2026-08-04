@@ -1,38 +1,42 @@
 /**
- * Auth middleware — validates Bearer token against configured API keys.
- * If auth is disabled, passes through without checking.
- * Sets api_key in context for downstream plugins/handlers.
+ * Auth middleware — validates Bearer tokens against the KeyStore.
+ *
+ * authMiddleware protects non-admin routes. adminAuthMiddleware protects
+ * /admin/* routes: admin-scoped API keys, the admin secret, or (while the
+ * store is empty) bootstrap keys are accepted.
+ *
+ * All secret comparisons use timingSafeEqual — never === or Set.has().
  */
 
-import type { MiddlewareHandler } from "hono";
+import type { Context, MiddlewareHandler } from "hono";
+import { timingSafeEqual } from "@/auth/key-hash";
+import type { KeyStore } from "@/persistence/key-store";
 
-interface AuthConfig {
-  enabled?: boolean;
-  keys?: string[];
+const SCOPE_ADMIN = "admin";
+const SCOPE_READ_ONLY = "read_only";
+
+const DEFAULT_SKIP_PATHS = ["/health", "/metrics"];
+
+export interface AuthMiddlewareOptions {
+  keyStore: KeyStore;
+  bootstrapKey?: string;
+  bootstrapReadOnlyKey?: string;
+  skipPaths?: string[];
 }
 
-export function authMiddleware(config?: AuthConfig): MiddlewareHandler {
-  const enabled = config?.enabled ?? false;
-  const keys = new Set(config?.keys ?? []);
-
-  const skipPaths = new Set(["/health", "/metrics"]);
+export function authMiddleware(opts: AuthMiddlewareOptions): MiddlewareHandler {
+  const { keyStore } = opts;
+  const skipPaths = new Set(opts.skipPaths ?? DEFAULT_SKIP_PATHS);
 
   return async function auth(c, next) {
-    if (!enabled || keys.size === 0) {
-      c.set("apiKey", undefined);
-      await next();
-      return;
-    }
-
     const path = new URL(c.req.url).pathname;
-    if (skipPaths.has(path) || path.startsWith("/admin/") || path === "/admin") {
-      c.set("apiKey", undefined);
+    if (skipPaths.has(path) || path === "/admin" || path.startsWith("/admin/")) {
       await next();
       return;
     }
 
     const header = c.req.header("Authorization");
-    if (!header) {
+    if (header === undefined) {
       return c.json(
         {
           error: {
@@ -45,8 +49,8 @@ export function authMiddleware(config?: AuthConfig): MiddlewareHandler {
       );
     }
 
-    const match = header.match(/^Bearer\s+(.+)$/i);
-    if (!match) {
+    const token = extractBearerToken(header);
+    if (token === undefined) {
       return c.json(
         {
           error: {
@@ -59,21 +63,140 @@ export function authMiddleware(config?: AuthConfig): MiddlewareHandler {
       );
     }
 
-    const token = match[1]!;
-    if (!keys.has(token)) {
+    const apiKey = keyStore.validateKey(token);
+    if (apiKey !== null) {
+      c.set("apiKey", token);
+      c.set("keyScopes", apiKey.scopes);
+      await next();
+      return;
+    }
+
+    // Bootstrap keys are honored only while the store has no keys at all.
+    if (keyStore.isEmpty()) {
+      if (opts.bootstrapKey !== undefined && timingSafeEqual(token, opts.bootstrapKey)) {
+        c.set("apiKey", token);
+        c.set("keyScopes", [SCOPE_ADMIN]);
+        await next();
+        return;
+      }
+      if (
+        opts.bootstrapReadOnlyKey !== undefined &&
+        timingSafeEqual(token, opts.bootstrapReadOnlyKey)
+      ) {
+        c.set("apiKey", token);
+        c.set("keyScopes", [SCOPE_READ_ONLY]);
+        await next();
+        return;
+      }
+    }
+
+    return c.json(
+      {
+        error: {
+          message: "Invalid API key",
+          type: "authentication_error",
+          code: "invalid_api_key",
+        },
+      },
+      401,
+    );
+  };
+}
+
+export interface AdminAuthMiddlewareOptions {
+  keyStore: KeyStore;
+  adminSecret?: string;
+  bootstrapKey?: string;
+  bootstrapReadOnlyKey?: string;
+}
+
+export function adminAuthMiddleware(opts: AdminAuthMiddlewareOptions): MiddlewareHandler {
+  const { keyStore } = opts;
+
+  return async function adminAuth(c, next) {
+    const headerSecret = c.req.header("X-Admin-Secret");
+    const token = extractBearerToken(c.req.header("Authorization"));
+
+    if (
+      headerSecret !== undefined &&
+      opts.adminSecret !== undefined &&
+      timingSafeEqual(headerSecret, opts.adminSecret)
+    ) {
+      c.set("apiKey", headerSecret);
+      c.set("keyScopes", [SCOPE_ADMIN]);
+      await next();
+      return;
+    }
+
+    if (token === undefined) {
       return c.json(
         {
           error: {
-            message: "Invalid API key",
+            message: "Missing Authorization header",
             type: "authentication_error",
-            code: "invalid_api_key",
+            code: "missing_authorization",
           },
         },
         401,
       );
     }
 
-    c.set("apiKey", token);
-    await next();
+    if (
+      opts.adminSecret !== undefined &&
+      timingSafeEqual(token, opts.adminSecret)
+    ) {
+      c.set("apiKey", token);
+      c.set("keyScopes", [SCOPE_ADMIN]);
+      await next();
+      return;
+    }
+
+    if (keyStore.isEmpty()) {
+      if (opts.bootstrapKey !== undefined && timingSafeEqual(token, opts.bootstrapKey)) {
+        c.set("apiKey", token);
+        c.set("keyScopes", [SCOPE_ADMIN]);
+        await next();
+        return;
+      }
+      if (
+        opts.bootstrapReadOnlyKey !== undefined &&
+        timingSafeEqual(token, opts.bootstrapReadOnlyKey)
+      ) {
+        c.set("apiKey", token);
+        c.set("keyScopes", [SCOPE_READ_ONLY]);
+        await next();
+        return;
+      }
+      return adminUnauthorized(c);
+    }
+
+    const apiKey = keyStore.validateKey(token);
+    if (apiKey !== null && apiKey.scopes.includes(SCOPE_ADMIN)) {
+      c.set("apiKey", token);
+      c.set("keyScopes", apiKey.scopes);
+      await next();
+      return;
+    }
+
+    return adminUnauthorized(c);
   };
+}
+
+function extractBearerToken(header: string | undefined): string | undefined {
+  if (header === undefined) return undefined;
+  const match = header.match(/^Bearer\s+(.+)$/i);
+  return match?.[1];
+}
+
+function adminUnauthorized(c: Context) {
+  return c.json(
+    {
+      error: {
+        message: "Invalid admin credentials",
+        type: "authentication_error",
+        code: "invalid_admin_secret",
+      },
+    },
+    401,
+  );
 }
