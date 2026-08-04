@@ -5,6 +5,8 @@
  * When an OTLP HTTP endpoint is configured, exports spans via OTLP HTTP JSON.
  */
 
+import { getTracer as getOtelBridgeTracer } from "./otel-tracer.js";
+
 export interface Span {
   readonly traceId: string;
   readonly spanId: string;
@@ -172,13 +174,16 @@ const noopTracer = new Tracer({ enabled: false });
 
 let globalTracer: Tracer = noopTracer;
 
-/** Configure the global tracer. */
+/**
+ * Configure the global tracer. When OpenTelemetry is active the bridge tracer
+ * (otel-tracer.ts) is used instead, so spans flow into the SDK.
+ */
 export function initTracing(config: TracingConfig): Tracer {
   globalTracer = new Tracer(config);
   return globalTracer;
 }
 
-/** Get the global tracer instance. */
+/** Get the global tracer instance (OTel bridge when tracing is enabled). */
 export function getTracer(): Tracer {
-  return globalTracer;
+  return getOtelBridgeTracer() as unknown as Tracer;
 }
