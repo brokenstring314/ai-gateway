@@ -12,6 +12,9 @@ import type { ChatCompletionRequest, ChatCompletionResponse } from "@/providers/
 // Helpers
 // ---------------------------------------------------------------------------
 
+let fetchMock: ReturnType<typeof vi.fn>;
+const originalFetch = globalThis.fetch;
+
 function makeProvider(overrides?: { name?: string; baseURL?: string; apiKey?: string; models?: string[] }) {
   return createOpenAICompatProvider({
     name: overrides?.name ?? "test-provider",
@@ -35,7 +38,7 @@ function makeRequest(overrides?: Partial<ChatCompletionRequest>): ChatCompletion
 
 function mockFetch(status: number, body: unknown, headers?: Record<string, string>) {
   const h = new Headers(headers);
-  vi.mocked(fetch).mockResolvedValueOnce(
+  fetchMock.mockResolvedValueOnce(
     new Response(JSON.stringify(body), { status, headers: h }),
   );
 }
@@ -51,7 +54,7 @@ function mockFetchStream(chunks: string[]) {
     },
   });
 
-  vi.mocked(fetch).mockResolvedValueOnce(
+  fetchMock.mockResolvedValueOnce(
     new Response(stream, { status: 200 }),
   );
 }
@@ -61,12 +64,12 @@ function mockFetchStream(chunks: string[]) {
 // ---------------------------------------------------------------------------
 
 beforeEach(() => {
-  vi.restoreAllMocks();
-  vi.stubGlobal("fetch", vi.fn());
+  fetchMock = vi.fn().mockResolvedValue(new Response("{}", { status: 200 }));
+  globalThis.fetch = fetchMock as unknown as typeof fetch;
 });
 
 afterEach(() => {
-  vi.unstubAllGlobals();
+  globalThis.fetch = originalFetch;
 });
 
 // ---------------------------------------------------------------------------
@@ -114,7 +117,7 @@ describe("createOpenAICompatProvider", () => {
       const p = makeProvider();
       await p.complete(makeCtx(), makeRequest());
 
-      const call = vi.mocked(fetch).mock.calls[0]!;
+      const call = fetchMock.mock.calls[0]!;
       const url = call[0] as string;
       const init = call[1] as RequestInit;
       const body = JSON.parse(init.body as string) as Record<string, unknown>;
@@ -145,7 +148,7 @@ describe("createOpenAICompatProvider", () => {
         stop: ["END"],
       }));
 
-      const call = vi.mocked(fetch).mock.calls[0]!;
+      const call = fetchMock.mock.calls[0]!;
       const body = JSON.parse((call[1] as RequestInit).body as string) as Record<string, unknown>;
       expect(body["temperature"]).toBe(0.7);
       expect(body["max_tokens"]).toBe(100);
@@ -173,7 +176,7 @@ describe("createOpenAICompatProvider", () => {
         toolChoice: "auto",
       }));
 
-      const call = vi.mocked(fetch).mock.calls[0]!;
+      const call = fetchMock.mock.calls[0]!;
       const body = JSON.parse((call[1] as RequestInit).body as string) as Record<string, unknown>;
       const tools = body["tools"] as Record<string, unknown>[];
       expect(tools).toHaveLength(1);
@@ -195,7 +198,7 @@ describe("createOpenAICompatProvider", () => {
       const p = makeProvider();
       await p.complete(makeCtx(), makeRequest({ responseFormat: { type: "json_object" } }));
 
-      const call = vi.mocked(fetch).mock.calls[0]!;
+      const call = fetchMock.mock.calls[0]!;
       const body = JSON.parse((call[1] as RequestInit).body as string) as Record<string, unknown>;
       expect(body["response_format"]).toEqual({ type: "json_object" });
     });
@@ -286,7 +289,7 @@ describe("createOpenAICompatProvider", () => {
     });
 
     it("handles network errors", async () => {
-      vi.mocked(fetch).mockRejectedValueOnce(new Error("Connection refused"));
+      fetchMock.mockRejectedValueOnce(new Error("Connection refused"));
 
       const p = makeProvider();
       await expect(p.complete(makeCtx(), makeRequest())).rejects.toThrow(ProviderError);
@@ -306,7 +309,7 @@ describe("createOpenAICompatProvider", () => {
       const p = makeProvider();
       await p.complete({ metadata: {}, signal: controller.signal }, makeRequest());
 
-      const call = vi.mocked(fetch).mock.calls[0]!;
+      const call = fetchMock.mock.calls[0]!;
       const init = call[1] as RequestInit;
       expect(init.signal).toBe(controller.signal);
     });
@@ -358,7 +361,7 @@ describe("createOpenAICompatProvider", () => {
         // consume
       }
 
-      const call = vi.mocked(fetch).mock.calls[0]!;
+      const call = fetchMock.mock.calls[0]!;
       const body = JSON.parse((call[1] as RequestInit).body as string) as Record<string, unknown>;
       expect(body["stream"]).toBe(true);
     });
@@ -388,7 +391,7 @@ describe("createOpenAICompatProvider", () => {
         // consume
       }
 
-      const call = vi.mocked(fetch).mock.calls[0]!;
+      const call = fetchMock.mock.calls[0]!;
       const body = JSON.parse((call[1] as RequestInit).body as string) as Record<string, unknown>;
       expect(body["extra_field"]).toBe(true);
     });
@@ -433,7 +436,7 @@ describe("createOpenAICompatProvider", () => {
 
       await p.complete(makeCtx(), makeRequest({ seed: 42 }));
 
-      const call = vi.mocked(fetch).mock.calls[0]!;
+      const call = fetchMock.mock.calls[0]!;
       const body = JSON.parse((call[1] as RequestInit).body as string) as Record<string, unknown>;
       // seed should have been dropped.
       expect(body["seed"]).toBeUndefined();
@@ -461,7 +464,7 @@ describe("createOpenAICompatProvider", () => {
 
       await p.complete(makeCtx(), makeRequest());
 
-      const call = vi.mocked(fetch).mock.calls[0]!;
+      const call = fetchMock.mock.calls[0]!;
       const headers = (call[1] as RequestInit).headers as Record<string, string>;
       expect(headers["HTTP-Referer"]).toBe("https://myapp.com");
     });
@@ -479,7 +482,7 @@ describe("createOpenAICompatProvider", () => {
       const p = makeProvider({ baseURL: "https://api.example.com/v1/" });
       await p.complete(makeCtx(), makeRequest());
 
-      const url = vi.mocked(fetch).mock.calls[0]![0] as string;
+      const url = fetchMock.mock.calls[0]![0] as string;
       expect(url).toBe("https://api.example.com/v1/chat/completions");
     });
 
@@ -496,7 +499,7 @@ describe("createOpenAICompatProvider", () => {
       const p = makeProvider({ apiKey: "" });
       await p.complete(makeCtx(), makeRequest());
 
-      const call = vi.mocked(fetch).mock.calls[0]!;
+      const call = fetchMock.mock.calls[0]!;
       const headers = (call[1] as RequestInit).headers as Record<string, string>;
       // No Authorization header when apiKey is empty.
       expect(headers["Authorization"]).toBeUndefined();
@@ -522,7 +525,7 @@ describe("createOpenAICompatProvider", () => {
 
       await p.complete(makeCtx(), makeRequest());
 
-      const call = vi.mocked(fetch).mock.calls[0]!;
+      const call = fetchMock.mock.calls[0]!;
       const body = JSON.parse((call[1] as RequestInit).body as string) as Record<string, unknown>;
       expect(body["custom_key"]).toBe("value");
     });

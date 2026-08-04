@@ -23,7 +23,7 @@ import type {
   ModelInfo,
 } from "./providers/types.js";
 import { ProviderRegistry } from "./providers/registry.js";
-import { createOpenAICompatProvider } from "./providers/openai-compat.js";
+import { createOpenAICompatProvider, ProviderError } from "./providers/openai-compat.js";
 import type { IStrategy, StrategyMode } from "./routing/types.js";
 import { createStrategy } from "./routing/strategy-factory.js";
 import type {
@@ -47,6 +47,24 @@ import { getRequestLogger } from "./observability/request-log.js";
 import { McpRegistry } from "./mcp/registry.js";
 import { McpExecutor } from "./mcp/executor.js";
 import { CircuitBreakerRegistry } from "./routing/circuit-breaker.js";
+import {
+  ConcurrencyLimiterRegistry,
+  ConcurrencyLimitError,
+} from "./routing/concurrency-limiter.js";
+
+type McpServerRuntimeConfig = GatewayConfig["mcpServers"] extends readonly (infer T)[]
+  ? T & {
+      allowedTools?: string[];
+      maxCallDepth?: number;
+      timeoutSeconds?: number;
+      required?: boolean;
+    }
+  : {
+      allowedTools?: string[];
+      maxCallDepth?: number;
+      timeoutSeconds?: number;
+      required?: boolean;
+    };
 
 // ── Provider factory registry ──
 
@@ -237,10 +255,20 @@ function buildStrategyConfig(config: GatewayConfig): {
       return { mode: "loadbalance", config: { targets } };
     }
     case "conditional": {
+      // Go-style conditions (key/value/targetKey) are bridged to TS
+      // field/pattern/target rules: the condition key becomes the field and
+      // the condition value becomes the regex pattern.
+      const rules =
+        sc.rules ??
+        (sc.conditions ?? []).map((c) => ({
+          field: c.key,
+          pattern: c.value,
+          target: c.targetKey,
+        }));
       return {
         mode: "conditional",
         config: {
-          rules: sc.rules ?? [],
+          rules,
           defaultTarget: sc.targets?.[0] ?? targetNames[0],
         },
       };
@@ -257,22 +285,44 @@ function buildStrategyConfig(config: GatewayConfig): {
           costPer1kOutputTokens: t?.costPer1kOutputTokens ?? 0,
         };
       });
-      return { mode: "cost_optimized", config: { targets } };
+      return {
+        mode: "cost_optimized",
+        config: {
+          targets,
+          unpricedStrategy: sc.unpricedStrategy ?? "fallback",
+        },
+      };
     }
     case "content_based": {
       const keywords = sc.keywords
         ? Object.entries(sc.keywords).map(([keyword, target]) => ({ keyword, target }))
         : [];
+      // Go-style content_conditions are bridged to ContentBasedRule.
+      const contentConditions = (sc.contentConditions ?? []).map((cc) => ({
+        type: cc.type as "prompt_contains" | "prompt_not_contains" | "prompt_regex",
+        value: cc.value,
+        target: cc.targetKey,
+      }));
       return {
         mode: "content_based",
-        config: { keywords, defaultTarget: sc.targets?.[0] ?? targetNames[0] },
+        config: {
+          keywords,
+          contentConditions,
+          defaultTarget: sc.targets?.[0] ?? targetNames[0],
+        },
       };
     }
     case "abtest": {
-      const variants = (sc.targets ?? targetNames).map((name) => ({
-        name,
-        weight: sc.weights?.[name] ?? 1,
-      }));
+      // Prefer Go-style ab_variants when configured.
+      const variants = sc.abVariants && sc.abVariants.length > 0
+        ? sc.abVariants.map((v) => ({
+            name: v.targetKey,
+            weight: v.weight,
+          }))
+        : (sc.targets ?? targetNames).map((name) => ({
+            name,
+            weight: sc.weights?.[name] ?? 1,
+          }));
       return { mode: "abtest", config: { variants } };
     }
     default: {
@@ -293,6 +343,7 @@ export class Gateway {
   private mcpRegistry: McpRegistry;
   private mcpExecutor: McpExecutor | null;
   private circuitBreakers: CircuitBreakerRegistry;
+  private concurrencyLimiters: ConcurrencyLimiterRegistry;
 
   constructor(config: GatewayConfig) {
     this.config = config;
@@ -302,6 +353,7 @@ export class Gateway {
     this.mcpRegistry = new McpRegistry();
     this.mcpExecutor = null;
     this.circuitBreakers = new CircuitBreakerRegistry();
+    this.concurrencyLimiters = new ConcurrencyLimiterRegistry();
 
     for (const target of config.targets) {
       const provider = createProviderFromTarget(target);
@@ -309,27 +361,65 @@ export class Gateway {
       if (target.circuitBreaker) {
         this.circuitBreakers.getOrCreate(target.name, target.circuitBreaker);
       }
+      this.ensureConcurrencyLimiter(target);
     }
 
     const { mode, config: strategyConfig } = buildStrategyConfig(config);
     this.strategy = createStrategy(mode, strategyConfig, (name: string) =>
-      this.registry.get(name),
+      this.limitProvider(name, this.registry.get(name)),
     );
 
     if (config.mcpServers && config.mcpServers.length > 0) {
-      this.mcpExecutor = new McpExecutor(this.mcpRegistry);
+      const firstServer = config.mcpServers[0] as McpServerRuntimeConfig;
+      this.mcpExecutor = new McpExecutor(this.mcpRegistry, firstServer.maxCallDepth);
     }
+  }
+
+  private ensureConcurrencyLimiter(target: TargetConfig): void {
+    if (!target.concurrency?.maxConcurrency) return;
+    this.concurrencyLimiters.getOrCreate(target.name, {
+      maxConcurrency: target.concurrency.maxConcurrency,
+      queueSize: target.concurrency.queueSize,
+    });
   }
 
   async initMcp(): Promise<void> {
     if (!this.config.mcpServers || this.config.mcpServers.length === 0) return;
     for (const serverConfig of this.config.mcpServers) {
       try {
-        await this.mcpRegistry.addServer(serverConfig);
+        const runtime = serverConfig as McpServerRuntimeConfig;
+        await this.mcpRegistry.addServer(serverConfig, {
+          allowedTools: runtime.allowedTools,
+          maxCallDepth: runtime.maxCallDepth,
+          timeoutSeconds: runtime.timeoutSeconds,
+          required: runtime.required,
+        });
       } catch (err) {
         console.error(`[gateway] MCP server "${serverConfig.name}" failed to connect: ${err instanceof Error ? err.message : String(err)}`);
       }
     }
+  }
+
+  /** Whether every configured required MCP server completed initialization. */
+  isMcpReady(): boolean {
+    return this.mcpRegistry.requiredServersReady();
+  }
+
+  /** Current readiness state for each configured MCP server. */
+  mcpReadiness(): Readonly<Record<string, string>> {
+    const states: Record<string, string> = {};
+    for (const name of this.mcpRegistry.serverNames()) {
+      states[name] = this.mcpRegistry.readiness(name);
+    }
+    return states;
+  }
+
+  /** Whether any configured circuit breaker is currently open. */
+  hasOpenCircuitBreaker(): boolean {
+    for (const breaker of this.circuitBreakers.all().values()) {
+      if (breaker.getState() === "OPEN") return true;
+    }
+    return false;
   }
 
   // ── Public API ──
@@ -472,7 +562,7 @@ export class Gateway {
       for (const name of usedTargets) {
         this.circuitBreakers.get(name)?.recordFailure();
       }
-      throw err;
+      throw this.translateConcurrencyError(err);
     } finally {
       tracer.endSpan(span);
     }
@@ -595,17 +685,19 @@ export class Gateway {
 
     this.registry = new ProviderRegistry();
     this.circuitBreakers = new CircuitBreakerRegistry();
+    this.concurrencyLimiters = new ConcurrencyLimiterRegistry();
     for (const target of config.targets) {
       const provider = createProviderFromTarget(target);
       this.registry.register(provider);
       if (target.circuitBreaker) {
         this.circuitBreakers.getOrCreate(target.name, target.circuitBreaker);
       }
+      this.ensureConcurrencyLimiter(target);
     }
 
     const { mode, config: strategyConfig } = buildStrategyConfig(config);
     this.strategy = createStrategy(mode, strategyConfig, (name: string) =>
-      this.registry.get(name),
+      this.limitProvider(name, this.registry.get(name)),
     );
   }
 
@@ -628,7 +720,86 @@ export class Gateway {
     return this.circuitBreakers;
   }
 
+  /** Get the per-target concurrency limiter registry. */
+  getConcurrencyLimiterRegistry(): ConcurrencyLimiterRegistry {
+    return this.concurrencyLimiters;
+  }
+
   // ── Internal ──
+
+  /**
+   * Decorate a provider with its per-target concurrency limiter when one is
+   * configured. The limiter sits INNERMOST — around only the upstream call —
+   * so an open circuit breaker fails fast without occupying a slot, matching
+   * the Go decoration order (limiter innermost, circuit breaker outermost).
+   * When the queue is full the caller receives a ConcurrencyLimitError, which
+   * the gateway converts to an upstream 429.
+   */
+  private limitProvider(
+    name: string,
+    provider: IProvider | undefined,
+  ): IProvider | undefined {
+    if (!provider) return undefined;
+    const limiter = this.concurrencyLimiters.get(name);
+    if (!limiter) return provider;
+
+    const limited = {
+      ...provider,
+      complete: async (
+        ctx: RequestContext,
+        req: ChatCompletionRequest,
+      ): Promise<ChatCompletionResponse> => {
+        const granted = limiter.acquire();
+        if (granted === false) throw new ConcurrencyLimitError(name);
+        try {
+          if (granted instanceof Promise) await granted;
+          return await provider.complete(ctx, req);
+        } finally {
+          limiter.release();
+        }
+      },
+    } as IProvider;
+
+    if ("completeStream" in provider) {
+      const streamer = provider as IProvider & {
+        completeStream(
+          ctx: RequestContext,
+          req: ChatCompletionRequest,
+        ): AsyncIterable<StreamChunk>;
+      };
+      (limited as IProvider & {
+        completeStream(
+          ctx: RequestContext,
+          req: ChatCompletionRequest,
+        ): AsyncIterable<StreamChunk>;
+      }).completeStream = async function* (
+        ctx: RequestContext,
+        req: ChatCompletionRequest,
+      ): AsyncIterable<StreamChunk> {
+        const granted = limiter.acquire();
+        if (granted === false) throw new ConcurrencyLimitError(name);
+        try {
+          if (granted instanceof Promise) await granted;
+          yield* streamer.completeStream(ctx, req);
+        } finally {
+          limiter.release();
+        }
+      };
+    }
+
+    return limited;
+  }
+
+  /**
+   * Translate a per-target concurrency limit rejection into a 429 ProviderError
+   * so the HTTP handler surfaces it as HTTP 429 (queue-full backpressure).
+   */
+  private translateConcurrencyError(err: unknown): unknown {
+    if (err instanceof ConcurrencyLimitError) {
+      return new ProviderError(err.target, 429, err.message);
+    }
+    return err;
+  }
 
   private async executeWithCircuitBreaker(
     ctx: RequestContext,
@@ -655,7 +826,7 @@ export class Gateway {
       for (const name of usedTargets) {
         this.circuitBreakers.get(name)?.recordFailure();
       }
-      throw err;
+      throw this.translateConcurrencyError(err);
     }
   }
 

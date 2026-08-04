@@ -8,6 +8,20 @@ import { createApp } from "./app.js";
 import { loadConfigFromPath } from "./config/loader.js";
 import { safeParseConfig } from "./config/schema.js";
 import type { GatewayConfig } from "./config/types.js";
+import { Database } from "bun:sqlite";
+import { mkdirSync } from "node:fs";
+import { join } from "node:path";
+import { KeyStore } from "./persistence/key-store.js";
+import { ConfigStore } from "./persistence/config-store.js";
+import { RequestLogStore } from "./persistence/request-log-store.js";
+import {
+  parseAllowUnauthenticatedProxy,
+  validateProductionSafety,
+} from "./config/production-safety.js";
+import { ShutdownManager } from "./server/shutdown.js";
+import { initOtel } from "./observability/otel.js";
+import { initOtelTracer } from "./observability/otel-tracer.js";
+import { parseShutdownGrace } from "./observability/otel-policy.js";
 
 const VERSION = "1.0.0";
 
@@ -123,9 +137,109 @@ async function serve(configPath: string): Promise<void> {
     process.exit(1);
   }
 
+  const dataDir = process.env["GATEWAY_DATA_DIR"] ?? ".data";
+  mkdirSync(dataDir, { recursive: true });
+
+  const keyDb = new Database(join(dataDir, "api-keys.sqlite"));
+  const configDb = new Database(join(dataDir, "gateway-config.sqlite"));
+  const logDb = new Database(join(dataDir, "request-logs.sqlite"));
+
+  let keyStore: KeyStore;
+  let configStore: ConfigStore;
+  let logStore: RequestLogStore;
+  try {
+    [keyStore, configStore, logStore] = await Promise.all([
+      KeyStore.create(keyDb),
+      ConfigStore.create(configDb),
+      RequestLogStore.create(logDb),
+    ]);
+  } catch (err) {
+    keyDb.close();
+    configDb.close();
+    logDb.close();
+    throw err;
+  }
+
+  const persistedConfig = configStore.load();
+  if (persistedConfig !== null) {
+    try {
+      const parsed = safeParseConfig(JSON.parse(persistedConfig));
+      if (parsed.success) {
+        config = parsed.data as GatewayConfig;
+      } else {
+        console.warn("Persisted gateway config is invalid; using the config file");
+      }
+    } catch {
+      console.warn("Persisted gateway config is not valid JSON; using the config file");
+    }
+  }
+
+  validateProductionSafety({
+    gatewayEnv: process.env["GATEWAY_ENV"],
+    allowUnauthenticatedProxy: parseAllowUnauthenticatedProxy(),
+    adminSecret: config.adminSecret,
+    authEnabled: config.auth?.enabled,
+    hasAuthKeys: (config.auth?.keys?.length ?? 0) > 0,
+    keyStoreEmpty: keyStore.isEmpty(),
+  });
+
   const gateway = new Gateway(config);
   await gateway.initMcp();
-  const app = createApp(gateway, config, configPath);
+  const shutdown = new ShutdownManager({
+    shutdownGraceMs: parseEnvNumber(process.env["SHUTDOWN_GRACE_MS"]) ?? 10_000,
+    logger: (message) => console.log(`[shutdown] ${message}`),
+  });
+
+  const otelHandle = await initOtel({
+    enabled: config.observability?.tracing?.enabled,
+    otlpEndpoint: config.observability?.tracing?.otlpEndpoint,
+    serviceName: config.observability?.tracing?.serviceName,
+    sampleRatio: config.observability?.tracing?.sampleRatio,
+    privacyLevel: config.observability?.tracing?.privacyLevel,
+    shutdownGraceMs: parseShutdownGrace(
+      config.observability?.tracing?.shutdownGrace,
+    ),
+    headers: config.observability?.tracing?.headers,
+  });
+  await initOtelTracer({
+    enabled: config.observability?.tracing?.enabled,
+    serviceName: config.observability?.tracing?.serviceName,
+    privacyLevel: config.observability?.tracing?.privacyLevel,
+  });
+  const { resolveEnabledExporters } = await import("./observability/exporter-registry.js");
+  const exporterConfigs = (config.observability?.exporters ?? []).map((entry) => ({
+    name: entry.name,
+    enabled: entry.enabled !== false,
+    config: entry.config ?? {},
+  }));
+  const { exporters, skipped } = resolveEnabledExporters(exporterConfigs);
+  for (const name of skipped) {
+    console.warn(`[observability] exporter "${name}" unavailable; skipping`);
+  }
+  for (const exporter of exporters) {
+    console.log(`[observability] exporter "${exporter.name}" initialized`);
+  }
+  shutdown.register({
+    name: "otel",
+    close: async () => {
+      for (const exporter of exporters) {
+        try {
+          await exporter.shutdown();
+        } catch {
+          // best-effort: never let an exporter stall shutdown
+        }
+      }
+      await otelHandle.shutdown();
+    },
+  });
+  const app = createApp(gateway, config, configPath, keyStore, {
+    configStore,
+    logStore,
+    adminSecret: config.adminSecret,
+    bootstrapKey: process.env["ADMIN_BOOTSTRAP_KEY"],
+    bootstrapReadOnlyKey: process.env["ADMIN_BOOTSTRAP_READ_ONLY_KEY"],
+    inFlightTracker: shutdown.inFlight,
+  });
 
   const port = config.server?.port ?? 3000;
   const host = config.server?.host ?? "0.0.0.0";
@@ -142,20 +256,18 @@ async function serve(configPath: string): Promise<void> {
 
   console.log(`AI Gateway listening on http://${host}:${port}`);
 
-  // Graceful shutdown
-  process.on("SIGINT", () => {
-    console.log("\nShutting down...");
-    gateway.close();
-    server.stop();
-    process.exit(0);
-  });
+  shutdown.register({ name: "http", close: () => server.stop() });
+  shutdown.register({ name: "gateway", close: () => gateway.close() });
+  shutdown.register({ name: "api-key-store", close: () => keyStore.close() });
+  shutdown.register({ name: "config-store", close: () => configStore.close() });
+  shutdown.register({ name: "request-log-store", close: () => logStore.close() });
+  shutdown.installSignalHandlers();
+}
 
-  process.on("SIGTERM", () => {
-    console.log("\nShutting down...");
-    gateway.close();
-    server.stop();
-    process.exit(0);
-  });
+function parseEnvNumber(value: string | undefined): number | undefined {
+  if (value === undefined || value.trim() === "") return undefined;
+  const parsed = Number(value);
+  return Number.isFinite(parsed) ? parsed : undefined;
 }
 
 // Run CLI if called directly
