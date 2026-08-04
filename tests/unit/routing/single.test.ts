@@ -58,10 +58,12 @@ describe("SingleStrategy", () => {
     const strategy = new SingleStrategy(lookup, { target: "openai" });
 
     const iter = strategy.executeStream({ metadata: {} }, createReq());
-    await expect(async () => {
-      for await (const _ of iter) {
-        /* consume */
-      }
-    }).rejects.toThrow("does not support streaming");
+    await expect(
+      (async () => {
+        for await (const _ of iter) {
+          /* consume */
+        }
+      })(),
+    ).rejects.toThrow("does not support streaming");
   });
 });

@@ -59,16 +59,26 @@ export class AbTestStrategy implements IStrategy {
   }
 
   private pickVariant(): AbTestVariant {
-    const totalWeight = this.variants.reduce((s, v) => s + v.weight, 0);
-    if (totalWeight <= 0 && this.variants.length > 0) {
-      return this.variants[0]!;
+    if (this.variants.length === 0) {
+      throw new Error("AbTestStrategy: no variants configured");
     }
+
+    // Zero/negative weights participate as weight 1 (equal distribution),
+    // mirroring the Go effectiveWeight normalization.
+    const totalWeight = this.variants.reduce(
+      (s, v) => s + effectiveWeight(v.weight),
+      0,
+    );
 
     let r = Math.random() * totalWeight;
     for (const variant of this.variants) {
-      r -= variant.weight;
+      r -= effectiveWeight(variant.weight);
       if (r <= 0) return variant;
     }
     return this.variants[this.variants.length - 1]!;
   }
+}
+
+function effectiveWeight(weight: number): number {
+  return weight > 0 ? weight : 1;
 }

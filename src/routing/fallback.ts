@@ -39,7 +39,9 @@ export class FallbackStrategy implements IStrategy {
       const provider = this.lookup(name);
       if (!provider) continue;
       try {
-        const retryCfg = this.retryConfigs.get(name);
+        // No explicit retry config means a single attempt for this target
+        // (Go fallback default: no retries until WithTargetRetry).
+        const retryCfg = this.retryConfigs.get(name) ?? { attempts: 1 };
         return await retryWithBackoff(
           () => provider.complete(ctx, req),
           retryCfg,
@@ -66,7 +68,7 @@ export class FallbackStrategy implements IStrategy {
       const provider = this.lookup(name);
       if (!provider || !("completeStream" in provider)) continue;
       try {
-        const retryCfg = this.retryConfigs.get(name);
+        const retryCfg = this.retryConfigs.get(name) ?? { attempts: 1 };
         const stream = await retryWithBackoff(
           () => Promise.resolve((provider as IStreamProvider).completeStream(ctx, req)),
           retryCfg,

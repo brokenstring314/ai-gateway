@@ -50,6 +50,8 @@ export interface LeastLatencyConfig {
   readonly windowSize?: number;
 }
 
+export type UnpricedStrategy = "fallback" | "skip" | "allow";
+
 export interface CostOptimizedTarget {
   readonly name: string;
   readonly costPer1kInputTokens: number;
@@ -58,6 +60,13 @@ export interface CostOptimizedTarget {
 
 export interface CostOptimizedConfig {
   readonly targets: readonly CostOptimizedTarget[];
+  /**
+   * How unpriced targets (no per-1k cost data) are treated, mirroring the Go
+   * unpriced_strategy config: "fallback" (default) ranks priced targets and
+   * only falls back to an unpriced target when nothing is priced; "skip" makes
+   * "no priced targets" an error; "allow" ranks unpriced targets as zero-cost.
+   */
+  readonly unpricedStrategy?: UnpricedStrategy;
 }
 
 export interface ContentBasedMapping {
@@ -65,8 +74,22 @@ export interface ContentBasedMapping {
   readonly target: string;
 }
 
+export type ContentConditionType =
+  | "prompt_contains"
+  | "prompt_not_contains"
+  | "prompt_regex";
+
+export interface ContentBasedRule {
+  readonly type: ContentConditionType;
+  readonly value: string;
+  readonly target: string;
+}
+
 export interface ContentBasedConfig {
-  readonly keywords: readonly ContentBasedMapping[];
+  /** Legacy keyword → target mappings (last defined keyword wins). */
+  readonly keywords?: readonly ContentBasedMapping[];
+  /** Ordered Go-style content conditions (first match wins). */
+  readonly contentConditions?: readonly ContentBasedRule[];
   readonly defaultTarget?: string;
 }
 

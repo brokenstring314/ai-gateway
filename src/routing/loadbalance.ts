@@ -23,14 +23,17 @@ export class LoadBalanceStrategy implements IStrategy {
   }
 
   selectTargets(_req: ChatCompletionRequest): string[] {
-    const totalWeight = this.targets.reduce((s, t) => s + t.weight, 0);
+    const totalWeight = this.targets.reduce(
+      (s, t) => s + effectiveWeight(t.weight),
+      0,
+    );
     if (totalWeight <= 0) return [...this.targets].map((t) => t.name);
 
     // Weighted shuffle: sort by weight-adjusted random score descending
     const shuffled = [...this.targets]
       .map((t) => ({
         name: t.name,
-        score: Math.random() * (t.weight / totalWeight),
+        score: Math.random() * (effectiveWeight(t.weight) / totalWeight),
       }))
       .sort((a, b) => b.score - a.score)
       .map((t) => t.name);
@@ -67,17 +70,24 @@ export class LoadBalanceStrategy implements IStrategy {
   }
 
   private pickWeighted(): string {
-    const totalWeight = this.targets.reduce((s, t) => s + t.weight, 0);
+    const totalWeight = this.targets.reduce(
+      (s, t) => s + effectiveWeight(t.weight),
+      0,
+    );
     if (totalWeight <= 0 && this.targets.length > 0) {
       return this.targets[0]!.name;
     }
 
     let r = Math.random() * totalWeight;
     for (const target of this.targets) {
-      r -= target.weight;
+      r -= effectiveWeight(target.weight);
       if (r <= 0) return target.name;
     }
     // Fallback to last
     return this.targets[this.targets.length - 1]!.name;
   }
+}
+
+function effectiveWeight(weight: number): number {
+  return weight > 0 ? weight : 1;
 }

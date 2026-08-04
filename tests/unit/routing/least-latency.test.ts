@@ -4,7 +4,26 @@
 
 import { describe, it, expect } from "vitest";
 import { LeastLatencyStrategy } from "@/routing/least-latency";
+import type { ChatCompletionResponse, RequestContext } from "@/providers/types";
 import { createMockProvider, createReq } from "./helpers";
+
+/** Mock provider whose complete() resolves after a deterministic delay. */
+function createDelayedProvider(
+  name: string,
+  delayMs: number,
+): ReturnType<typeof createMockProvider> {
+  const base = createMockProvider(name);
+  return {
+    ...base,
+    complete: async (
+      ctx: RequestContext,
+      req: Parameters<ReturnType<typeof createMockProvider>["complete"]>[1],
+    ): Promise<ChatCompletionResponse> => {
+      await new Promise((resolve) => setTimeout(resolve, delayMs));
+      return base.complete(ctx, req);
+    },
+  };
+}
 
 describe("LeastLatencyStrategy", () => {
   it("uses first target when no latency data exists", async () => {
@@ -23,8 +42,9 @@ describe("LeastLatencyStrategy", () => {
   });
 
   it("picks the target with lower recorded latency", async () => {
-    const a = createMockProvider("a");
-    const b = createMockProvider("b");
+    // Deterministic latency: "a" is slow (10ms), "b" is fast (1ms).
+    const a = createDelayedProvider("a", 10);
+    const b = createDelayedProvider("b", 1);
     const lookup = (name: string) =>
       name === "a" ? a : name === "b" ? b : undefined;
 
@@ -32,13 +52,14 @@ describe("LeastLatencyStrategy", () => {
       targets: ["a", "b"],
     });
 
-    // Record some calls to build up latency data
-    await strategy.execute({ metadata: {} }, createReq()); // a = first
-    await strategy.execute({ metadata: {} }, createReq()); // now a has some latency
-
-    // After recording, the p50 of a is non-zero, b is still 0, so b should be picked
+    // Call 1: no data — falls back to the first declared target ("a"),
+    // recording its slow latency.
+    await strategy.execute({ metadata: {} }, createReq());
+    // Call 2: "b" is unseen (p50 0) and "a" now has samples — "b" is picked
+    // and its fast latency is recorded.
+    await strategy.execute({ metadata: {} }, createReq());
+    // Call 3: both sampled — "b" has the lower p50 and must win.
     const resp = await strategy.execute({ metadata: {} }, createReq());
-    // b should be picked since its p50 is still 0
     expect(resp.provider).toBe("b");
   });
 

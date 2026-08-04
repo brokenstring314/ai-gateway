@@ -1,4 +1,4 @@
-import type { CircuitBreakerConfig } from "../config/types.js";
+import type { CircuitBreakerConfig as BaseCircuitBreakerConfig } from "../config/types.js";
 
 type BreakerState = "CLOSED" | "OPEN" | "HALF_OPEN";
 
@@ -9,9 +9,14 @@ export class CircuitOpenError extends Error {
   }
 }
 
+export interface CircuitBreakerConfig extends BaseCircuitBreakerConfig {
+  maxHalfThreshold?: number;
+}
+
 const DEFAULT_CB: Required<CircuitBreakerConfig> = {
   failureThreshold: 5,
   successThreshold: 1,
+  maxHalfThreshold: 1,
   timeoutMs: 30000,
 };
 
@@ -20,6 +25,7 @@ export class CircuitBreaker {
   private consecutiveFailures = 0;
   private consecutiveSuccesses = 0;
   private openedAt = 0;
+  private halfOpenPermits = 0;
 
   constructor(
     public readonly name: string,
@@ -38,16 +44,27 @@ export class CircuitBreaker {
     return this.config.timeoutMs ?? DEFAULT_CB.timeoutMs;
   }
 
+  private get maxHalfThreshold(): number {
+    return this.config.maxHalfThreshold ?? DEFAULT_CB.maxHalfThreshold;
+  }
+
   getState(): BreakerState {
     if (this.state === "OPEN" && Date.now() - this.openedAt >= this.timeoutMs) {
       this.state = "HALF_OPEN";
+      this.halfOpenPermits = this.maxHalfThreshold;
     }
     return this.state;
   }
 
   allow(): boolean {
     const state = this.getState();
-    return state !== "OPEN";
+    if (state === "OPEN") return false;
+    if (state === "HALF_OPEN") {
+      if (this.halfOpenPermits <= 0) return false;
+      this.halfOpenPermits--;
+      return true;
+    }
+    return true;
   }
 
   recordSuccess(): void {

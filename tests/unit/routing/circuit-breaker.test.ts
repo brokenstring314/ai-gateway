@@ -126,3 +126,84 @@ describe("CircuitBreakerRegistry", () => {
     expect(registry.all().size).toBe(2);
   });
 });
+
+describe("CircuitBreaker maxHalfThreshold", () => {
+  it("defaults maxHalfThreshold to 1", () => {
+    vi.useFakeTimers();
+    const cb = new CircuitBreaker("test", { failureThreshold: 1, timeoutMs: 1000 });
+    cb.recordFailure();
+    vi.advanceTimersByTime(1001);
+    expect(cb.allow()).toBe(true);
+    expect(cb.allow()).toBe(false);
+    vi.useRealTimers();
+  });
+
+  it("maxHalfThreshold=1 admits a single probe per HALF_OPEN cycle", () => {
+    vi.useFakeTimers();
+    const cb = new CircuitBreaker("test", {
+      failureThreshold: 1,
+      timeoutMs: 1000,
+      maxHalfThreshold: 1,
+    });
+    cb.recordFailure();
+    vi.advanceTimersByTime(1001);
+    expect(cb.allow()).toBe(true);
+    expect(cb.allow()).toBe(false);
+    expect(cb.allow()).toBe(false);
+    vi.useRealTimers();
+  });
+
+  it("maxHalfThreshold=2 admits two probes per HALF_OPEN cycle", () => {
+    vi.useFakeTimers();
+    const cb = new CircuitBreaker("test", {
+      failureThreshold: 1,
+      timeoutMs: 1000,
+      maxHalfThreshold: 2,
+    });
+    cb.recordFailure();
+    vi.advanceTimersByTime(1001);
+    expect(cb.allow()).toBe(true);
+    expect(cb.allow()).toBe(true);
+    expect(cb.allow()).toBe(false);
+    vi.useRealTimers();
+  });
+
+  it("resets probe permits on each new HALF_OPEN cycle", () => {
+    vi.useFakeTimers();
+    const cb = new CircuitBreaker("test", {
+      failureThreshold: 1,
+      timeoutMs: 1000,
+      maxHalfThreshold: 2,
+    });
+    cb.recordFailure();
+    vi.advanceTimersByTime(1001);
+    expect(cb.allow()).toBe(true);
+    expect(cb.allow()).toBe(true);
+    cb.recordFailure();
+    vi.advanceTimersByTime(1001);
+    expect(cb.allow()).toBe(true);
+    expect(cb.allow()).toBe(true);
+    vi.useRealTimers();
+  });
+
+  it("closes after successThreshold successes during HALF_OPEN", () => {
+    vi.useFakeTimers();
+    const cb = new CircuitBreaker("test", {
+      failureThreshold: 1,
+      successThreshold: 2,
+      timeoutMs: 1000,
+      maxHalfThreshold: 2,
+    });
+    cb.recordFailure();
+    vi.advanceTimersByTime(1001);
+    expect(cb.getState()).toBe("HALF_OPEN");
+    expect(cb.allow()).toBe(true);
+    expect(cb.allow()).toBe(true);
+    cb.recordSuccess();
+    expect(cb.getState()).toBe("HALF_OPEN");
+    cb.recordSuccess();
+    expect(cb.getState()).toBe("CLOSED");
+    expect(cb.allow()).toBe(true);
+    vi.useRealTimers();
+  });
+});
