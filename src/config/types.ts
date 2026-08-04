@@ -5,6 +5,17 @@
 import type { StrategyMode } from "../routing/types.js";
 import type { Stage } from "../plugins/types.js";
 
+/** Plugin type categories, mirroring the Go plugin.PluginType values. */
+export type PluginType =
+  | "guardrail"
+  | "auth"
+  | "ratelimit"
+  | "transform"
+  | "logging"
+  | "metrics"
+  | "cache"
+  | "unknown";
+
 export interface RetryConfig {
   attempts?: number;
   initialBackoffMs?: number;
@@ -14,7 +25,13 @@ export interface RetryConfig {
 export interface CircuitBreakerConfig {
   failureThreshold?: number;
   successThreshold?: number;
+  maxHalfThreshold?: number;
   timeoutMs?: number;
+}
+
+export interface ConcurrencyConfig {
+  maxConcurrency?: number;
+  queueSize?: number;
 }
 
 export interface TargetConfig {
@@ -30,6 +47,28 @@ export interface TargetConfig {
   costPer1kOutputTokens?: number;
   retry?: RetryConfig;
   circuitBreaker?: CircuitBreakerConfig;
+  concurrency?: ConcurrencyConfig;
+}
+
+/** Conditional rule (Go Condition): key/value match routed to a target. */
+export interface Condition {
+  key: string;
+  value: string;
+  targetKey: string;
+}
+
+/** Content-based rule (Go ContentCondition). */
+export interface ContentCondition {
+  type: string;
+  value: string;
+  targetKey: string;
+}
+
+/** Weighted ab-test variant (Go ABVariantConfig). */
+export interface ABVariant {
+  targetKey: string;
+  weight: number;
+  label: string;
 }
 
 export interface StrategyConfig {
@@ -41,6 +80,14 @@ export interface StrategyConfig {
   rules?: ConditionalRule[];
   /** ContentBased: keyword→target mapping. */
   keywords?: Record<string, string>;
+  /** CostOptimized: how unpriced targets are handled. */
+  unpricedStrategy?: "fallback" | "skip" | "allow";
+  /** Conditional: key→value→target rules (Go conditions). */
+  conditions?: Condition[];
+  /** ContentBased: ordered content-match rules (Go content_conditions). */
+  contentConditions?: ContentCondition[];
+  /** ABTest: weighted variants (Go ab_variants). */
+  abVariants?: ABVariant[];
 }
 
 export interface ConditionalRule {
@@ -52,6 +99,13 @@ export interface ConditionalRule {
 export interface PluginConfig {
   name: string;
   stage: Stage;
+  type?: PluginType;
+  enabled?: boolean;
+  config?: Record<string, unknown>;
+}
+
+export interface ExporterConfig {
+  name: string;
   enabled?: boolean;
   config?: Record<string, unknown>;
 }
@@ -62,11 +116,16 @@ export interface ObservabilityConfig {
     otlpEndpoint?: string;
     otlpProtocol?: "grpc" | "http";
     serviceName?: string;
+    sampleRatio?: number;
+    privacyLevel?: "none" | "metadata" | "full";
+    shutdownGrace?: string;
+    headers?: Record<string, string>;
   };
   metrics?: {
     enabled?: boolean;
     port?: number;
   };
+  exporters?: ExporterConfig[];
 }
 
 export interface CompatibilityConfig {
@@ -75,12 +134,17 @@ export interface CompatibilityConfig {
 
 export interface McpServerConfig {
   name: string;
-  type: "stdio" | "http";
+  /** Transport; inferred from command/url when omitted. */
+  type?: "stdio" | "http";
   command?: string;
   args?: string[];
   env?: Record<string, string>;
   url?: string;
   headers?: Record<string, string>;
+  allowedTools?: string[];
+  maxCallDepth?: number;
+  timeoutSeconds?: number;
+  required?: boolean;
 }
 
 export interface GatewayConfig {

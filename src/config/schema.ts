@@ -4,19 +4,47 @@
  */
 
 import { z } from "zod";
+import type { StrategyMode } from "../routing/types.js";
 
-export const StrategyModeSchema = z.enum([
-  "single",
-  "fallback",
-  "loadbalance",
-  "conditional",
-  "least_latency",
-  "cost_optimized",
-  "content_based",
-  "abtest",
-]);
+/** Go-style duration string: a positive integer followed by a unit (ms|s|m|h). */
+function durationString(message: string): z.ZodString {
+  return z.string().regex(/^\d+(ms|s|m|h)$/, message);
+}
+
+/** Strategy-mode YAML aliases — the Go config uses hyphenated forms. */
+const STRATEGY_MODE_ALIASES: Record<string, StrategyMode> = {
+  "least-latency": "least_latency",
+  "cost-optimized": "cost_optimized",
+  "content-based": "content_based",
+  "ab-test": "abtest",
+};
+
+export const StrategyModeSchema = z.preprocess(
+  (val) => (typeof val === "string" ? (STRATEGY_MODE_ALIASES[val] ?? val) : val),
+  z.enum([
+    "single",
+    "fallback",
+    "loadbalance",
+    "conditional",
+    "least_latency",
+    "cost_optimized",
+    "content_based",
+    "abtest",
+  ]),
+);
 
 export const StageSchema = z.enum(["before_request", "after_request", "on_error"]);
+
+export const PluginTypeSchema = z.enum([
+  "guardrail",
+  "auth",
+  "ratelimit",
+  "transform",
+  "logging",
+  "metrics",
+  "cache",
+  "unknown",
+]);
 
 export const RetryConfigSchema = z.object({
   attempts: z.number().int().positive().optional().default(3),
@@ -27,7 +55,13 @@ export const RetryConfigSchema = z.object({
 export const CircuitBreakerConfigSchema = z.object({
   failureThreshold: z.number().int().positive().optional().default(5),
   successThreshold: z.number().int().positive().optional().default(1),
+  maxHalfThreshold: z.number().int().positive().optional().default(1),
   timeoutMs: z.number().positive().optional().default(30000),
+});
+
+export const ConcurrencyConfigSchema = z.object({
+  maxConcurrency: z.number().int().positive().max(10000).optional(),
+  queueSize: z.number().int().nonnegative().max(10000).optional().default(1000),
 });
 
 export const TargetConfigSchema = z.object({
@@ -43,6 +77,7 @@ export const TargetConfigSchema = z.object({
   costPer1kOutputTokens: z.number().nonnegative().optional(),
   retry: RetryConfigSchema.optional(),
   circuitBreaker: CircuitBreakerConfigSchema.optional(),
+  concurrency: ConcurrencyConfigSchema.optional(),
 });
 
 export const ConditionalRuleSchema = z.object({
@@ -51,19 +86,85 @@ export const ConditionalRuleSchema = z.object({
   target: z.string().min(1),
 });
 
-export const StrategyConfigSchema = z.object({
-  mode: StrategyModeSchema,
-  targets: z.array(z.string()).optional(),
-  weights: z.record(z.string(), z.number()).optional(),
-  rules: z.array(ConditionalRuleSchema).optional(),
-  keywords: z.record(z.string(), z.string()).optional(),
-});
+/** Rename the Go `target_key` key to `targetKey` before validation. */
+function normalizeTargetKey(input: unknown): unknown {
+  if (typeof input !== "object" || input === null || Array.isArray(input)) return input;
+  const out: Record<string, unknown> = {};
+  for (const [key, value] of Object.entries(input as Record<string, unknown>)) {
+    out[key === "target_key" ? "targetKey" : key] = value;
+  }
+  return out;
+}
+
+export const ConditionSchema = z.preprocess(
+  normalizeTargetKey,
+  z.object({
+    key: z.string().min(1),
+    value: z.string().min(1),
+    targetKey: z.string().min(1),
+  }),
+);
+
+export const ContentConditionSchema = z.preprocess(
+  normalizeTargetKey,
+  z.object({
+    type: z.string().min(1),
+    value: z.string().min(1),
+    targetKey: z.string().min(1),
+  }),
+);
+
+export const ABVariantSchema = z.preprocess(
+  normalizeTargetKey,
+  z.object({
+    targetKey: z.string().min(1),
+    weight: z.number().nonnegative().optional().default(1),
+    label: z.string().min(1),
+  }),
+);
+
+/** Rename Go snake_case strategy keys to camelCase before validation. */
+function normalizeStrategyKeys(input: unknown): unknown {
+  if (typeof input !== "object" || input === null || Array.isArray(input)) return input;
+  const out: Record<string, unknown> = {};
+  for (const [key, value] of Object.entries(input as Record<string, unknown>)) {
+    out[
+      key === "unpriced_strategy" ? "unpricedStrategy" :
+      key === "content_conditions" ? "contentConditions" :
+      key === "ab_variants" ? "abVariants" :
+      key
+    ] = value;
+  }
+  return out;
+}
+
+export const StrategyConfigSchema = z.preprocess(
+  normalizeStrategyKeys,
+  z.object({
+    mode: StrategyModeSchema,
+    targets: z.array(z.string()).optional(),
+    weights: z.record(z.string(), z.number()).optional(),
+    rules: z.array(ConditionalRuleSchema).optional(),
+    keywords: z.record(z.string(), z.string()).optional(),
+    unpricedStrategy: z.enum(["fallback", "skip", "allow"]).optional().default("fallback"),
+    conditions: z.array(ConditionSchema).optional(),
+    contentConditions: z.array(ContentConditionSchema).optional(),
+    abVariants: z.array(ABVariantSchema).optional(),
+  }),
+);
 
 export const PluginConfigSchema = z.object({
   name: z.string().min(1),
   stage: StageSchema,
+  type: PluginTypeSchema.optional().default("unknown"),
   enabled: z.boolean().optional().default(true),
   config: z.record(z.string(), z.unknown()).optional(),
+});
+
+export const ExporterConfigSchema = z.object({
+  name: z.string().min(1),
+  enabled: z.boolean().optional().default(false),
+  config: z.record(z.string(), z.unknown()).optional().default({}),
 });
 
 export const ObservabilityConfigSchema = z.object({
@@ -73,6 +174,10 @@ export const ObservabilityConfigSchema = z.object({
       otlpEndpoint: z.string().optional(),
       otlpProtocol: z.enum(["grpc", "http"]).optional().default("http"),
       serviceName: z.string().optional().default("ai-gateway"),
+      sampleRatio: z.number().min(0).max(1).optional().default(1.0),
+      privacyLevel: z.enum(["none", "metadata", "full"]).optional().default("metadata"),
+      shutdownGrace: durationString("Invalid shutdownGrace duration").optional().default("10s"),
+      headers: z.record(z.string(), z.string()).optional().default({}),
     })
     .optional(),
   metrics: z
@@ -81,28 +186,42 @@ export const ObservabilityConfigSchema = z.object({
       port: z.number().int().positive().optional().default(9090),
     })
     .optional(),
+  exporters: z.array(ExporterConfigSchema).optional(),
 });
 
 export const CompatibilityConfigSchema = z.object({
   onUnsupportedParam: z.enum(["warn", "drop", "reject"]).optional().default("warn"),
 });
 
-export const McpServerConfigSchema = z.object({
-  name: z.string().min(1),
-  type: z.enum(["stdio", "http"]),
-  command: z.string().optional(),
-  args: z.array(z.string()).optional(),
-  env: z.record(z.string(), z.string()).optional(),
-  url: z.string().url().optional(),
-  headers: z.record(z.string(), z.string()).optional(),
-});
+export const McpServerConfigSchema = z
+  .object({
+    name: z.string().min(1),
+    type: z.enum(["stdio", "http"]).optional(),
+    command: z.string().optional(),
+    args: z.array(z.string()).optional(),
+    env: z.record(z.string(), z.string()).optional(),
+    url: z.string().url().optional(),
+    headers: z.record(z.string(), z.string()).optional(),
+    allowedTools: z.array(z.string()).optional(),
+    maxCallDepth: z.number().int().positive().optional().default(5),
+    timeoutSeconds: z.number().int().positive().optional().default(30),
+    required: z.boolean().optional().default(false),
+  })
+  .superRefine((val, ctx) => {
+    if (!val.command && !val.url) {
+      ctx.addIssue({
+        code: "custom",
+        message: "mcp server requires either a command (stdio) or a url (http)",
+      });
+    }
+  });
 
 export const GatewayConfigSchema = z.object({
-  apiVersion: z.string().optional(),
+  apiVersion: z.string().optional().default("v1"),
   strategy: StrategyConfigSchema,
   targets: z.array(TargetConfigSchema).min(1),
   maxRequestBytes: z.number().int().positive().optional().default(10 * 1024 * 1024),
-  requestTimeout: z.string().optional(),
+  requestTimeout: durationString("Invalid requestTimeout duration").optional(),
   plugins: z.array(PluginConfigSchema).optional(),
   aliases: z.record(z.string(), z.string()).optional(),
   mcpServers: z.array(McpServerConfigSchema).optional(),
