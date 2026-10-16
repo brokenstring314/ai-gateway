@@ -138,8 +138,7 @@ function toWireToolCalls(msg: ChatMessage, isDelta = false): Json[] | undefined 
       };
     }
     // Streaming tool-call deltas are addressed by index.
-    const idx = (tc as { index?: number }).index;
-    call["index"] = typeof idx === "number" ? idx : i;
+    call["index"] = typeof tc.index === "number" ? tc.index : i;
     return call;
   });
 }

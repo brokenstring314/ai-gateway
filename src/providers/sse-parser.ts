@@ -189,13 +189,16 @@ function normalizeDeltaMessage(raw: unknown): ChatMessage {
 
   const toolCalls = r["tool_calls"];
   if (Array.isArray(toolCalls)) {
-    message.toolCalls = (toolCalls as Record<string, unknown>[]).map((tc) => ({
+    message.toolCalls = (toolCalls as Record<string, unknown>[]).map((tc, i) => ({
       id: String(tc["id"] ?? ""),
       type: "function" as const,
       function: {
         name: String((tc["function"] as Record<string, unknown>)?.["name"] ?? ""),
         arguments: String((tc["function"] as Record<string, unknown>)?.["arguments"] ?? ""),
       },
+      // Keep the upstream index: later deltas carry only one call at a time,
+      // so the array position does not identify which call they extend.
+      index: typeof tc["index"] === "number" ? (tc["index"] as number) : i,
     }));
   }
 
