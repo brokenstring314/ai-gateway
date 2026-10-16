@@ -236,7 +236,10 @@ export const GatewayConfigSchema = z.object({
   adminSecret: z.string().min(8).optional(),
   auth: z
     .object({
-      enabled: z.boolean().optional().default(false),
+      // No default: client auth is disabled ONLY when enabled === false is set
+      // explicitly. Omitting it (e.g. `auth: { keys: [...] }`) keeps auth on;
+      // see isClientAuthEnabled().
+      enabled: z.boolean().optional(),
       keys: z.array(z.string()).optional(),
     })
     .optional(),

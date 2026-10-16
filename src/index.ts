@@ -17,6 +17,8 @@ import { RequestLogStore } from "./persistence/request-log-store.js";
 import {
   parseAllowUnauthenticatedProxy,
   validateProductionSafety,
+  isClientAuthEnabled,
+  authExposureWarning,
 } from "./config/production-safety.js";
 import { ShutdownManager } from "./server/shutdown.js";
 import { getRequestLogger } from "./observability/request-log.js";
@@ -114,7 +116,7 @@ async function validateConfig(configPath: string): Promise<void> {
       console.log(`  Strategy: ${config.strategy.mode}`);
       console.log(`  Targets: ${config.targets.map((t) => t.name).join(", ")}`);
       console.log(`  Models: ${config.targets.flatMap((t) => t.models).join(", ")}`);
-      console.log(`  Auth: ${config.auth?.enabled ? "enabled" : "disabled"}`);
+      console.log(`  Auth: ${isClientAuthEnabled(config.auth) ? "enabled" : "disabled"}`);
       process.exit(0);
     } else {
       console.error("✗ Config validation failed:");
@@ -247,6 +249,12 @@ async function serve(configPath: string): Promise<void> {
   const host = config.server?.host ?? "0.0.0.0";
 
   console.log(`AI Gateway starting on ${host}:${port}`);
+  const exposureWarning = authExposureWarning(config.auth, host);
+  if (exposureWarning) {
+    console.warn("!".repeat(80));
+    console.warn(exposureWarning);
+    console.warn("!".repeat(80));
+  }
   console.log(`Strategy: ${config.strategy.mode}`);
   console.log(`Targets: ${config.targets.map((t) => t.name).join(", ")}`);
 
