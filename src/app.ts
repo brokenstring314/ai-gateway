@@ -93,12 +93,17 @@ export function createApp(
     });
   }
 
-  if (keyStore) {
+  // auth.enabled: false turns off client auth on non-admin routes only;
+  // /admin/* keeps its own adminAuth gate below. Production startup refuses
+  // auth.enabled: false (see validateProductionSafety).
+  const clientAuthEnabled = config.auth?.enabled !== false;
+  if (keyStore && clientAuthEnabled) {
     app.use("*", authMiddleware({
       keyStore,
       bootstrapKey: options?.bootstrapKey,
       bootstrapReadOnlyKey: options?.bootstrapReadOnlyKey,
       skipPaths: ["/health", "/metrics", "/livez", "/readyz"],
+      configKeys: () => config.auth?.keys,
     }));
   }
 
@@ -141,7 +146,8 @@ export function createApp(
     resolveTarget,
     keyStore,
     environment: process.env["GATEWAY_ENV"],
-    allowUnauthenticatedProxy: process.env["ALLOW_UNAUTHENTICATED_PROXY"] === "true",
+    allowUnauthenticatedProxy:
+      process.env["ALLOW_UNAUTHENTICATED_PROXY"] === "true" || !clientAuthEnabled,
   }));
 
   // ── Admin API ──

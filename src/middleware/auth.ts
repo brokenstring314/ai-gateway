@@ -22,6 +22,12 @@ export interface AuthMiddlewareOptions {
   bootstrapKey?: string;
   bootstrapReadOnlyKey?: string;
   skipPaths?: string[];
+  /**
+   * Static client keys from config.auth.keys. Read on every request so
+   * runtime config edits are honored. Compared with timingSafeEqual and
+   * granted no admin scopes.
+   */
+  configKeys?: () => readonly string[] | undefined;
 }
 
 export function authMiddleware(opts: AuthMiddlewareOptions): MiddlewareHandler {
@@ -67,6 +73,21 @@ export function authMiddleware(opts: AuthMiddlewareOptions): MiddlewareHandler {
     if (apiKey !== null) {
       c.set("apiKey", token);
       c.set("keyScopes", apiKey.scopes);
+      await next();
+      return;
+    }
+
+    const configKeys = opts.configKeys?.() ?? [];
+    let configKeyMatch = false;
+    for (const candidate of configKeys) {
+      // No early exit: compare against every candidate.
+      if (typeof candidate === "string" && candidate !== "" && timingSafeEqual(token, candidate)) {
+        configKeyMatch = true;
+      }
+    }
+    if (configKeyMatch) {
+      c.set("apiKey", token);
+      c.set("keyScopes", []);
       await next();
       return;
     }

@@ -180,7 +180,8 @@ async function serve(configPath: string): Promise<void> {
     allowUnauthenticatedProxy: parseAllowUnauthenticatedProxy(),
     adminSecret: config.adminSecret,
     authEnabled: config.auth?.enabled,
-    hasAuthKeys: (config.auth?.keys?.length ?? 0) > 0,
+    // config.auth.keys are accepted by authMiddleware, so they count here.
+    hasAuthKeys: (config.auth?.keys ?? []).some((k) => typeof k === "string" && k !== ""),
     keyStoreEmpty: keyStore.isEmpty(),
   });
 
