@@ -4,6 +4,7 @@
  */
 
 import type { MiddlewareHandler } from "hono";
+import { createTimeoutReason } from "../routing/outcome.js";
 
 const DEFAULT_TIMEOUT_MS = 30_000; // 30 seconds
 
@@ -38,7 +39,10 @@ export function requestTimeoutMiddleware(timeout?: string): MiddlewareHandler {
     c.set("abortController", controller);
 
     const timer = setTimeout(() => {
-      controller.abort();
+      // A TimeoutError reason lets downstream code tell the gateway's own
+      // timeout (upstream too slow -> breaker failure, HTTP 504) apart from a
+      // client disconnect (not an upstream failure).
+      controller.abort(createTimeoutReason(timeoutMs));
     }, timeoutMs);
 
     try {

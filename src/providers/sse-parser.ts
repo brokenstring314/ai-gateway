@@ -12,6 +12,14 @@
 import type { StreamChunk, ChatMessage } from "./types.js";
 import { ProviderError } from "./openai-compat.js";
 
+function isAbortError(err: unknown): boolean {
+  return err !== null && typeof err === "object" && (err as { name?: unknown }).name === "AbortError";
+}
+
+function abortError(): DOMException {
+  return new DOMException("Aborted", "AbortError");
+}
+
 /** Sentinel value marking the end of an SSE stream. */
 const DONE_SENTINEL = "[DONE]";
 
@@ -34,15 +42,24 @@ export async function* parseSSEStream(
   try {
     while (true) {
       if (signal?.aborted) {
+        // An abort must not look like a clean end of stream (that would make
+        // a truncated answer count as a success and skip fallback/errors).
         consumed = true;
-        await reader.cancel("aborted");
-        return;
+        try {
+          await reader.cancel("aborted");
+        } catch {
+          // ignore
+        }
+        throw abortError();
       }
 
       let result: { done: boolean; value?: Uint8Array };
       try {
         result = await reader.read();
       } catch (err) {
+        // A read rejected because the request was aborted (client disconnect
+        // or gateway timeout) is an abort, not an upstream stream failure.
+        if (signal?.aborted || isAbortError(err)) throw abortError();
         throw new ReadableStreamError(
           `SSE stream read failed: ${err instanceof Error ? err.message : String(err)}`,
         );

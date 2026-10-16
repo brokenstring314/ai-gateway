@@ -50,6 +50,7 @@ import { getRequestLogger } from "./observability/request-log.js";
 import { McpRegistry } from "./mcp/registry.js";
 import { McpExecutor } from "./mcp/executor.js";
 import { CircuitBreakerRegistry, CircuitOpenError } from "./routing/circuit-breaker.js";
+import { isBreakerFailure, isTimeoutAbort } from "./routing/outcome.js";
 import {
   ConcurrencyLimiterRegistry,
   ConcurrencyLimitError,
@@ -1009,12 +1010,53 @@ export class Gateway {
 
     const enter = () => {
       const breaker = breakers().get(name);
-      if (breaker && !breaker.allow()) throw new CircuitOpenError(name);
-      return breaker;
+      if (!breaker) return undefined;
+      const permit = breaker.acquire();
+      if (!permit) throw new CircuitOpenError(name);
+      return { breaker, permit };
     };
-    const fail = (breaker: ReturnType<typeof enter>, err: unknown) => {
-      if (isAbortError(err) || err instanceof ConcurrencyLimitError) return;
-      breaker?.recordFailure();
+    type Entry = ReturnType<typeof enter>;
+
+    /**
+     * Settle a failed attempt and return the error to rethrow. Every admitted
+     * attempt must end in recordSuccess, recordFailure or release — otherwise
+     * a HALF_OPEN probe permit leaks and the breaker wedges.
+     *  - gateway request timeout (signal reason TimeoutError) before output:
+     *    upstream too slow -> failure, surfaced as a 504 ProviderError;
+     *  - client abort: no health signal (success if output had started);
+     *  - local concurrency rejection / caller-caused 4xx: no health signal;
+     *  - anything else (network, 5xx, 408, 429, broken stream): failure.
+     */
+    const fail = (entry: Entry, ctx: RequestContext, err: unknown, started = false): unknown => {
+      if (!entry) {
+        return isTimeoutAbort(ctx.signal) && !started ? timeoutError(name) : err;
+      }
+      const { breaker, permit } = entry;
+      if (err instanceof ConcurrencyLimitError) {
+        breaker.release(permit);
+        return err;
+      }
+      if (isTimeoutAbort(ctx.signal)) {
+        if (started) {
+          // Output was flowing; a total-request timeout mid-stream says little
+          // about upstream health.
+          breaker.release(permit);
+          return err;
+        }
+        breaker.recordFailure();
+        return timeoutError(name);
+      }
+      if (isAbortError(err) || ctx.signal?.aborted) {
+        if (started) breaker.recordSuccess();
+        else breaker.release(permit);
+        return err;
+      }
+      if (!isBreakerFailure(err)) {
+        breaker.release(permit);
+        return err;
+      }
+      breaker.recordFailure();
+      return err;
     };
 
     const guarded = {
@@ -1023,14 +1065,13 @@ export class Gateway {
         ctx: RequestContext,
         req: ChatCompletionRequest,
       ): Promise<ChatCompletionResponse> => {
-        const breaker = enter();
+        const entry = enter();
         try {
           const res = await provider.complete(ctx, req);
-          breaker?.recordSuccess();
+          entry?.breaker.recordSuccess();
           return res;
         } catch (err) {
-          fail(breaker, err);
-          throw err;
+          throw fail(entry, ctx, err);
         }
       },
     } as IProvider;
@@ -1051,7 +1092,7 @@ export class Gateway {
         ctx: RequestContext,
         req: ChatCompletionRequest,
       ): AsyncIterable<StreamChunk> {
-        const breaker = enter();
+        const entry = enter();
         let started = false;
         let settled = false;
         try {
@@ -1060,14 +1101,17 @@ export class Gateway {
             yield chunk;
           }
           settled = true;
-          breaker?.recordSuccess();
+          entry?.breaker.recordSuccess();
         } catch (err) {
           settled = true;
-          fail(breaker, err);
-          throw err;
+          throw fail(entry, ctx, err, started);
         } finally {
-          // Consumer stopped early: upstream had produced output, so it is healthy.
-          if (!settled && started) breaker?.recordSuccess();
+          if (!settled && entry) {
+            // Consumer stopped early. With output, upstream was healthy;
+            // without any, there is no signal: return the probe permit.
+            if (started) entry.breaker.recordSuccess();
+            else entry.breaker.release(entry.permit);
+          }
         }
       };
     }
@@ -1108,6 +1152,10 @@ export class Gateway {
     }
     return req;
   }
+}
+
+function timeoutError(target: string): ProviderError {
+  return new ProviderError(target, 504, `upstream "${target}" timed out (gateway request timeout)`);
 }
 
 function isAbortError(err: unknown): boolean {

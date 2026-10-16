@@ -159,7 +159,7 @@ describe("parseSSEStream", () => {
     expect(chunks[0]!.choices[0]?.delta?.content).toBe(smile);
   });
 
-  it("aborts on signal", async () => {
+  it("aborts on signal (throws AbortError, yields nothing)", async () => {
     const controller = new AbortController();
     const input = [
       'data: {"id":"chat-1","object":"chat.completion.chunk","created":1234,"model":"gpt-4","choices":[{"index":0,"delta":{"content":"Hello"},"finish_reason":null}]}\n',
@@ -167,8 +167,13 @@ describe("parseSSEStream", () => {
     ].join("");
 
     controller.abort();
-    const chunks = await collectStreamChunks(input, controller.signal);
+    const chunks: unknown[] = [];
+    const err = await collectStreamChunks(input, controller.signal).then(
+      (c) => { chunks.push(...c); return undefined; },
+      (e: unknown) => e,
+    );
     expect(chunks).toHaveLength(0);
+    expect((err as { name?: string } | undefined)?.name).toBe("AbortError");
   });
 
   it("normalizes finish_reason values", async () => {
