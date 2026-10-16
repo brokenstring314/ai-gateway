@@ -1,4 +1,4 @@
-import { describe, expect, it } from "vitest";
+import { describe, expect, it } from "bun:test";
 import { createPluginContext } from "../../../src/plugins/context.js";
 import { WordFilterPlugin } from "../../../src/plugins/builtins/word-filter.js";
 import type { ChatCompletionRequest, ChatCompletionResponse } from "../../../src/providers/types.js";

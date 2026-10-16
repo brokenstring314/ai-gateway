@@ -2,7 +2,7 @@
  * Unit tests for FallbackStrategy.
  */
 
-import { describe, it, expect, vi } from "vitest";
+import { describe, it, expect, vi } from "bun:test";
 import {
   FallbackStrategy,
   FallbackExhaustedError,

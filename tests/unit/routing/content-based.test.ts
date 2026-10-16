@@ -2,7 +2,7 @@
  * Unit tests for ContentBasedStrategy.
  */
 
-import { describe, it, expect } from "vitest";
+import { describe, it, expect } from "bun:test";
 import { ContentBasedStrategy } from "@/routing/content-based";
 import { createMockProvider, createStreamMockProvider, createReq } from "./helpers";
 

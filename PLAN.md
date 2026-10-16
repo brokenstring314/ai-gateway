@@ -12,7 +12,7 @@
 | **运行时** | Bun 1.3+ |
 | **框架** | Hono (多运行时兼容，28k⭐，9.3M 周下载) |
 | **验证** | Zod (schema 即验证即类型) |
-| **测试** | Vitest |
+| **测试** | bun test（Vitest 兼容 API，从 `bun:test` 导入） |
 | **语言** | TypeScript strict mode (`strict: true`, `noUncheckedIndexedAccess`, `noImplicitOverride`) |
 
 ## 2. 核心约束（不可违反）
@@ -112,7 +112,7 @@
 ai-gateway-rewrite/
 ├── package.json
 ├── tsconfig.json
-├── vitest.config.ts
+├── bunfig.toml
 ├── src/
 │   ├── index.ts                    # 入口 + 嵌入模式导出
 │   ├── gateway.ts                  # Gateway 核心类

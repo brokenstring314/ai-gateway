@@ -1,4 +1,4 @@
-import { describe, expect, it } from "vitest";
+import { describe, expect, it } from "bun:test";
 import { parseConfig, safeParseConfig } from "../../../src/config/schema.js";
 
 function baseConfig(overrides: Record<string, unknown> = {}): Record<string, unknown> {

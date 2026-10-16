@@ -2,7 +2,7 @@
  * Unit tests for LoadBalanceStrategy.
  */
 
-import { describe, it, expect, vi, beforeEach } from "vitest";
+import { describe, it, expect, vi, beforeEach } from "bun:test";
 import { LoadBalanceStrategy } from "@/routing/loadbalance";
 import { createMockProvider, createStreamMockProvider, createReq } from "./helpers";
 

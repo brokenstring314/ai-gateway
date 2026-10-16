@@ -1,4 +1,4 @@
-import { describe, it, expect, beforeAll, afterEach, vi } from "vitest";
+import { describe, it, expect, beforeAll, afterEach, vi } from "bun:test";
 import { Database } from "bun:sqlite";
 import { Gateway } from "@/gateway";
 import { createApp } from "@/app";

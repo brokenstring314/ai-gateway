@@ -3,7 +3,7 @@
  * pure resolution/URL helpers.
  */
 
-import { describe, it, expect, vi } from "vitest";
+import { describe, it, expect, vi } from "bun:test";
 import { Hono } from "hono";
 import {
   createProxyHandler,

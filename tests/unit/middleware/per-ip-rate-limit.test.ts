@@ -1,4 +1,4 @@
-import { describe, it, expect } from "vitest";
+import { describe, it, expect } from "bun:test";
 import { Hono } from "hono";
 import type { Context } from "hono";
 import { perIpRateLimitMiddleware } from "@/middleware/per-ip-rate-limit";

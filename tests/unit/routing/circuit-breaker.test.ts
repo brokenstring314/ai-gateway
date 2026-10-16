@@ -1,4 +1,4 @@
-import { describe, it, expect, vi, beforeEach } from "vitest";
+import { describe, it, expect, vi, beforeEach } from "bun:test";
 import { CircuitBreaker, CircuitOpenError, CircuitBreakerRegistry } from "@/routing/circuit-breaker";
 
 describe("CircuitBreaker", () => {

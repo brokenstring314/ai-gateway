@@ -2,7 +2,7 @@
  * Unit tests for CostOptimizedStrategy.
  */
 
-import { describe, it, expect } from "vitest";
+import { describe, it, expect } from "bun:test";
 import { CostOptimizedStrategy } from "@/routing/cost-optimized";
 import { createMockProvider, createStreamMockProvider, createReq } from "./helpers";
 

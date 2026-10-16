@@ -3,7 +3,7 @@
  * the standalone handler auth gate, and the timing-safe key validator.
  */
 
-import { describe, it, expect, vi } from "vitest";
+import { describe, it, expect, vi } from "bun:test";
 import { Hono } from "hono";
 import {
   createProxyHandler,

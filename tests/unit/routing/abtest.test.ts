@@ -2,7 +2,7 @@
  * Unit tests for AbTestStrategy.
  */
 
-import { describe, it, expect, vi, beforeEach } from "vitest";
+import { describe, it, expect, vi, beforeEach } from "bun:test";
 import { AbTestStrategy } from "@/routing/abtest";
 import { createMockProvider, createStreamMockProvider, createReq } from "./helpers";
 

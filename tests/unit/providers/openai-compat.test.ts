@@ -4,7 +4,7 @@
  * Verifies request building, response normalisation, error handling,
  * and capability enforcement — all via mocked fetch.
  */
-import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
+import { describe, it, expect, vi, beforeEach, afterEach } from "bun:test";
 import { createOpenAICompatProvider, ProviderError } from "@/providers/openai-compat";
 import type { ChatCompletionRequest, ChatCompletionResponse } from "@/providers/types";
 

@@ -1,4 +1,4 @@
-import { describe, it, expect, vi, beforeEach } from "vitest";
+import { describe, it, expect, vi, beforeEach } from "bun:test";
 import { Gateway } from "@/gateway";
 import type { GatewayConfig } from "@/config/types";
 import type { ChatCompletionRequest, ChatCompletionResponse, IProvider } from "@/providers/types";

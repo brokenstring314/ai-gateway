@@ -1,4 +1,4 @@
-import { describe, it, expect, beforeEach, afterEach } from "vitest";
+import { describe, it, expect, beforeEach, afterEach } from "bun:test";
 import { Hono } from "hono";
 import { Database } from "bun:sqlite";
 import { authMiddleware, adminAuthMiddleware } from "@/middleware/auth";

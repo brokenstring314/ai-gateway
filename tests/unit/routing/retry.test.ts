@@ -1,4 +1,4 @@
-import { describe, it, expect, vi } from "vitest";
+import { describe, it, expect, vi } from "bun:test";
 import { retryWithBackoff, RetryExhaustedError } from "@/routing/retry";
 
 function createStatusError(statusCode: number, message = "error") {

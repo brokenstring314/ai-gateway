@@ -1,4 +1,4 @@
-import { beforeEach, describe, expect, it, vi } from "vitest";
+import { beforeEach, describe, expect, it, vi } from "bun:test";
 import { createPluginContext } from "../../../src/plugins/context.js";
 import { CachePlugin } from "../../../src/plugins/builtins/cache.js";
 import type { ChatCompletionRequest, ChatCompletionResponse } from "../../../src/providers/types.js";

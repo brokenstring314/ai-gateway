@@ -2,7 +2,7 @@
  * Unit tests for LeastLatencyStrategy.
  */
 
-import { describe, it, expect } from "vitest";
+import { describe, it, expect } from "bun:test";
 import { LeastLatencyStrategy } from "@/routing/least-latency";
 import type { ChatCompletionResponse, RequestContext } from "@/providers/types";
 import { createMockProvider, createReq } from "./helpers";

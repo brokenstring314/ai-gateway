@@ -8,7 +8,7 @@
  * onto the client response, never hop-by-hop headers and never anything
  * outside the fixed whitelist.
  */
-import { describe, it, expect, vi, beforeEach } from "vitest";
+import { describe, it, expect, vi, beforeEach } from "bun:test";
 import { Hono } from "hono";
 import type { AppEnv } from "@/app";
 import type { Gateway } from "@/gateway";

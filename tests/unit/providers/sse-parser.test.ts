@@ -1,7 +1,7 @@
 /**
  * Unit tests for the SSE stream parser.
  */
-import { describe, it, expect } from "vitest";
+import { describe, it, expect } from "bun:test";
 import { parseSSEStream } from "@/providers/sse-parser";
 import type { StreamChunk } from "@/providers/types";
 

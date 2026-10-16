@@ -2,7 +2,7 @@
  * Unit tests for SingleStrategy.
  */
 
-import { describe, it, expect } from "vitest";
+import { describe, it, expect } from "bun:test";
 import { SingleStrategy } from "@/routing/single";
 import { createMockProvider, createStreamMockProvider, createReq } from "./helpers";
 

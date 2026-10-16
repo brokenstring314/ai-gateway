@@ -2,7 +2,7 @@
  * Unit tests for ConditionalStrategy.
  */
 
-import { describe, it, expect } from "vitest";
+import { describe, it, expect } from "bun:test";
 import { ConditionalStrategy } from "@/routing/conditional";
 import { createMockProvider, createStreamMockProvider, createReq } from "./helpers";
 

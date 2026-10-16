@@ -11,7 +11,7 @@
  *   - gateway per-target concurrency limiter → 429 on queue-full
  */
 
-import { describe, it, expect, vi, beforeEach } from "vitest";
+import { describe, it, expect, vi, beforeEach } from "bun:test";
 import { createStrategy } from "@/routing/strategy-factory";
 import type {
   SingleConfig,

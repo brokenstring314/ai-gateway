@@ -1,4 +1,4 @@
-import { describe, it, expect } from "vitest";
+import { describe, it, expect } from "bun:test";
 import { Hono } from "hono";
 import { bodyLimitMiddleware } from "@/middleware/body-limit";
 

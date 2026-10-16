@@ -1,4 +1,4 @@
-import { beforeEach, describe, expect, it } from "vitest";
+import { beforeEach, describe, expect, it } from "bun:test";
 import { createPluginContext } from "../../../src/plugins/context.js";
 import { PluginRejectionError } from "../../../src/plugins/error.js";
 import { PluginManager } from "../../../src/plugins/manager.js";

@@ -1,4 +1,4 @@
-import { describe, expect, it } from "vitest";
+import { describe, expect, it } from "bun:test";
 import { Counter, Gauge, Histogram } from "prom-client";
 import {
   Metrics,

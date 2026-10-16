@@ -1,4 +1,4 @@
-import { describe, expect, it, vi } from "vitest";
+import { describe, expect, it, vi } from "bun:test";
 import { InFlightTracker, ShutdownManager } from "@/server/shutdown";
 import type { Shutdownable } from "@/server/shutdown";
 
