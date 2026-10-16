@@ -67,6 +67,12 @@ export interface ProxyAuthOptions {
 export interface ProxyHandlerOptions extends ProxyAuthOptions {
   resolveTarget: TargetResolver;
   fetchImpl?: typeof fetch;
+  /**
+   * Called after proxy auth and after the body is read, before anything is
+   * forwarded. Returning a Response short-circuits the proxy with it (e.g. a
+   * plugin rejection); returning undefined continues.
+   */
+  beforeForward?: (c: Context, bodyText: string | undefined) => Promise<Response | undefined>;
 }
 
 /** Minimal Hono env needed by the proxy handler (timeout signal). */
@@ -467,6 +473,11 @@ export function createProxyHandler(options: ProxyHandlerOptions): Handler<ProxyE
     const bodyBuffer = raw.byteLength > 0 ? raw : undefined;
     const bodyText =
       bodyBuffer !== undefined ? new TextDecoder().decode(bodyBuffer) : undefined;
+
+    if (options.beforeForward) {
+      const blocked = await options.beforeForward(c as unknown as Context, bodyText);
+      if (blocked !== undefined) return blocked;
+    }
 
     const resolution = resolveProvider(
       c.req.header("X-Provider"),

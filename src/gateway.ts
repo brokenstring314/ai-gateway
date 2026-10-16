@@ -786,6 +786,45 @@ export class Gateway {
     return response;
   }
 
+  /**
+   * Run the before-request plugins for a pass-through proxy request whose
+   * body shape is unknown. Text is taken from top-level `messages`, `input`
+   * (string, string[] or Responses-style items) or `prompt`; bodies that are
+   * not JSON still go through key-scoped plugins (rate-limit, budget check)
+   * with no messages. Throws PluginRejectionError to block the request.
+   * Because an arbitrary body cannot be rewritten faithfully, a plugin that
+   * modifies the message content (e.g. word-filter redact) or short-circuits
+   * causes a rejection instead of forwarding the original text.
+   */
+  async runPassthroughBeforePlugins(ctx: RequestContext, bodyText: string | undefined): Promise<void> {
+    let body: unknown;
+    try {
+      body = bodyText !== undefined && bodyText !== "" ? JSON.parse(bodyText) : undefined;
+    } catch {
+      body = undefined;
+    }
+    const obj = body !== null && typeof body === "object" && !Array.isArray(body)
+      ? body as Record<string, unknown>
+      : {};
+    const request: ChatCompletionRequest = {
+      model: typeof obj["model"] === "string" ? obj["model"] : "",
+      messages: extractPassthroughMessages(obj),
+    };
+    const resolved = this.resolveAlias(request);
+    const pluginCtx = createPluginContext(resolved, ctx);
+    pluginCtx.metadata["_surface"] = "passthrough";
+    await this.pluginManager.runBefore(pluginCtx);
+    if (pluginCtx._shortCircuited) {
+      throw new PluginRejectionError("before_request", "Plugin short-circuit is not supported on pass-through proxy routes");
+    }
+    if (JSON.stringify(pluginCtx.request.messages) !== JSON.stringify(resolved.messages)) {
+      throw new PluginRejectionError(
+        "before_request",
+        "Request content was modified by a plugin; pass-through proxy routes cannot forward modified content",
+      );
+    }
+  }
+
   /** Embedding request — find provider and call embed(). */
   async embed(
     ctx: RequestContext,
@@ -1226,4 +1265,47 @@ function isEmbeddingResponse(v: unknown): v is EmbeddingResponse {
 
 function isImageResponse(v: unknown): v is ImageResponse {
   return v !== null && typeof v === "object" && Array.isArray((v as { data?: unknown }).data);
+}
+
+type PassthroughMessage = ChatCompletionRequest["messages"][number];
+
+/** Best-effort text extraction from an unknown OpenAI-style request body. */
+function extractPassthroughMessages(body: Record<string, unknown>): PassthroughMessage[] {
+  const out: PassthroughMessage[] = [];
+  const pushText = (text: unknown, role: unknown = "user") => {
+    const t = textOf(text);
+    if (t !== undefined) out.push({ role: (typeof role === "string" ? role : "user") as PassthroughMessage["role"], content: t });
+  };
+  const fromItems = (items: unknown) => {
+    if (typeof items === "string") return pushText(items);
+    if (!Array.isArray(items)) return;
+    for (const item of items) {
+      if (typeof item === "string") pushText(item);
+      else if (item !== null && typeof item === "object") {
+        const rec = item as Record<string, unknown>;
+        pushText(rec["content"] ?? rec["text"], rec["role"]);
+      }
+    }
+  };
+  fromItems(body["messages"]);
+  fromItems(body["input"]);
+  fromItems(body["prompt"]);
+  pushText(body["instructions"], "system");
+  return out;
+}
+
+function textOf(v: unknown): string | undefined {
+  if (typeof v === "string") return v;
+  if (Array.isArray(v)) {
+    const parts = v.map((p) => {
+      if (typeof p === "string") return p;
+      if (p !== null && typeof p === "object") {
+        const t = (p as Record<string, unknown>)["text"];
+        return typeof t === "string" ? t : "";
+      }
+      return "";
+    }).filter((t) => t !== "");
+    return parts.length > 0 ? parts.join("\n") : undefined;
+  }
+  return undefined;
 }

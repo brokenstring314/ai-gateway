@@ -70,6 +70,7 @@ describe("bodyLimitMiddleware — streamed bodies", () => {
       targets: [{ name: "mock", provider: "openai", apiKey: "sk-target-secret", baseURL: "http://127.0.0.1:1/v1", models: ["gpt-4o"] }],
       maxRequestBytes: 4096,
       auth: { enabled: true, keys: ["sk-client-key-abc"] },
+      passthroughProxy: { enabled: true },
     };
     const keyStore = await KeyStore.create(new Database(":memory:"));
     const app = createApp(new Gateway(config), config, undefined, keyStore);

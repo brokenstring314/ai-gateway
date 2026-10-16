@@ -166,6 +166,15 @@ export interface GatewayConfig {
     /** SSE `: ping` heartbeat interval while a stream is idle (0 = off). Default 5. */
     sseHeartbeatSeconds?: number;
   };
+  /**
+   * Pass-through proxy for /v1/* routes without a dedicated handler
+   * (e.g. /v1/responses). Off by default: proxied requests skip circuit
+   * breakers, fallback, after-request plugins and budget accrual. When on,
+   * before-request plugins still run.
+   */
+  passthroughProxy?: {
+    enabled?: boolean;
+  };
   adminSecret?: string;
   auth?: {
     enabled?: boolean;

@@ -238,6 +238,8 @@ export const GatewayConfigSchema = z.object({
       sseHeartbeatSeconds: z.number().min(0).optional(),
     })
     .optional(),
+  // Opt-in pass-through proxy for other /v1/* routes (see config/types.ts).
+  passthroughProxy: z.object({ enabled: z.boolean().optional() }).optional(),
   adminSecret: z.string().min(8).optional(),
   auth: z
     .object({
