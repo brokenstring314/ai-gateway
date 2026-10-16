@@ -14,6 +14,11 @@ interface BudgetEntry {
 /** Module-level shared budget store so separate before/after instances share the same data. */
 const budgets = new Map<string, BudgetEntry>();
 
+/** Clear all accrued spend (test isolation; the store is process-wide). */
+export function resetBudgetStore(): void {
+  budgets.clear();
+}
+
 function todayKey(): string {
   return new Date().toISOString().slice(0, 10);
 }

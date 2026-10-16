@@ -21,6 +21,7 @@ import type {
   ImageRequest,
   ImageResponse,
   ModelInfo,
+  Usage,
 } from "./providers/types.js";
 import { ProviderRegistry } from "./providers/registry.js";
 import { createOpenAICompatProvider, ProviderError } from "./providers/openai-compat.js";
@@ -349,6 +350,8 @@ export class Gateway {
   private circuitBreakers: CircuitBreakerRegistry;
   private concurrencyLimiters: ConcurrencyLimiterRegistry;
   private configPlugins: PluginRegistration[] = [];
+  /** Target that produced each in-flight stream (see tagStreamProvider). */
+  private readonly streamServedBy = new WeakMap<RequestContext, string>();
 
   constructor(config: GatewayConfig) {
     this.config = config;
@@ -372,7 +375,7 @@ export class Gateway {
 
     const { mode, config: strategyConfig } = buildStrategyConfig(config);
     this.strategy = createStrategy(mode, strategyConfig, (name: string) =>
-      this.guardProvider(name, this.limitProvider(name, this.registry.get(name))),
+      this.tagStreamProvider(name, this.guardProvider(name, this.limitProvider(name, this.registry.get(name)))),
     );
 
     if (config.mcpServers && config.mcpServers.length > 0) {
@@ -553,14 +556,124 @@ export class Gateway {
       finalReq = this.mcpExecutor.injectTools(finalReq);
     }
 
+    // Accumulate what the stream delivered so the after-request plugins
+    // (budget, logger, ...), the request log and the metrics see the
+    // streamed request exactly once, however it ends: normal completion,
+    // upstream error, or the client going away (generator return()).
+    const startTime = Date.now();
+    const acc: StreamAccumulator = {
+      id: "",
+      created: Math.floor(startTime / 1000),
+      model: finalReq.model,
+      content: "",
+      toolArgChars: 0,
+      finishReason: "",
+      usage: undefined,
+      chunks: 0,
+    };
+    let streamError: Error | undefined;
+    let finalized = false;
+    const finalize = async (): Promise<void> => {
+      if (finalized) return;
+      finalized = true;
+      try {
+        await this.finalizeStream(ctx, req, finalReq, pluginCtx, acc, streamError, startTime);
+      } catch (err) {
+        console.error(`[gateway] stream finalization failed: ${err instanceof Error ? err.message : String(err)}`);
+      }
+    };
+
     // Circuit breaking is applied per invoked target (see guardProvider).
     try {
-      yield* this.strategy.executeStream(ctx, finalReq);
+      for await (const chunk of this.strategy.executeStream(ctx, finalReq)) {
+        accumulateChunk(acc, chunk);
+        yield chunk;
+      }
     } catch (err) {
-      throw this.translateConcurrencyError(err);
+      const translated = this.translateConcurrencyError(err);
+      streamError = translated instanceof Error ? translated : new Error(String(translated));
+      throw translated;
     } finally {
       tracer.endSpan(span);
+      await finalize();
     }
+  }
+
+  /**
+   * Run the after-request (or on-error) plugins, the request log and the
+   * metrics for a finished stream. When the upstream sent no usage chunk the
+   * token counts are estimated (~4 chars/token) so the budget cannot be
+   * bypassed by omitting stream_options.include_usage.
+   */
+  private async finalizeStream(
+    ctx: RequestContext,
+    originalReq: ChatCompletionRequest,
+    finalReq: ChatCompletionRequest,
+    pluginCtx: ReturnType<typeof createPluginContext>,
+    acc: StreamAccumulator,
+    streamError: Error | undefined,
+    startTime: number,
+  ): Promise<void> {
+    const metrics = getMetrics();
+    const logger = getRequestLogger();
+    const durationMs = Date.now() - startTime;
+    const provider = (ctx !== null && typeof ctx === "object" ? this.streamServedBy.get(ctx) : undefined) ?? "unknown";
+
+    if (streamError && acc.chunks === 0) {
+      // Failed before any output: same accounting as a failed route().
+      pluginCtx.error = streamError;
+      await this.pluginManager.runOnError(pluginCtx);
+      void logger.logRequest({
+        timestamp: new Date().toISOString(),
+        requestId: ctx.traceId ?? "",
+        model: originalReq.model,
+        provider: "unknown",
+        strategy: this.config.strategy.mode,
+        durationMs,
+        error: streamError.message,
+      });
+      return;
+    }
+
+    const usage: Usage = acc.usage ?? estimateStreamUsage(finalReq, acc);
+    const response: ChatCompletionResponse = {
+      id: acc.id,
+      object: "chat.completion",
+      created: acc.created,
+      model: acc.model,
+      provider,
+      choices: [{
+        index: 0,
+        message: { role: "assistant", content: acc.content },
+        finishReason: acc.finishReason,
+      }],
+      usage,
+      metadata: acc.usage ? undefined : { usageEstimated: true },
+    };
+    pluginCtx.response = response;
+    if (streamError) {
+      // Failed mid-stream: tokens were still consumed, so after-request
+      // plugins (budget) run too, with the error visible to them.
+      pluginCtx.error = streamError;
+      await this.pluginManager.runOnError(pluginCtx);
+    }
+    await this.pluginManager.runAfter(pluginCtx);
+
+    metrics.recordRequest(provider, acc.model, durationMs, usage);
+    void logger.logRequest({
+      timestamp: new Date().toISOString(),
+      requestId: ctx.traceId ?? "",
+      model: acc.model,
+      provider,
+      strategy: this.config.strategy.mode,
+      durationMs,
+      tokens: {
+        prompt: usage.promptTokens,
+        completion: usage.completionTokens,
+        total: usage.totalTokens,
+      },
+      ...(streamError ? { error: streamError.message } : {}),
+    });
   }
 
   /** Embedding request with plugin lifecycle. */
@@ -706,7 +819,7 @@ export class Gateway {
 
     const { mode, config: strategyConfig } = buildStrategyConfig(config);
     this.strategy = createStrategy(mode, strategyConfig, (name: string) =>
-      this.guardProvider(name, this.limitProvider(name, this.registry.get(name))),
+      this.tagStreamProvider(name, this.guardProvider(name, this.limitProvider(name, this.registry.get(name)))),
     );
   }
 
@@ -735,6 +848,40 @@ export class Gateway {
   }
 
   // ── Internal ──
+
+  /**
+   * Record which target actually produced a stream (the one whose first
+   * chunk arrived), keyed by request context, for stream metrics and
+   * request logs. Pure observation: does not alter the stream.
+   */
+  private tagStreamProvider(
+    name: string,
+    provider: IProvider | undefined,
+  ): IProvider | undefined {
+    if (!provider || !("completeStream" in provider)) return provider;
+    const servedBy = this.streamServedBy;
+    const streamer = provider as IProvider & {
+      completeStream(ctx: RequestContext, req: ChatCompletionRequest): AsyncIterable<StreamChunk>;
+    };
+    // Inherit from the provider (keeps class-based providers' prototype
+    // methods) and override only completeStream.
+    const tagged = Object.create(provider) as IProvider;
+    return Object.assign(tagged, {
+      completeStream: async function* (
+        ctx: RequestContext,
+        req: ChatCompletionRequest,
+      ): AsyncIterable<StreamChunk> {
+        let tagged = false;
+        for await (const chunk of streamer.completeStream(ctx, req)) {
+          if (!tagged) {
+            if (ctx !== null && typeof ctx === "object") servedBy.set(ctx, name);
+            tagged = true;
+          }
+          yield chunk;
+        }
+      },
+    });
+  }
 
   /**
    * Decorate a provider with its per-target concurrency limiter when one is
@@ -920,4 +1067,54 @@ export class Gateway {
 
 function isAbortError(err: unknown): boolean {
   return err !== null && typeof err === "object" && (err as { name?: unknown }).name === "AbortError";
+}
+
+interface StreamAccumulator {
+  id: string;
+  created: number;
+  model: string;
+  content: string;
+  toolArgChars: number;
+  finishReason: string;
+  usage: Usage | undefined;
+  chunks: number;
+}
+
+function accumulateChunk(acc: StreamAccumulator, chunk: StreamChunk): void {
+  acc.chunks++;
+  if (chunk.id) acc.id = chunk.id;
+  if (chunk.model) acc.model = chunk.model;
+  if (typeof chunk.created === "number") acc.created = chunk.created;
+  if (chunk.usage) acc.usage = chunk.usage;
+  for (const choice of chunk.choices ?? []) {
+    const delta = choice.delta;
+    if (delta) {
+      if (typeof delta.content === "string") acc.content += delta.content;
+      for (const tc of delta.toolCalls ?? []) {
+        const args = (tc as { function?: { arguments?: unknown; name?: unknown } }).function;
+        if (typeof args?.arguments === "string") acc.toolArgChars += args.arguments.length;
+        if (typeof args?.name === "string") acc.toolArgChars += args.name.length;
+      }
+    }
+    if (choice.finishReason) acc.finishReason = choice.finishReason;
+  }
+}
+
+function estimateTokens(chars: number): number {
+  return Math.ceil(chars / 4);
+}
+
+function estimateStreamUsage(req: ChatCompletionRequest, acc: StreamAccumulator): Usage {
+  let promptChars = 0;
+  for (const msg of req.messages) {
+    if (typeof msg.content === "string") promptChars += msg.content.length;
+    else if (Array.isArray(msg.content)) {
+      for (const part of msg.content) {
+        if (typeof part.text === "string") promptChars += part.text.length;
+      }
+    }
+  }
+  const promptTokens = estimateTokens(promptChars);
+  const completionTokens = estimateTokens(acc.content.length + acc.toolArgChars);
+  return { promptTokens, completionTokens, totalTokens: promptTokens + completionTokens };
 }
