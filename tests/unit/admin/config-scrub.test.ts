@@ -121,3 +121,39 @@ describe("scrubConfig", () => {
     expect(json).toContain("***");
   });
 });
+
+describe("scrubConfig — extended secret coverage", () => {
+  const cfg = makeConfig({
+    auth: { enabled: true, keys: ["sk-gateway-client-key-PLAINTEXT", "${CLIENT_KEY}"] },
+    observability: {
+      tracing: { enabled: false, headers: { Authorization: "Bearer otlp-SECRET", "x-honeycomb-team": "hc-SECRET" } },
+      exporters: [{ name: "langfuse", config: { host: "https://lf.example", secretKey: "lf-SECRET", publicKey: "pk-SECRET" } }],
+    },
+    plugins: [{ name: "webhook", stage: "before_request", config: { url: "https://hook.example", nested: { apiToken: "plug-SECRET", Cookie: "c-SECRET" }, rps: 5 } }],
+    mcpServers: [{ name: "m", url: "https://mcp.example", headers: { authorization: "Bearer mcp-lower-SECRET", "X-Api-Key": "mcp-xkey-SECRET", "X-Trace": "keep" } }],
+  });
+
+  it("redacts auth.keys, OTLP headers, MCP headers (any case), exporter and plugin secrets", () => {
+    const out = JSON.stringify(scrubConfig(cfg));
+    for (const s of ["PLAINTEXT", "otlp-SECRET", "hc-SECRET", "mcp-lower-SECRET", "mcp-xkey-SECRET", "lf-SECRET", "pk-SECRET", "plug-SECRET", "c-SECRET"]) {
+      expect(out).not.toContain(s);
+    }
+  });
+
+  it("keeps non-secret fields and env templates", () => {
+    const s = scrubConfig(cfg);
+    expect(s.auth!.keys).toEqual(["***", "${CLIENT_KEY}"]);
+    expect(s.auth!.enabled).toBe(true);
+    expect(s.mcpServers![0]!.headers!["X-Trace"]).toBe("keep");
+    expect(s.observability!.exporters![0]!.config!["host"]).toBe("https://lf.example");
+    expect(s.plugins![0]!.config!["url"]).toBe("https://hook.example");
+    expect(s.plugins![0]!.config!["rps"]).toBe(5);
+  });
+
+  it("scrubConfigJson (history) never contains these secrets", () => {
+    const json = scrubConfigJson(JSON.stringify(cfg));
+    expect(json).not.toContain("PLAINTEXT");
+    expect(json).not.toContain("mcp-lower-SECRET");
+    expect(json).not.toContain("otlp-SECRET");
+  });
+});
