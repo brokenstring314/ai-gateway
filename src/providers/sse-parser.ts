@@ -10,6 +10,7 @@
  */
 
 import type { StreamChunk, ChatMessage } from "./types.js";
+import { ProviderError } from "./openai-compat.js";
 
 /** Sentinel value marking the end of an SSE stream. */
 const DONE_SENTINEL = "[DONE]";
@@ -20,14 +21,20 @@ const DONE_SENTINEL = "[DONE]";
 export async function* parseSSEStream(
   body: ReadableStream<Uint8Array>,
   signal?: AbortSignal,
+  providerName = "upstream",
 ): AsyncGenerator<StreamChunk> {
   const decoder = new TextDecoder();
   const reader = body.getReader();
   let buffer = "";
+  // Parser state persists across reads: an event's data lines and its
+  // blank-line terminator may arrive in different network reads.
+  const state: ParserState = { dataLines: [], providerName };
+  let consumed = false;
 
   try {
     while (true) {
       if (signal?.aborted) {
+        consumed = true;
         await reader.cancel("aborted");
         return;
       }
@@ -41,41 +48,59 @@ export async function* parseSSEStream(
         );
       }
 
-      if (result.done) break;
+      if (result.done) {
+        consumed = true;
+        break;
+      }
 
       buffer += decoder.decode(result.value, { stream: true });
-      const [newBuffer, chunks] = processBuffer(buffer);
+      const [newBuffer, chunks] = processBuffer(buffer, state);
       buffer = newBuffer;
       for (const chunk of chunks) {
         yield chunk;
       }
     }
 
+    // EOF: treat the trailing partial line as complete and flush any pending
+    // event that was not terminated by a blank line.
     buffer += decoder.decode();
-    const [, finalChunks] = processBuffer(buffer);
+    const [, finalChunks] = processBuffer(buffer + "\n\n", state);
     for (const chunk of finalChunks) {
       yield chunk;
     }
   } finally {
+    if (!consumed) {
+      // Consumer stopped early or an error occurred: cancel the upstream body
+      // so the connection is not leaked.
+      try {
+        await reader.cancel();
+      } catch {
+        // ignore
+      }
+    }
     reader.releaseLock();
   }
 }
 
+interface ParserState {
+  dataLines: string[];
+  providerName: string;
+}
+
 /** Process line buffer: split on \n, accumulate data lines, parse events. */
-function processBuffer(buffer: string): [string, StreamChunk[]] {
+function processBuffer(buffer: string, state: ParserState): [string, StreamChunk[]] {
   const lines = buffer.split("\n");
   const remainder = lines.pop() ?? "";
-  let dataLines: string[] = [];
   const chunks: StreamChunk[] = [];
 
   for (const line of lines) {
     const trimmed = line.trimEnd();
 
     if (trimmed === "") {
-      if (dataLines.length > 0) {
-        const parsed = parseSSEEvent(dataLines);
+      if (state.dataLines.length > 0) {
+        const parsed = parseSSEEvent(state.dataLines, state.providerName);
         if (parsed !== null) chunks.push(parsed);
-        dataLines = [];
+        state.dataLines = [];
       }
       continue;
     }
@@ -83,19 +108,15 @@ function processBuffer(buffer: string): [string, StreamChunk[]] {
     if (trimmed.startsWith(":")) continue;
 
     if (trimmed.startsWith("data:")) {
-      dataLines.push(trimmed.slice(5).trimStart());
+      state.dataLines.push(trimmed.slice(5).trimStart());
       continue;
     }
   }
 
-  const newBuffer = dataLines.length > 0
-    ? dataLines.join("\n") + "\n" + remainder
-    : remainder;
-
-  return [newBuffer, chunks];
+  return [remainder, chunks];
 }
 
-function parseSSEEvent(dataLines: string[]): StreamChunk | null {
+function parseSSEEvent(dataLines: string[], providerName: string): StreamChunk | null {
   const raw = dataLines.join("\n");
   if (raw === DONE_SENTINEL) return null;
 
@@ -104,6 +125,16 @@ function parseSSEEvent(dataLines: string[]): StreamChunk | null {
     parsed = JSON.parse(raw);
   } catch {
     return null;
+  }
+
+  if (typeof parsed === "object" && parsed !== null && "error" in parsed && !("choices" in parsed)) {
+    const errVal = (parsed as Record<string, unknown>)["error"];
+    const message = typeof errVal === "string"
+      ? errVal
+      : typeof errVal === "object" && errVal !== null && typeof (errVal as Record<string, unknown>)["message"] === "string"
+        ? (errVal as Record<string, string>)["message"]!
+        : "upstream stream error";
+    throw new ProviderError(providerName, 502, `stream error: ${message}`);
   }
 
   if (typeof parsed !== "object" || parsed === null || !("choices" in parsed)) {

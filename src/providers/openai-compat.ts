@@ -76,6 +76,8 @@ export function createOpenAICompatProvider(opts: OpenAiCompatOptions): IProvider
           signal: ctx.signal ?? null,
         });
       } catch (err) {
+        // A client/caller abort is not an upstream failure: rethrow as-is.
+        if (isAbortError(err) || ctx.signal?.aborted) throw abortErrorFrom(err);
         throw new ProviderError(
           opts.name,
           0,
@@ -122,6 +124,8 @@ export function createOpenAICompatProvider(opts: OpenAiCompatOptions): IProvider
           signal: ctx.signal ?? null,
         });
       } catch (err) {
+        // A client/caller abort is not an upstream failure: rethrow as-is.
+        if (isAbortError(err) || ctx.signal?.aborted) throw abortErrorFrom(err);
         throw new ProviderError(
           opts.name,
           0,
@@ -145,7 +149,7 @@ export function createOpenAICompatProvider(opts: OpenAiCompatOptions): IProvider
         ctx.upstreamHeaders = upstreamHeaders;
       }
 
-      yield* parseSSEStream(response.body, ctx.signal);
+      yield* parseSSEStream(response.body, ctx.signal, opts.name);
     },
 
     supportedModels(): string[] {
@@ -403,6 +407,14 @@ async function buildErrorFromResponse(
     err.retryAfter = retryAfter;
   }
   return err;
+}
+
+function isAbortError(err: unknown): boolean {
+  return err !== null && typeof err === "object" && (err as { name?: unknown }).name === "AbortError";
+}
+
+function abortErrorFrom(err: unknown): unknown {
+  return isAbortError(err) ? err : new DOMException("Aborted", "AbortError");
 }
 
 export class ProviderError extends Error {
