@@ -129,6 +129,8 @@ export interface ToolCall {
   id: string;
   type: "function";
   function: { name: string; arguments: string };
+  /** Position of this call in a streaming delta; OpenAI addresses partial tool calls by it. */
+  index?: number;
 }
 
 export interface ChatCompletionResponse {
