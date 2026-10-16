@@ -34,6 +34,7 @@ import { registerCapabilitiesHandler } from "./handlers/capabilities.js";
 import { createAdminApp, type AdminAppOptions } from "./admin/handlers.js";
 import { createDashboardApp } from "./dashboard/index.js";
 import { createProxyHandler, resolveProxyTarget } from "./proxy/proxy.js";
+import { expandTargetEnvRefs } from "./config/envref.js";
 import { getMetrics as getPrometheusMetrics } from "./metrics/metrics.js";
 import type { InFlightTracker } from "./server/shutdown.js";
 
@@ -133,7 +134,7 @@ export function createApp(
     const target = "provider" in selector
       ? config.targets.find((candidate) => candidate.name === selector.provider || candidate.provider === selector.provider)
       : config.targets.find((candidate) => candidate.models?.includes(selector.model));
-    return target === undefined ? undefined : resolveProxyTarget(target);
+    return target === undefined ? undefined : resolveProxyTarget(expandTargetEnvRefs(target));
   };
 
   app.all("/v1/*", createProxyHandler({

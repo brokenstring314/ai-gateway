@@ -42,6 +42,7 @@ import { PluginRejectionError } from "./plugins/error.js";
 import type { IPlugin, Stage } from "./plugins/types.js";
 import { buildPluginsFromConfig, type PluginRegistration } from "./plugins/builtins/from-config.js";
 import type { GatewayConfig, TargetConfig } from "./config/types.js";
+import { expandTargetEnvRefs } from "./config/envref.js";
 import { getMetrics } from "./observability/metrics.js";
 import { getTracer } from "./observability/tracing.js";
 import { getRequestLogger } from "./observability/request-log.js";
@@ -207,7 +208,9 @@ const PROVIDER_FACTORIES: Record<string, ProviderFactory> = {
   }),
 };
 
-function createProviderFromTarget(target: TargetConfig): IProvider {
+function createProviderFromTarget(rawTarget: TargetConfig): IProvider {
+  // Resolve ${VAR} references at construction time (config keeps templates).
+  const target = expandTargetEnvRefs(rawTarget);
   const factory = PROVIDER_FACTORIES[target.provider];
   if (!factory) {
     // Fallback: treat as generic OpenAI-compatible with explicit baseURL
