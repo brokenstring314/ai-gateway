@@ -112,6 +112,7 @@ export class McpClient {
           capabilities: {},
           clientInfo: { name: "ai-gateway", version: "0.1.0" },
         },
+        { timeoutMs: this.timeoutMs, label: `MCP server "${this.config.name}" initialize` },
       );
 
       this.sendNotification("notifications/initialized", {});
@@ -124,6 +125,16 @@ export class McpClient {
         this.state = "initialized";
       }
     } catch (err) {
+      // Tear down the subprocess too — a hung server must not linger after a
+      // failed (e.g. timed-out) handshake.
+      if (this.subprocess) {
+        try {
+          this.subprocess.kill();
+        } catch {
+          // best-effort
+        }
+        this.subprocess = null;
+      }
       this.handleDisconnect("connection failed");
       throw err;
     }
@@ -137,7 +148,11 @@ export class McpClient {
   }
 
   async refreshTools(): Promise<void> {
-    const result = await this.sendRequest<{ tools: McpTool[] }>("tools/list", {});
+    const result = await this.sendRequest<{ tools: McpTool[] }>(
+      "tools/list",
+      {},
+      { timeoutMs: this.timeoutMs, label: `MCP server "${this.config.name}" tools/list` },
+    );
     this.toolsCache = result.tools ?? [];
   }
 
@@ -234,22 +249,26 @@ export class McpClient {
 
       // The JSON-RPC response and the AbortSignal timeout race — whichever fires
       // first settles the promise. On timeout the pending entry is cleaned up.
-      const timeoutSignal =
-        options?.timeoutMs !== undefined ? AbortSignal.timeout(options.timeoutMs) : undefined;
-      if (timeoutSignal) {
-        timeoutSignal.addEventListener("abort", () => {
-          this.pending.delete(id);
-          reject(
-            new McpToolTimeoutError(
-              `${options?.label ?? method} timed out after ${options?.timeoutMs}ms`,
-            ),
-          );
-        });
-      }
+      // Every request is bounded — defaults to the server's configured timeout so
+      // no handshake or call can hang forever.
+      const timeoutMs = options?.timeoutMs ?? this.timeoutMs;
+      const timer = setTimeout(() => {
+        if (!this.pending.has(id)) return;
+        this.pending.delete(id);
+        reject(
+          new McpToolTimeoutError(`${options?.label ?? method} timed out after ${timeoutMs}ms`),
+        );
+      }, timeoutMs);
 
       this.pending.set(id, {
-        resolve: resolve as (result: unknown) => void,
-        reject,
+        resolve: (result: unknown) => {
+          clearTimeout(timer);
+          resolve(result as T);
+        },
+        reject: (error: Error) => {
+          clearTimeout(timer);
+          reject(error);
+        },
       });
 
       const payload = JSON.stringify(request) + "\n";
@@ -257,6 +276,7 @@ export class McpClient {
         pipe.write(payload);
       } catch (err) {
         this.pending.delete(id);
+        clearTimeout(timer);
         reject(new Error(`MCP write failed: ${err instanceof Error ? err.message : String(err)}`));
       }
     });

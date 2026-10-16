@@ -385,19 +385,23 @@ export class Gateway {
 
   async initMcp(): Promise<void> {
     if (!this.config.mcpServers || this.config.mcpServers.length === 0) return;
-    for (const serverConfig of this.config.mcpServers) {
-      try {
-        const runtime = serverConfig as McpServerRuntimeConfig;
-        await this.mcpRegistry.addServer(serverConfig, {
-          allowedTools: runtime.allowedTools,
-          maxCallDepth: runtime.maxCallDepth,
-          timeoutSeconds: runtime.timeoutSeconds,
-          required: runtime.required,
-        });
-      } catch (err) {
-        console.error(`[gateway] MCP server "${serverConfig.name}" failed to connect: ${err instanceof Error ? err.message : String(err)}`);
-      }
-    }
+    // Connect all servers concurrently: each handshake is bounded by its own
+    // timeout, and one slow or failing server must not delay the others.
+    await Promise.all(
+      this.config.mcpServers.map(async (serverConfig) => {
+        try {
+          const runtime = serverConfig as McpServerRuntimeConfig;
+          await this.mcpRegistry.addServer(serverConfig, {
+            allowedTools: runtime.allowedTools,
+            maxCallDepth: runtime.maxCallDepth,
+            timeoutSeconds: runtime.timeoutSeconds,
+            required: runtime.required,
+          });
+        } catch (err) {
+          console.error(`[gateway] MCP server "${serverConfig.name}" failed to connect: ${err instanceof Error ? err.message : String(err)}`);
+        }
+      }),
+    );
   }
 
   /** Whether every configured required MCP server completed initialization. */
