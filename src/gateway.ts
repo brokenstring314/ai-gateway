@@ -676,27 +676,46 @@ export class Gateway {
     });
   }
 
-  /** Embedding request with plugin lifecycle. */
+  /**
+   * Embedding request with plugin lifecycle. The input is presented to the
+   * before-request plugins as one user message per input item, and the
+   * upstream request is rebuilt from the (possibly modified) plugin request,
+   * so word-filter redaction, model rewrites, etc. apply. A short-circuit
+   * returns metadata["_embeddingResponse"] when a plugin supplied one;
+   * otherwise it is rejected (a chat response cannot answer an embedding).
+   */
   async embedWithPlugins(
     ctx: RequestContext,
     req: EmbeddingRequest,
   ): Promise<EmbeddingResponse> {
+    const items: readonly string[] = typeof req.input === "string" ? [req.input] : req.input;
     const pluginCtx = createPluginContext({
       model: req.model,
-      messages: [{ role: "user", content: typeof req.input === "string" ? req.input : req.input.join("\n") }],
+      messages: items.map((text) => ({ role: "user" as const, content: text })),
     }, ctx);
     pluginCtx.metadata["_surface"] = "embedding";
 
-    try {
-      await this.pluginManager.runBefore(pluginCtx);
-    } catch (err) {
-      if (err instanceof PluginRejectionError) throw err;
-      throw err;
+    await this.pluginManager.runBefore(pluginCtx);
+
+    if (pluginCtx._shortCircuited) {
+      const supplied = pluginCtx.metadata["_embeddingResponse"];
+      if (isEmbeddingResponse(supplied)) return supplied;
+      throw new PluginRejectionError(
+        "before_request",
+        "Plugin short-circuited an embedding request without supplying an embedding response",
+      );
     }
+
+    const texts = pluginCtx.request.messages.map((m) => messageText(m.content));
+    const upstreamReq: EmbeddingRequest = {
+      ...req,
+      model: pluginCtx.request.model,
+      input: typeof req.input === "string" && texts.length === 1 ? texts[0]! : texts,
+    };
 
     let response: EmbeddingResponse;
     try {
-      response = await this.embed(ctx, req);
+      response = await this.embed(ctx, upstreamReq);
     } catch (err) {
       pluginCtx.error = err instanceof Error ? err : new Error(String(err));
       await this.pluginManager.runOnError(pluginCtx);
@@ -704,11 +723,27 @@ export class Gateway {
     }
 
     pluginCtx.metadata["_embeddingResponse"] = response;
+    // Expose usage to after-request plugins (e.g. budget) as a chat-shaped response.
+    const promptTokens = response.usage?.promptTokens ?? 0;
+    pluginCtx.response = {
+      id: "",
+      object: "embedding",
+      created: Math.floor(Date.now() / 1000),
+      model: response.model,
+      provider: response.provider,
+      choices: [],
+      usage: { promptTokens, completionTokens: 0, totalTokens: response.usage?.totalTokens ?? promptTokens },
+    };
     await this.pluginManager.runAfter(pluginCtx);
     return response;
   }
 
-  /** Image generation request with plugin lifecycle. */
+  /**
+   * Image generation request with plugin lifecycle. The upstream prompt is
+   * rebuilt from the (possibly modified) plugin request. A short-circuit
+   * returns metadata["_imageResponse"] when a plugin supplied one; otherwise
+   * it is rejected.
+   */
   async generateImageWithPlugins(
     ctx: RequestContext,
     req: ImageRequest,
@@ -719,16 +754,26 @@ export class Gateway {
     }, ctx);
     pluginCtx.metadata["_surface"] = "image";
 
-    try {
-      await this.pluginManager.runBefore(pluginCtx);
-    } catch (err) {
-      if (err instanceof PluginRejectionError) throw err;
-      throw err;
+    await this.pluginManager.runBefore(pluginCtx);
+
+    if (pluginCtx._shortCircuited) {
+      const supplied = pluginCtx.metadata["_imageResponse"];
+      if (isImageResponse(supplied)) return supplied;
+      throw new PluginRejectionError(
+        "before_request",
+        "Plugin short-circuited an image request without supplying an image response",
+      );
     }
+
+    const upstreamReq: ImageRequest = {
+      ...req,
+      model: pluginCtx.request.model,
+      prompt: pluginCtx.request.messages.map((m) => messageText(m.content)).join("\n"),
+    };
 
     let response: ImageResponse;
     try {
-      response = await this.generateImage(ctx, req);
+      response = await this.generateImage(ctx, upstreamReq);
     } catch (err) {
       pluginCtx.error = err instanceof Error ? err : new Error(String(err));
       await this.pluginManager.runOnError(pluginCtx);
@@ -1117,4 +1162,20 @@ function estimateStreamUsage(req: ChatCompletionRequest, acc: StreamAccumulator)
   const promptTokens = estimateTokens(promptChars);
   const completionTokens = estimateTokens(acc.content.length + acc.toolArgChars);
   return { promptTokens, completionTokens, totalTokens: promptTokens + completionTokens };
+}
+
+function messageText(content: ChatCompletionRequest["messages"][number]["content"]): string {
+  if (typeof content === "string") return content;
+  if (Array.isArray(content)) {
+    return content.map((p) => (typeof p.text === "string" ? p.text : "")).join("");
+  }
+  return "";
+}
+
+function isEmbeddingResponse(v: unknown): v is EmbeddingResponse {
+  return v !== null && typeof v === "object" && Array.isArray((v as { data?: unknown }).data);
+}
+
+function isImageResponse(v: unknown): v is ImageResponse {
+  return v !== null && typeof v === "object" && Array.isArray((v as { data?: unknown }).data);
 }
