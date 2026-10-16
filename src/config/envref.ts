@@ -103,3 +103,16 @@ export function expandAnyMap(obj: unknown): unknown {
   // Primitives (number, boolean, null, undefined) pass through unchanged
   return obj;
 }
+
+/**
+ * Materialise `${VAR}` references in the secret-bearing fields of a target
+ * (apiKey, baseURL). Called at provider/proxy construction time so the stored
+ * config keeps its template form (admin API never sees the secret).
+ *
+ * @throws {EnvRefError} If a referenced variable is not defined
+ */
+export function expandTargetEnvRefs<T extends { apiKey: string; baseURL?: string }>(target: T): T {
+  const expanded: T = { ...target, apiKey: expandEnvRefs(target.apiKey ?? "") };
+  if (target.baseURL !== undefined) expanded.baseURL = expandEnvRefs(target.baseURL);
+  return expanded;
+}
