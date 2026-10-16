@@ -92,6 +92,19 @@ function handleGatewayError(c: Context, err: unknown) {
   return errorResponse(c, 500, "Internal server error", "internal_error");
 }
 
+/** Abort `controller` when any of `sources` aborts; returns its signal. */
+function linkAbortSignals(controller: AbortController, sources: (AbortSignal | undefined)[]): AbortSignal {
+  for (const src of sources) {
+    if (!src) continue;
+    if (src.aborted) {
+      controller.abort(src.reason);
+      break;
+    }
+    src.addEventListener("abort", () => controller.abort(src.reason), { once: true });
+  }
+  return controller.signal;
+}
+
 // ── Handler ──
 
 export function registerChatHandler(app: AppType, gateway: Gateway): void {
@@ -111,7 +124,13 @@ export function registerChatHandler(app: AppType, gateway: Gateway): void {
     }
 
     const req = parsed.data as ChatCompletionRequest;
-    const signal = c.get("abortController")?.signal;
+    // Upstream work is cancelled when the request times out, the client
+    // connection goes away, or the SSE response body is cancelled.
+    const upstreamAbort = new AbortController();
+    const signal = linkAbortSignals(upstreamAbort, [
+      c.get("abortController")?.signal,
+      c.req.raw.signal,
+    ]);
     const startTime = Date.now();
 
     const ctx: RequestContext = {
@@ -141,6 +160,7 @@ export function registerChatHandler(app: AppType, gateway: Gateway): void {
         }
 
         const providerName = firstChunk?.model ?? "unknown";
+        let cancelled = false;
         return new Response(
           new ReadableStream({
             async start(controller) {
@@ -150,15 +170,29 @@ export function registerChatHandler(app: AppType, gateway: Gateway): void {
                   controller.enqueue(encoder.encode(serializeChunk(firstChunk)));
                 }
                 for await (const chunk of iterator) {
+                  if (cancelled) return;
                   controller.enqueue(encoder.encode(serializeChunk(chunk)));
                 }
+                if (cancelled) return;
                 controller.enqueue(encoder.encode(DONE_MESSAGE));
                 controller.close();
               } catch (err) {
+                if (cancelled) return;
                 const message = err instanceof Error ? err.message : String(err);
                 controller.enqueue(encoder.encode(`data: ${JSON.stringify({ error: { message, type: "stream_error" } })}\n\n`));
                 controller.enqueue(encoder.encode(DONE_MESSAGE));
                 controller.close();
+              }
+            },
+            async cancel() {
+              // Client went away: abort the upstream request and stop the
+              // provider iterator so no more upstream tokens are produced.
+              cancelled = true;
+              upstreamAbort.abort();
+              try {
+                await iterator.return?.(undefined);
+              } catch {
+                // ignore
               }
             },
           }),
