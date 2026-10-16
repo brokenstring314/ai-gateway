@@ -22,6 +22,7 @@ import {
   withRequestId,
 } from "./otel.js";
 import type { OtelConfig } from "./otel.js";
+import { applyPrivacy } from "./otel-policy.js";
 
 export interface StartSpanOptions {
   /** Correlate the span's trace id with the request's X-Request-Id. */
@@ -107,23 +108,35 @@ export class OtelTracer {
     }
   }
 
-  /** Record an error on a span. */
+  /**
+   * Record an error on a span. Error messages and stacks routinely carry
+   * secrets (upstream "Incorrect API key provided: sk-..." etc.), so they are
+   * passed through redactMessage unless privacyLevel is explicitly "none".
+   */
   recordError(span: Span, error: Error): void {
+    const message = this.redactErrorText(error.message ?? "");
+    const stack = this.redactErrorText(error.stack ?? "");
     span.status = "error";
     span.events.push({
       name: "exception",
       time: Date.now(),
       attributes: {
         "exception.type": error.name,
-        "exception.message": error.message,
-        "exception.stacktrace": error.stack ?? "",
+        "exception.message": message,
+        "exception.stacktrace": stack,
       },
     });
     const otelSpan = otelSpanByWrapper.get(span);
     if (otelSpan !== undefined) {
-      otelSpan.recordException(error);
-      otelSpan.setStatus({ code: SpanStatusCode.ERROR, message: error.message });
+      otelSpan.recordException({ name: error.name, message, stack });
+      otelSpan.setStatus({ code: SpanStatusCode.ERROR, message });
     }
+  }
+
+  private redactErrorText(text: string): string {
+    if (this.privacyLevel === "none") return text;
+    // "metadata" and "full" (and unset) both strip known secret patterns.
+    return applyPrivacy(text, "metadata");
   }
 
   /** Get all spans tracked by this tracer (including fallback spans). */
