@@ -87,6 +87,7 @@ export interface ChatCompletionRequest {
   logprobs?: boolean;
   topLogprobs?: number;
   streamOptions?: StreamOptions;
+  parallelToolCalls?: boolean;
 }
 
 export interface ChatMessage {
@@ -115,7 +116,9 @@ export interface ToolDefinition {
 export type ToolChoice = "none" | "auto" | "required" | { type: "function"; function: { name: string } };
 
 export interface ResponseFormat {
-  type: "json_object" | "text";
+  type: "json_object" | "text" | "json_schema";
+  /** Structured-outputs schema, required when type is "json_schema". */
+  jsonSchema?: Record<string, unknown>;
 }
 
 export interface StreamOptions {
