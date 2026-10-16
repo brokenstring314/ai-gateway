@@ -34,6 +34,12 @@ export interface OtelTracerOptions {
   serviceName?: string;
   /** Privacy level applied to span attributes sent to OpenTelemetry. */
   privacyLevel?: OtelConfig["privacyLevel"];
+  /**
+   * Explicit OpenTelemetry API tracer. When set, spans always go through it
+   * (independent of the global provider / `initOtel` state). Mainly for tests
+   * and embedders that manage their own TracerProvider.
+   */
+  tracer?: OtelApiTracer;
 }
 
 const SENSITIVE_KEY_PATTERN =
@@ -76,9 +82,11 @@ export class OtelTracer {
   private readonly serviceName: string;
   private readonly privacyLevel: OtelConfig["privacyLevel"];
   private readonly spans: Span[] = [];
+  private readonly hasInjectedTracer: boolean;
 
   constructor(options: OtelTracerOptions = {}) {
-    this.apiTracer = trace.getTracer("ai-gateway");
+    this.apiTracer = options.tracer ?? trace.getTracer("ai-gateway");
+    this.hasInjectedTracer = options.tracer !== undefined;
     this.serviceName = options.serviceName ?? "ai-gateway";
     this.privacyLevel = options.privacyLevel;
   }
@@ -93,7 +101,7 @@ export class OtelTracer {
     options?: StartSpanOptions,
   ): Span {
     const requestId = options?.requestId ?? getCurrentRequestId();
-    if (isOtelEnabled()) {
+    if (this.hasInjectedTracer || isOtelEnabled()) {
       return this.startOtelSpan(name, attrs, requestId);
     }
     return this.startLocalSpan(name, attrs, requestId);
