@@ -7,6 +7,8 @@ import type { ContentfulStatusCode } from "hono/utils/http-status";
 import { z } from "zod";
 import type { AppType } from "../app.js";
 import type { Gateway } from "../gateway.js";
+import { toOpenAIWireImageResponse, fromOpenAIWireImageRequest } from "./openai-wire.js";
+import { ProviderError } from "../providers/openai-compat.js";
 
 const ImageRequestSchema = z.object({
   model: z.string().min(1),
@@ -32,7 +34,7 @@ export function registerImagesHandler(app: AppType, gateway: Gateway): void {
       return errorResponse(c, 400, "Invalid JSON in request body", "invalid_request_error", "invalid_json");
     }
 
-    const parsed = ImageRequestSchema.safeParse(body);
+    const parsed = ImageRequestSchema.safeParse(fromOpenAIWireImageRequest(body));
     if (!parsed.success) {
       const issues = parsed.error.issues.map((i) => `${i.path.join(".")}: ${i.message}`).join("; ");
       return errorResponse(c, 400, `Validation error: ${issues}`, "invalid_request_error", "validation_failed");
@@ -56,8 +58,12 @@ export function registerImagesHandler(app: AppType, gateway: Gateway): void {
         responseFormat: req.responseFormat,
         user: req.user,
       });
-      return c.json(response, 200);
+      return c.json(toOpenAIWireImageResponse(response), 200);
     } catch (err) {
+      if (err instanceof ProviderError) {
+        const upstream = err.statusCode >= 400 && err.statusCode < 600 ? err.statusCode : 502;
+        return errorResponse(c, upstream as ContentfulStatusCode, err.message, "provider_error", `provider_${err.provider}`);
+      }
       const message = err instanceof Error ? err.message : String(err);
       const status: ContentfulStatusCode = message.includes("No provider found") ? 404
         : message.includes("does not support") ? 400

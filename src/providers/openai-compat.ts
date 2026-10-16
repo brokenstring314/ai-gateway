@@ -14,6 +14,12 @@ import type {
   ChatCompletionResponse,
   ChatMessage,
   Choice,
+  EmbeddingRequest,
+  EmbeddingResponse,
+  IEmbeddingProvider,
+  IImageProvider,
+  ImageRequest,
+  ImageResponse,
   ModelInfo,
   StreamChunk,
   ToolChoice,
@@ -42,7 +48,9 @@ interface OpenAiErrorResponse {
   };
 }
 
-export function createOpenAICompatProvider(opts: OpenAiCompatOptions): IProvider & IStreamProvider {
+export type OpenAICompatProvider = IProvider & IStreamProvider & IEmbeddingProvider & IImageProvider;
+
+export function createOpenAICompatProvider(opts: OpenAiCompatOptions): OpenAICompatProvider {
   const baseURL = opts.baseURL.replace(/\/+$/, "");
   const compatibilityMode = opts.compatibility ?? "warn";
   const extraHeaders = opts.extraHeaders ?? {};
@@ -51,8 +59,58 @@ export function createOpenAICompatProvider(opts: OpenAiCompatOptions): IProvider
     ownedBy: opts.name,
   }));
 
-  const provider: IProvider & IStreamProvider = {
+  /** POST a JSON body to `${baseURL}${path}` and return the parsed JSON (throws ProviderError). */
+  async function postJSON(ctx: RequestContext, path: string, body: Record<string, unknown>): Promise<{ raw: Record<string, unknown>; response: Response }> {
+    let response: Response;
+    try {
+      response = await fetch(`${baseURL}${path}`, {
+        method: "POST",
+        headers: buildHeaders(opts.apiKey, extraHeaders),
+        body: JSON.stringify(body),
+        signal: ctx.signal ?? null,
+      });
+    } catch (err) {
+      throw new ProviderError(
+        opts.name,
+        0,
+        `fetch failed: ${err instanceof Error ? err.message : String(err)}`,
+      );
+    }
+    if (!response.ok) {
+      throw await buildErrorFromResponse(opts.name, response, response.headers.get("Retry-After"));
+    }
+    let raw: unknown;
+    try {
+      raw = await response.json();
+    } catch {
+      throw new ProviderError(opts.name, 502, "invalid JSON in upstream response");
+    }
+    if (typeof raw !== "object" || raw === null) {
+      throw new ProviderError(opts.name, 502, "unexpected upstream response shape");
+    }
+    return { raw: raw as Record<string, unknown>, response };
+  }
+
+  const provider: OpenAICompatProvider = {
     name: opts.name,
+
+    async embed(ctx: RequestContext, req: EmbeddingRequest): Promise<EmbeddingResponse> {
+      const body: Record<string, unknown> = { model: req.model, input: req.input };
+      setIfDefined(body, "dimensions", req.dimensions);
+      setIfDefined(body, "user", req.user);
+      const { raw } = await postJSON(ctx, "/embeddings", body);
+      return normalizeEmbeddingResponse(opts.name, req.model, raw);
+    },
+
+    async generateImage(ctx: RequestContext, req: ImageRequest): Promise<ImageResponse> {
+      const body: Record<string, unknown> = { model: req.model, prompt: req.prompt };
+      setIfDefined(body, "n", req.n);
+      setIfDefined(body, "size", req.size);
+      setIfDefined(body, "response_format", req.responseFormat);
+      setIfDefined(body, "user", req.user);
+      const { raw } = await postJSON(ctx, "/images/generations", body);
+      return normalizeImageResponse(opts.name, raw);
+    },
 
     async complete(ctx: RequestContext, req: ChatCompletionRequest): Promise<ChatCompletionResponse> {
       const enforced = enforceUnsupportedParams(opts.name, req, compatibilityMode);
@@ -191,6 +249,7 @@ function buildRequestBody(req: ChatCompletionRequest): Record<string, unknown> {
   setIfDefined(body, "seed", req.seed);
   setIfDefined(body, "logprobs", req.logprobs);
   setIfDefined(body, "top_logprobs", req.topLogprobs);
+  setIfDefined(body, "parallel_tool_calls", req.parallelToolCalls);
 
   if (req.tools && req.tools.length > 0) {
     body["tools"] = req.tools.map((t) => {
@@ -206,7 +265,9 @@ function buildRequestBody(req: ChatCompletionRequest): Record<string, unknown> {
   }
 
   if (req.responseFormat) {
-    body["response_format"] = { type: req.responseFormat.type };
+    const rf: Record<string, unknown> = { type: req.responseFormat.type };
+    if (req.responseFormat.jsonSchema !== undefined) rf["json_schema"] = req.responseFormat.jsonSchema;
+    body["response_format"] = rf;
   }
 
   if (req.streamOptions) {
@@ -307,6 +368,46 @@ function normalizeResponse(
         }
       : { promptTokens: 0, completionTokens: 0, totalTokens: 0 },
     metadata: Object.keys(metadata).length > 0 ? metadata : undefined,
+  };
+}
+
+function normalizeEmbeddingResponse(
+  providerName: string,
+  requestedModel: string,
+  raw: Record<string, unknown>,
+): EmbeddingResponse {
+  const rawData = Array.isArray(raw["data"]) ? (raw["data"] as Record<string, unknown>[]) : [];
+  const usageRaw = raw["usage"] as Record<string, number> | undefined;
+  const promptTokens = usageRaw?.["prompt_tokens"] ?? 0;
+  return {
+    object: String(raw["object"] ?? "list"),
+    model: String(raw["model"] ?? requestedModel),
+    provider: providerName,
+    data: rawData.map((d, i) => ({
+      object: String(d["object"] ?? "embedding"),
+      embedding: Array.isArray(d["embedding"]) ? (d["embedding"] as number[]) : [],
+      index: typeof d["index"] === "number" ? (d["index"] as number) : i,
+    })),
+    usage: {
+      promptTokens,
+      completionTokens: 0,
+      totalTokens: usageRaw?.["total_tokens"] ?? promptTokens,
+    },
+  };
+}
+
+function normalizeImageResponse(providerName: string, raw: Record<string, unknown>): ImageResponse {
+  const rawData = Array.isArray(raw["data"]) ? (raw["data"] as Record<string, unknown>[]) : [];
+  return {
+    created: typeof raw["created"] === "number" ? (raw["created"] as number) : Math.floor(Date.now() / 1000),
+    provider: providerName,
+    data: rawData.map((d) => {
+      const item: { url?: string; b64Json?: string; revisedPrompt?: string } = {};
+      if (typeof d["url"] === "string") item.url = d["url"];
+      if (typeof d["b64_json"] === "string") item.b64Json = d["b64_json"];
+      if (typeof d["revised_prompt"] === "string") item.revisedPrompt = d["revised_prompt"];
+      return item;
+    }),
   };
 }
 

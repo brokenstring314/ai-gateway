@@ -7,6 +7,8 @@ import type { ContentfulStatusCode } from "hono/utils/http-status";
 import { z } from "zod";
 import type { AppType } from "../app.js";
 import type { Gateway } from "../gateway.js";
+import { toOpenAIWireEmbeddingResponse } from "./openai-wire.js";
+import { ProviderError } from "../providers/openai-compat.js";
 
 const EmbeddingRequestSchema = z.object({
   model: z.string().min(1),
@@ -52,8 +54,12 @@ export function registerEmbeddingsHandler(app: AppType, gateway: Gateway): void 
         dimensions: req.dimensions,
         user: req.user,
       });
-      return c.json(response, 200);
+      return c.json(toOpenAIWireEmbeddingResponse(response), 200);
     } catch (err) {
+      if (err instanceof ProviderError) {
+        const upstream = err.statusCode >= 400 && err.statusCode < 600 ? err.statusCode : 502;
+        return errorResponse(c, upstream as ContentfulStatusCode, err.message, "provider_error", `provider_${err.provider}`);
+      }
       const message = err instanceof Error ? err.message : String(err);
       const status: ContentfulStatusCode = message.includes("No provider found") ? 404
         : message.includes("does not support") ? 400

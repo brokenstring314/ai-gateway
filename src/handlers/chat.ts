@@ -14,6 +14,11 @@ import type { ChatCompletionRequest, RequestContext, StreamChunk } from "../prov
 import { mergeForwardedHeaders } from "../providers/response-headers.js";
 import { ProviderError } from "../providers/openai-compat.js";
 import { PluginRejectionError } from "../plugins/error.js";
+import {
+  createOpenAIWireStreamSerializer,
+  fromOpenAIWireChatRequest,
+  toOpenAIWireChatResponse,
+} from "./openai-wire.js";
 
 // ── Zod schemas ──
 
@@ -60,7 +65,11 @@ const ChatCompletionRequestSchema = z.object({
     z.enum(["none", "auto", "required"]),
     z.object({ type: z.literal("function"), function: z.object({ name: z.string() }) }),
   ]).optional(),
-  responseFormat: z.object({ type: z.enum(["json_object", "text"]) }).optional(),
+  responseFormat: z.object({
+    type: z.enum(["json_object", "text", "json_schema"]),
+    jsonSchema: z.record(z.string(), z.unknown()).optional(),
+  }).optional(),
+  parallelToolCalls: z.boolean().optional(),
   logprobs: z.boolean().optional(),
   topLogprobs: z.number().int().min(0).max(20).optional(),
   streamOptions: z.object({ includeUsage: z.boolean() }).optional(),
@@ -68,8 +77,8 @@ const ChatCompletionRequestSchema = z.object({
 
 // ── SSE helpers ──
 
-function serializeChunk(chunk: StreamChunk): string {
-  return `data: ${JSON.stringify(chunk)}\n\n`;
+function serializeChunk(toWire: (chunk: StreamChunk) => unknown, chunk: StreamChunk): string {
+  return `data: ${JSON.stringify(toWire(chunk))}\n\n`;
 }
 
 const DONE_MESSAGE = "data: [DONE]\n\n";
@@ -117,7 +126,7 @@ export function registerChatHandler(app: AppType, gateway: Gateway): void {
       return errorResponse(c, 400, "Invalid JSON in request body", "invalid_request_error", "invalid_json");
     }
 
-    const parsed = ChatCompletionRequestSchema.safeParse(body);
+    const parsed = ChatCompletionRequestSchema.safeParse(fromOpenAIWireChatRequest(body));
     if (!parsed.success) {
       const issues = parsed.error.issues.map((i) => `${i.path.join(".")}: ${i.message}`).join("; ");
       return errorResponse(c, 400, `Validation error: ${issues}`, "invalid_request_error", "validation_failed");
@@ -166,13 +175,14 @@ export function registerChatHandler(app: AppType, gateway: Gateway): void {
           new ReadableStream({
             async start(controller) {
               const encoder = new TextEncoder();
+              const toWire = createOpenAIWireStreamSerializer();
               try {
                 if (firstChunk !== undefined) {
-                  controller.enqueue(encoder.encode(serializeChunk(firstChunk)));
+                  controller.enqueue(encoder.encode(serializeChunk(toWire, firstChunk)));
                 }
                 for await (const chunk of iterator) {
                   if (cancelled) return;
-                  controller.enqueue(encoder.encode(serializeChunk(chunk)));
+                  controller.enqueue(encoder.encode(serializeChunk(toWire, chunk)));
                 }
                 if (cancelled) return;
                 controller.enqueue(encoder.encode(DONE_MESSAGE));
@@ -221,8 +231,8 @@ export function registerChatHandler(app: AppType, gateway: Gateway): void {
     try {
       const response = await gateway.route(ctx, req);
       const overheadMs = Date.now() - startTime;
-      const { upstreamHeaders, ...responseBody } = response;
-      return c.json(responseBody, 200, mergeForwardedHeaders(
+      const { upstreamHeaders } = response;
+      return c.json(toOpenAIWireChatResponse(response), 200, mergeForwardedHeaders(
         {
           "X-Gateway-Provider": response.provider,
           "X-Gateway-Overhead-Ms": String(overheadMs),

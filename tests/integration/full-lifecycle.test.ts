@@ -138,7 +138,7 @@ describe("Integration: Full HTTP lifecycle", () => {
     const body = await res.json();
     expect(body.object).toBe("chat.completion");
     expect(body.choices[0].message.content).toContain("Hello from test-provider");
-    expect(body.usage.totalTokens).toBe(30);
+    expect(body.usage.total_tokens).toBe(30);
   });
 
   it("POST /v1/chat/completions (streaming) returns SSE", async () => {
