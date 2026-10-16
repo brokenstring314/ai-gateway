@@ -9,6 +9,7 @@ import type { AppType } from "../app.js";
 import type { Gateway } from "../gateway.js";
 import { toOpenAIWireImageResponse, fromOpenAIWireImageRequest } from "./openai-wire.js";
 import { ProviderError } from "../providers/openai-compat.js";
+import { PluginRejectionError } from "../plugins/error.js";
 
 const ImageRequestSchema = z.object({
   model: z.string().min(1),
@@ -50,7 +51,7 @@ export function registerImagesHandler(app: AppType, gateway: Gateway): void {
     };
 
     try {
-      const response = await gateway.generateImage(ctx, {
+      const response = await gateway.generateImageWithPlugins(ctx, {
         model: req.model,
         prompt: req.prompt,
         n: req.n,
@@ -60,6 +61,9 @@ export function registerImagesHandler(app: AppType, gateway: Gateway): void {
       });
       return c.json(toOpenAIWireImageResponse(response), 200);
     } catch (err) {
+      if (err instanceof PluginRejectionError) {
+        return errorResponse(c, 403, err.reason, "plugin_rejection", "plugin_rejected");
+      }
       if (err instanceof ProviderError) {
         const upstream = err.statusCode >= 400 && err.statusCode < 600 ? err.statusCode : 502;
         return errorResponse(c, upstream as ContentfulStatusCode, err.message, "provider_error", `provider_${err.provider}`);

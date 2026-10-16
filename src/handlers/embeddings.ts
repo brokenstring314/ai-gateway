@@ -9,6 +9,7 @@ import type { AppType } from "../app.js";
 import type { Gateway } from "../gateway.js";
 import { toOpenAIWireEmbeddingResponse } from "./openai-wire.js";
 import { ProviderError } from "../providers/openai-compat.js";
+import { PluginRejectionError } from "../plugins/error.js";
 
 const EmbeddingRequestSchema = z.object({
   model: z.string().min(1),
@@ -48,7 +49,7 @@ export function registerEmbeddingsHandler(app: AppType, gateway: Gateway): void 
     };
 
     try {
-      const response = await gateway.embed(ctx, {
+      const response = await gateway.embedWithPlugins(ctx, {
         model: req.model,
         input: req.input,
         dimensions: req.dimensions,
@@ -56,6 +57,9 @@ export function registerEmbeddingsHandler(app: AppType, gateway: Gateway): void 
       });
       return c.json(toOpenAIWireEmbeddingResponse(response), 200);
     } catch (err) {
+      if (err instanceof PluginRejectionError) {
+        return errorResponse(c, 403, err.reason, "plugin_rejection", "plugin_rejected");
+      }
       if (err instanceof ProviderError) {
         const upstream = err.statusCode >= 400 && err.statusCode < 600 ? err.statusCode : 502;
         return errorResponse(c, upstream as ContentfulStatusCode, err.message, "provider_error", `provider_${err.provider}`);
