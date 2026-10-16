@@ -261,6 +261,10 @@ async function serve(configPath: string): Promise<void> {
   const server = Bun.serve({
     port,
     hostname: host,
+    // Bun's default idleTimeout (10s) cuts SSE streams and slow non-streaming
+    // completions whenever upstream is silent for 10s; streams additionally
+    // send `: ping` heartbeats (server.sseHeartbeatSeconds).
+    idleTimeout: resolveIdleTimeout(config.server?.idleTimeoutSeconds),
     fetch: app.fetch,
   });
 
@@ -273,6 +277,12 @@ async function serve(configPath: string): Promise<void> {
   shutdown.register({ name: "config-store", close: () => configStore.close() });
   shutdown.register({ name: "request-log-store", close: () => logStore.close() });
   shutdown.installSignalHandlers();
+}
+
+/** Bun.serve idleTimeout in seconds: configured value clamped to 0..255, default 255 (Bun's max). */
+export function resolveIdleTimeout(configured: number | undefined): number {
+  if (configured === undefined || !Number.isFinite(configured)) return 255;
+  return Math.min(255, Math.max(0, Math.floor(configured)));
 }
 
 function parseEnvNumber(value: string | undefined): number | undefined {

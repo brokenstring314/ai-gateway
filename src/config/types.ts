@@ -161,6 +161,10 @@ export interface GatewayConfig {
   server?: {
     port?: number;
     host?: string;
+    /** Bun.serve idleTimeout in seconds (0 = disabled, max 255). Default 255. */
+    idleTimeoutSeconds?: number;
+    /** SSE `: ping` heartbeat interval while a stream is idle (0 = off). Default 5. */
+    sseHeartbeatSeconds?: number;
   };
   adminSecret?: string;
   auth?: {

@@ -15,6 +15,7 @@ import { mergeForwardedHeaders } from "../providers/response-headers.js";
 import { ProviderError } from "../providers/openai-compat.js";
 import { PluginRejectionError } from "../plugins/error.js";
 import { isTimeoutAbort, isTimeoutError } from "../routing/outcome.js";
+import { startSseHeartbeat, heartbeatIntervalMs, type SseHeartbeat } from "./sse-heartbeat.js";
 
 const CompletionsRequestSchema = z.object({
   model: z.string().min(1),
@@ -128,16 +129,21 @@ export function registerCompletionsHandler(app: AppType, gateway: Gateway): void
           return handleGatewayError(c, err);
         }
 
+        const heartbeatMs = heartbeatIntervalMs(gateway.getConfig?.()?.server?.sseHeartbeatSeconds);
+        let heartbeat: SseHeartbeat | undefined;
         return new Response(
           new ReadableStream({
             async start(controller) {
               const encoder = new TextEncoder();
+              heartbeat = startSseHeartbeat(controller, heartbeatMs);
               try {
                 if (firstChunk !== undefined) {
                   controller.enqueue(encoder.encode(`data: ${JSON.stringify(firstChunk)}\n\n`));
+                  heartbeat.touch();
                 }
                 for await (const chunk of iterator) {
                   controller.enqueue(encoder.encode(`data: ${JSON.stringify(chunk)}\n\n`));
+                  heartbeat.touch();
                 }
                 controller.enqueue(encoder.encode("data: [DONE]\n\n"));
                 controller.close();
@@ -146,7 +152,12 @@ export function registerCompletionsHandler(app: AppType, gateway: Gateway): void
                 controller.enqueue(encoder.encode(`data: ${JSON.stringify({ error: { message, type: "stream_error" } })}\n\n`));
                 controller.enqueue(encoder.encode("data: [DONE]\n\n"));
                 controller.close();
+              } finally {
+                heartbeat?.stop();
               }
+            },
+            cancel() {
+              heartbeat?.stop();
             },
           }),
           {

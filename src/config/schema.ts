@@ -231,6 +231,11 @@ export const GatewayConfigSchema = z.object({
     .object({
       port: z.number().int().positive().optional().default(3000),
       host: z.string().optional().default("0.0.0.0"),
+      // Bun.serve idleTimeout (seconds, 0 = never, Bun max 255). Must exceed
+      // the longest silent gap of a slow non-streaming upstream call.
+      idleTimeoutSeconds: z.number().int().min(0).max(255).optional(),
+      // SSE `: ping` heartbeat interval while a stream is idle (0 = off).
+      sseHeartbeatSeconds: z.number().min(0).optional(),
     })
     .optional(),
   adminSecret: z.string().min(8).optional(),
