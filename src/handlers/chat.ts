@@ -13,6 +13,7 @@ import type { Gateway } from "../gateway.js";
 import type { ChatCompletionRequest, RequestContext, StreamChunk } from "../providers/types.js";
 import { mergeForwardedHeaders } from "../providers/response-headers.js";
 import { ProviderError } from "../providers/openai-compat.js";
+import { startSseHeartbeat, heartbeatIntervalMs, type SseHeartbeat } from "./sse-heartbeat.js";
 import { PluginRejectionError } from "../plugins/error.js";
 import {
   createOpenAIWireStreamSerializer,
@@ -177,18 +178,23 @@ export function registerChatHandler(app: AppType, gateway: Gateway): void {
 
         const providerName = firstChunk?.model ?? "unknown";
         let cancelled = false;
+        let heartbeat: SseHeartbeat | undefined;
+        const heartbeatMs = heartbeatIntervalMs(gateway.getConfig?.()?.server?.sseHeartbeatSeconds);
         return new Response(
           new ReadableStream({
             async start(controller) {
               const encoder = new TextEncoder();
               const toWire = createOpenAIWireStreamSerializer();
+              heartbeat = startSseHeartbeat(controller, heartbeatMs);
               try {
                 if (firstChunk !== undefined) {
                   controller.enqueue(encoder.encode(serializeChunk(toWire, firstChunk)));
+                  heartbeat.touch();
                 }
                 for await (const chunk of iterator) {
                   if (cancelled) return;
                   controller.enqueue(encoder.encode(serializeChunk(toWire, chunk)));
+                  heartbeat.touch();
                 }
                 if (cancelled) return;
                 controller.enqueue(encoder.encode(DONE_MESSAGE));
@@ -199,12 +205,15 @@ export function registerChatHandler(app: AppType, gateway: Gateway): void {
                 controller.enqueue(encoder.encode(`data: ${JSON.stringify({ error: { message, type: "stream_error" } })}\n\n`));
                 controller.enqueue(encoder.encode(DONE_MESSAGE));
                 controller.close();
+              } finally {
+                heartbeat?.stop();
               }
             },
             async cancel() {
               // Client went away: abort the upstream request and stop the
               // provider iterator so no more upstream tokens are produced.
               cancelled = true;
+              heartbeat?.stop();
               upstreamAbort.abort();
               try {
                 await iterator.return?.(undefined);

@@ -110,6 +110,8 @@ apiVersion: v1
 server:
   port: 3000                # HTTP port (default: 3000)
   host: "0.0.0.0"          # Bind address (default: 0.0.0.0)
+  idleTimeoutSeconds: 255   # Bun idle timeout; 0 = never, max/default 255
+  sseHeartbeatSeconds: 5    # SSE ": ping" comment while a stream is idle; 0 = off
 
 strategy:
   mode: single              # single | fallback | loadbalance | conditional |
