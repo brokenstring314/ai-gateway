@@ -73,12 +73,12 @@ describe("bodyLimitMiddleware", () => {
     expect(res.status).toBe(200);
   });
 
-  it("passes through when Content-Length is not a number", async () => {
+  it("rejects a non-numeric Content-Length with 400", async () => {
     const app = createApp(100);
     const res = await app.request("/test", {
       method: "POST",
       headers: { "Content-Length": "not-a-number" },
     });
-    expect(res.status).toBe(200);
+    expect(res.status).toBe(400);
   });
 });
