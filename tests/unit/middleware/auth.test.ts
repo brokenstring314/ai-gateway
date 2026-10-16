@@ -157,11 +157,20 @@ describe("adminAuthMiddleware", () => {
     expect(res.status).toBe(200);
   });
 
-  it("rejects read_only-scoped API key (401)", async () => {
+  it("admits read_only-scoped API key (scope enforced per route)", async () => {
     const roKey = keyStore.create("ro-key", ["read_only"]).key;
     const app = createAdminApp();
     const res = await app.request("/admin/config", {
       headers: { Authorization: `Bearer ${roKey}` },
+    });
+    expect(res.status).toBe(200);
+  });
+
+  it("rejects API key with neither admin nor read_only scope (401)", async () => {
+    const otherKey = keyStore.create("other-key", ["inference"]).key;
+    const app = createAdminApp();
+    const res = await app.request("/admin/config", {
+      headers: { Authorization: `Bearer ${otherKey}` },
     });
     expect(res.status).toBe(401);
   });

@@ -132,11 +132,11 @@ describe("adminAuthMiddleware", () => {
     expect(res.status).toBe(200);
   });
 
-  it("read_only API key rejected (401)", async () => {
+  it("read_only API key admitted by adminAuth (routes enforce write scope)", async () => {
     const created = keyStore.create("ro", ["read_only"]);
     const app = createAdminAuthApp(keyStore);
     const res = await app.request("/admin/keys", { headers: bearer(created.key) });
-    expect(res.status).toBe(401);
+    expect(res.status).toBe(200);
   });
 
   it("bootstrapKey on empty store passes", async () => {
