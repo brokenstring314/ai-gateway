@@ -777,7 +777,7 @@ User request → LLM returns tool_calls → Gateway executes tools via MCP
 ```
 
 - MCP tool calls have a 30-second timeout per call
-- Streaming requests with MCP tools are automatically diverted to non-streaming for the agentic loop, then the final response is streamed back
+- MCP tools are injected into **non-streaming** requests only. Streaming requests (`stream: true`) are forwarded without MCP tools and no agentic loop runs, so a streaming client never receives tool_calls for gateway-side tools it did not declare. Use a non-streaming request when you want the gateway to run MCP tools.
 
 ---
 
