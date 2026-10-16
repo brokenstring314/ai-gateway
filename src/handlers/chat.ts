@@ -19,6 +19,7 @@ import {
   fromOpenAIWireChatRequest,
   toOpenAIWireChatResponse,
 } from "./openai-wire.js";
+import { isTimeoutAbort, isTimeoutError } from "../routing/outcome.js";
 
 // ── Zod schemas ──
 
@@ -92,6 +93,11 @@ function errorResponse(c: Context, status: ContentfulStatusCode, message: string
 }
 
 function handleGatewayError(c: Context, err: unknown) {
+  // The gateway's own request timeout fired (whatever error it surfaced as:
+  // AbortError, a 504 ProviderError, fallback exhaustion): answer 504.
+  if (isTimeoutAbort(c.get("abortController")?.signal) || isTimeoutError(err)) {
+    return errorResponse(c, 504, "Upstream request timed out", "timeout_error", "gateway_timeout");
+  }
   if (err instanceof ProviderError) {
     return errorResponse(c, (err.statusCode || 502) as ContentfulStatusCode, err.message, "provider_error", `provider_${err.provider}`);
   }
