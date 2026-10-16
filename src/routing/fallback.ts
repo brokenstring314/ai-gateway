@@ -50,7 +50,7 @@ export class FallbackStrategy implements IStrategy {
       } catch (err: unknown) {
         lastError = err;
         console.error(`FallbackStrategy: target "${name}" failed:`, err instanceof Error ? err.message : String(err));
-        if (isNonRetryableError(err)) throw err;
+        if (isNonRetryableError(err) || isAbortError(err)) throw err;
       }
     }
     throw new FallbackExhaustedError(
@@ -67,19 +67,44 @@ export class FallbackStrategy implements IStrategy {
     for (const name of this.targets) {
       const provider = this.lookup(name);
       if (!provider || !("completeStream" in provider)) continue;
+      // Open the stream and pull its first chunk eagerly, so pre-output
+      // failures are retried / failed over. Once output has started, any
+      // error is rethrown as-is: splicing another target's answer onto a
+      // partially delivered one would corrupt the response.
+      let opened: { iterator: AsyncIterator<StreamChunk>; first: IteratorResult<StreamChunk> };
       try {
         const retryCfg = this.retryConfigs.get(name) ?? { attempts: 1 };
-        const stream = await retryWithBackoff(
-          () => Promise.resolve((provider as IStreamProvider).completeStream(ctx, req)),
+        opened = await retryWithBackoff(
+          async () => {
+            const iterator = (provider as IStreamProvider).completeStream(ctx, req)[Symbol.asyncIterator]();
+            const first = await iterator.next();
+            return { iterator, first };
+          },
           retryCfg,
           ctx.signal,
         );
-        yield* stream;
-        return;
       } catch (err: unknown) {
         lastError = err;
         console.error(`FallbackStrategy: streaming target "${name}" failed:`, err instanceof Error ? err.message : String(err));
-        if (isNonRetryableError(err)) throw err;
+        if (isNonRetryableError(err) || isAbortError(err)) throw err;
+        continue;
+      }
+
+      const { iterator, first } = opened;
+      if (first.done) return;
+      let finished = false;
+      try {
+        yield first.value;
+        while (true) {
+          const next = await iterator.next();
+          if (next.done) {
+            finished = true;
+            return;
+          }
+          yield next.value;
+        }
+      } finally {
+        if (!finished) await iterator.return?.();
       }
     }
     throw new FallbackExhaustedError(
@@ -105,4 +130,8 @@ function isNonRetryableError(err: unknown): boolean {
     return status >= 400 && status < 500 && status !== 429;
   }
   return false;
+}
+
+function isAbortError(err: unknown): boolean {
+  return err !== null && typeof err === "object" && (err as { name?: unknown }).name === "AbortError";
 }
