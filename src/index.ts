@@ -19,6 +19,7 @@ import {
   validateProductionSafety,
 } from "./config/production-safety.js";
 import { ShutdownManager } from "./server/shutdown.js";
+import { getRequestLogger } from "./observability/request-log.js";
 import { initOtel } from "./observability/otel.js";
 import { initOtelTracer } from "./observability/otel-tracer.js";
 import { parseShutdownGrace } from "./observability/otel-policy.js";
@@ -258,6 +259,7 @@ async function serve(configPath: string): Promise<void> {
 
   shutdown.register({ name: "http", close: () => server.stop() });
   shutdown.register({ name: "gateway", close: () => gateway.close() });
+  shutdown.register({ name: "request-logger", close: () => getRequestLogger().close() });
   shutdown.register({ name: "api-key-store", close: () => keyStore.close() });
   shutdown.register({ name: "config-store", close: () => configStore.close() });
   shutdown.register({ name: "request-log-store", close: () => logStore.close() });
