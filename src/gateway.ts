@@ -550,11 +550,11 @@ export class Gateway {
       );
     }
 
-    let finalReq = pluginCtx.request;
-
-    if (this.mcpExecutor) {
-      finalReq = this.mcpExecutor.injectTools(finalReq);
-    }
+    // MCP tools are NOT injected on the streaming path: there is no agentic
+    // loop here, so injected tools would surface to the client as tool_calls
+    // for tools it never declared and cannot execute. Use a non-streaming
+    // request to let the gateway run MCP tools.
+    const finalReq = pluginCtx.request;
 
     // Accumulate what the stream delivered so the after-request plugins
     // (budget, logger, ...), the request log and the metrics see the
