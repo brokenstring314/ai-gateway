@@ -46,7 +46,7 @@ import { getTracer } from "./observability/tracing.js";
 import { getRequestLogger } from "./observability/request-log.js";
 import { McpRegistry } from "./mcp/registry.js";
 import { McpExecutor } from "./mcp/executor.js";
-import { CircuitBreakerRegistry } from "./routing/circuit-breaker.js";
+import { CircuitBreakerRegistry, CircuitOpenError } from "./routing/circuit-breaker.js";
 import {
   ConcurrencyLimiterRegistry,
   ConcurrencyLimitError,
@@ -366,7 +366,7 @@ export class Gateway {
 
     const { mode, config: strategyConfig } = buildStrategyConfig(config);
     this.strategy = createStrategy(mode, strategyConfig, (name: string) =>
-      this.limitProvider(name, this.registry.get(name)),
+      this.guardProvider(name, this.limitProvider(name, this.registry.get(name))),
     );
 
     if (config.mcpServers && config.mcpServers.length > 0) {
@@ -543,25 +543,10 @@ export class Gateway {
       finalReq = this.mcpExecutor.injectTools(finalReq);
     }
 
-    const targets = this.strategy.selectTargets(finalReq);
-    for (const name of targets) {
-      const breaker = this.circuitBreakers.get(name);
-      if (breaker && !breaker.allow()) {
-        continue;
-      }
-    }
-
+    // Circuit breaking is applied per invoked target (see guardProvider).
     try {
       yield* this.strategy.executeStream(ctx, finalReq);
-      const usedTargets = this.strategy.selectTargets(finalReq);
-      for (const name of usedTargets) {
-        this.circuitBreakers.get(name)?.recordSuccess();
-      }
     } catch (err) {
-      const usedTargets = this.strategy.selectTargets(finalReq);
-      for (const name of usedTargets) {
-        this.circuitBreakers.get(name)?.recordFailure();
-      }
       throw this.translateConcurrencyError(err);
     } finally {
       tracer.endSpan(span);
@@ -697,7 +682,7 @@ export class Gateway {
 
     const { mode, config: strategyConfig } = buildStrategyConfig(config);
     this.strategy = createStrategy(mode, strategyConfig, (name: string) =>
-      this.limitProvider(name, this.registry.get(name)),
+      this.guardProvider(name, this.limitProvider(name, this.registry.get(name))),
     );
   }
 
@@ -791,12 +776,99 @@ export class Gateway {
   }
 
   /**
+   * Decorate a provider with its circuit breaker (OUTERMOST, around the
+   * concurrency limiter). The breaker is consulted on every actual invocation
+   * of this target, so an open breaker rejects with CircuitOpenError (letting
+   * fallback move on) and success/failure is recorded only for the target that
+   * was really called. Client aborts and local concurrency rejections are not
+   * counted as upstream failures.
+   */
+  private guardProvider(
+    name: string,
+    provider: IProvider | undefined,
+  ): IProvider | undefined {
+    if (!provider) return undefined;
+    const breakers = (): CircuitBreakerRegistry => this.circuitBreakers;
+    if (!breakers().get(name)) return provider;
+
+    const enter = () => {
+      const breaker = breakers().get(name);
+      if (breaker && !breaker.allow()) throw new CircuitOpenError(name);
+      return breaker;
+    };
+    const fail = (breaker: ReturnType<typeof enter>, err: unknown) => {
+      if (isAbortError(err) || err instanceof ConcurrencyLimitError) return;
+      breaker?.recordFailure();
+    };
+
+    const guarded = {
+      ...provider,
+      complete: async (
+        ctx: RequestContext,
+        req: ChatCompletionRequest,
+      ): Promise<ChatCompletionResponse> => {
+        const breaker = enter();
+        try {
+          const res = await provider.complete(ctx, req);
+          breaker?.recordSuccess();
+          return res;
+        } catch (err) {
+          fail(breaker, err);
+          throw err;
+        }
+      },
+    } as IProvider;
+
+    if ("completeStream" in provider) {
+      const streamer = provider as IProvider & {
+        completeStream(
+          ctx: RequestContext,
+          req: ChatCompletionRequest,
+        ): AsyncIterable<StreamChunk>;
+      };
+      (guarded as IProvider & {
+        completeStream(
+          ctx: RequestContext,
+          req: ChatCompletionRequest,
+        ): AsyncIterable<StreamChunk>;
+      }).completeStream = async function* (
+        ctx: RequestContext,
+        req: ChatCompletionRequest,
+      ): AsyncIterable<StreamChunk> {
+        const breaker = enter();
+        let started = false;
+        let settled = false;
+        try {
+          for await (const chunk of streamer.completeStream(ctx, req)) {
+            started = true;
+            yield chunk;
+          }
+          settled = true;
+          breaker?.recordSuccess();
+        } catch (err) {
+          settled = true;
+          fail(breaker, err);
+          throw err;
+        } finally {
+          // Consumer stopped early: upstream had produced output, so it is healthy.
+          if (!settled && started) breaker?.recordSuccess();
+        }
+      };
+    }
+
+    return guarded;
+  }
+
+  /**
    * Translate a per-target concurrency limit rejection into a 429 ProviderError
    * so the HTTP handler surfaces it as HTTP 429 (queue-full backpressure).
    */
   private translateConcurrencyError(err: unknown): unknown {
     if (err instanceof ConcurrencyLimitError) {
       return new ProviderError(err.target, 429, err.message);
+    }
+    if (err instanceof CircuitOpenError) {
+      return new ProviderError(err.target, 503, err.message);
     }
     return err;
   }
@@ -805,27 +877,10 @@ export class Gateway {
     ctx: RequestContext,
     req: ChatCompletionRequest,
   ): Promise<ChatCompletionResponse> {
-    const targets = this.strategy.selectTargets(req);
-
-    for (const name of targets) {
-      const breaker = this.circuitBreakers.get(name);
-      if (breaker && !breaker.allow()) {
-        continue;
-      }
-    }
-
+    // Circuit breaking is applied per invoked target (see guardProvider).
     try {
-      const response = await this.strategy.execute(ctx, req);
-      const usedTargets = this.strategy.selectTargets(req);
-      for (const name of usedTargets) {
-        this.circuitBreakers.get(name)?.recordSuccess();
-      }
-      return response;
+      return await this.strategy.execute(ctx, req);
     } catch (err) {
-      const usedTargets = this.strategy.selectTargets(req);
-      for (const name of usedTargets) {
-        this.circuitBreakers.get(name)?.recordFailure();
-      }
       throw this.translateConcurrencyError(err);
     }
   }
@@ -837,4 +892,8 @@ export class Gateway {
     }
     return req;
   }
+}
+
+function isAbortError(err: unknown): boolean {
+  return err !== null && typeof err === "object" && (err as { name?: unknown }).name === "AbortError";
 }

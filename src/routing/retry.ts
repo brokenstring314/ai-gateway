@@ -1,4 +1,5 @@
 import type { RetryConfig } from "../config/types.js";
+import { CircuitOpenError } from "./circuit-breaker.js";
 
 const DEFAULT_RETRY: Required<RetryConfig> = {
   attempts: 3,
@@ -18,6 +19,7 @@ export class RetryExhaustedError extends Error {
 
 function isRetryableError(err: unknown, onStatusCodes: number[]): boolean {
   if (err instanceof DOMException && err.name === "AbortError") return false;
+  if (err instanceof CircuitOpenError) return false;
 
   if (err !== null && typeof err === "object" && "statusCode" in err) {
     const status = (err as { statusCode: number }).statusCode;
