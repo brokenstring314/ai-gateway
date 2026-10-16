@@ -14,6 +14,13 @@ export class PluginManager implements IPluginManager {
     this.plugins[stage].push(plugin);
   }
 
+  /** Remove a previously registered plugin instance from a stage. */
+  unregister(stage: Stage, plugin: IPlugin): void {
+    const list = this.plugins[stage];
+    const idx = list.indexOf(plugin);
+    if (idx !== -1) list.splice(idx, 1);
+  }
+
   async runBefore(ctx: PluginContext): Promise<void> {
     const internalCtx = ctx as InternalPluginContext;
     const list = this.plugins.before_request;
@@ -26,7 +33,9 @@ export class PluginManager implements IPluginManager {
       }
 
       if (result.action === "short_circuit") {
-        ctx.response = result.response;
+        // Must go through shortCircuit() so _shortCircuited is set; the
+        // gateway checks that flag to skip the upstream call.
+        ctx.shortCircuit(result.response);
         break;
       }
 

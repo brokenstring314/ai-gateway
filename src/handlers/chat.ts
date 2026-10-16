@@ -133,10 +133,11 @@ export function registerChatHandler(app: AppType, gateway: Gateway): void {
     ]);
     const startTime = Date.now();
 
+    const apiKey = c.get("apiKey");
     const ctx: RequestContext = {
       signal,
       traceId: c.req.header("X-Request-Id") ?? crypto.randomUUID(),
-      metadata: {},
+      metadata: { apiKey },
     };
 
     // Streaming path

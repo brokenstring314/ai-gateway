@@ -10,6 +10,7 @@ export {
   MaxTokenPlugin,
   BudgetPlugin,
   createBuiltinPlugin,
+  buildPluginsFromConfig,
 } from "./builtins/index.js";
 export type {
   RateLimitConfig,
