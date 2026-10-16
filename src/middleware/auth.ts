@@ -171,7 +171,12 @@ export function adminAuthMiddleware(opts: AdminAuthMiddlewareOptions): Middlewar
     }
 
     const apiKey = keyStore.validateKey(token);
-    if (apiKey !== null && apiKey.scopes.includes(SCOPE_ADMIN)) {
+    // read_only keys are admitted here; mutating admin routes enforce
+    // requireScope("admin") themselves.
+    if (
+      apiKey !== null &&
+      (apiKey.scopes.includes(SCOPE_ADMIN) || apiKey.scopes.includes(SCOPE_READ_ONLY))
+    ) {
       c.set("apiKey", token);
       c.set("keyScopes", apiKey.scopes);
       await next();

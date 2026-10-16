@@ -1,9 +1,10 @@
 /**
  * Admin API — Hono sub-app mounting all admin handlers under /admin/*.
  *
- * Admin routes are protected by adminAuthMiddleware: admin-scoped API keys,
- * the admin secret (X-Admin-Secret or Bearer), or bootstrap keys (while the
- * key store is empty) are accepted. If no keyStore is provided, the legacy
+ * Admin routes are protected by adminAuthMiddleware: admin- or read_only-scoped
+ * API keys, the admin secret (X-Admin-Secret or Bearer), or bootstrap keys
+ * (while the key store is empty) are accepted. Every mutating route is further
+ * gated by requireScope(SCOPE_ADMIN), so read_only credentials can only read. If no keyStore is provided, the legacy
  * X-Admin-Secret-only check applies.
  */
 
@@ -107,11 +108,11 @@ export function createAdminApp(
 
   // Config management
   app.get("/config", getConfigHandler(configState));
-  app.put("/config", putConfigHandler(configState));
-  app.post("/config/reload", reloadConfigHandler(configState));
-  app.delete("/config", deleteConfigHandler(configState));
+  app.put("/config", requireScope(SCOPE_ADMIN), putConfigHandler(configState));
+  app.post("/config/reload", requireScope(SCOPE_ADMIN), reloadConfigHandler(configState));
+  app.delete("/config", requireScope(SCOPE_ADMIN), deleteConfigHandler(configState));
   app.get("/config/history", getConfigHistoryHandler(configState));
-  app.post("/config/rollback/:version", rollbackConfigHandler(configState));
+  app.post("/config/rollback/:version", requireScope(SCOPE_ADMIN), rollbackConfigHandler(configState));
 
   // Key management
   if (keyStore) {
@@ -126,14 +127,14 @@ export function createAdminApp(
     app.post("/keys/:id/rotate", requireScope(SCOPE_ADMIN), rotateKeyHandler(keyState));
   } else {
     app.get("/keys", getKeysHandler(legacyConfigState));
-    app.post("/keys", addKeyHandler(legacyConfigState));
-    app.delete("/keys/:id", deleteKeyHandler(legacyConfigState));
+    app.post("/keys", requireScope(SCOPE_ADMIN), addKeyHandler(legacyConfigState));
+    app.delete("/keys/:id", requireScope(SCOPE_ADMIN), deleteKeyHandler(legacyConfigState));
   }
 
   // Log management
   app.get("/logs", getLogsHandler(logState));
   app.get("/logs/stats", getLogsStatsHandler(logState));
-  app.delete("/logs", deleteLogsHandler(logState));
+  app.delete("/logs", requireScope(SCOPE_ADMIN), deleteLogsHandler(logState));
 
   return app;
 }
