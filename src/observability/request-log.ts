@@ -1,3 +1,5 @@
+import { appendFile } from "node:fs/promises";
+
 /**
  * Structured request logger — writes JSON log entries to console and optionally to a file.
  */
@@ -23,31 +25,48 @@ export interface RequestLogConfig {
 }
 
 export class RequestLogger {
-  private fileHandle: ReturnType<typeof Bun.file> | null = null;
+  private readonly filePath: string | null;
+  /** Tail of the serialized write chain — each append waits for the previous one. */
+  private writeChain: Promise<void> = Promise.resolve();
+  private closed = false;
 
   constructor(config?: RequestLogConfig) {
-    if (config?.filePath) {
-      this.fileHandle = Bun.file(config.filePath);
-    }
+    this.filePath = config?.filePath ?? null;
   }
 
-  /** Log a structured request entry. */
-  async logRequest(entry: RequestLogEntry): Promise<void> {
+  /**
+   * Log a structured request entry. Never rejects: callers may fire-and-forget.
+   * File writes are appended (never truncating) and serialized in call order.
+   */
+  logRequest(entry: RequestLogEntry): Promise<void> {
     const line = JSON.stringify(entry);
 
     // Always write to console as JSON
     console.log(line);
 
-    // Optionally write to file (append)
-    if (this.fileHandle) {
-      try {
-        const writer = this.fileHandle.writer();
-        writer.write(line + "\n");
-        writer.end();
-      } catch {
+    const filePath = this.filePath;
+    if (!filePath || this.closed) return Promise.resolve();
+
+    this.writeChain = this.writeChain.then(() =>
+      appendFile(filePath, line + "\n", { encoding: "utf8" }).catch((err: unknown) => {
         // File write failure must not break the gateway
-      }
-    }
+        console.error(
+          `[request-log] failed to append to ${filePath}: ${err instanceof Error ? err.message : String(err)}`,
+        );
+      }),
+    );
+    return this.writeChain;
+  }
+
+  /** Resolve once every queued file write has completed. */
+  flush(): Promise<void> {
+    return this.writeChain;
+  }
+
+  /** Stop accepting file writes and wait for pending ones to finish. */
+  async close(): Promise<void> {
+    this.closed = true;
+    await this.writeChain;
   }
 }
 
