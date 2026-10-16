@@ -19,6 +19,7 @@ import { bodyLimitMiddleware } from "./middleware/body-limit.js";
 import { securityHeadersMiddleware } from "./middleware/security-headers.js";
 import { corsMiddleware } from "./middleware/cors.js";
 import { authMiddleware } from "./middleware/auth.js";
+import { isClientAuthEnabled } from "./config/production-safety.js";
 import { adminAuthMiddleware } from "./middleware/auth.js";
 import type { KeyStore } from "./persistence/key-store.js";
 import { perIpRateLimitMiddleware } from "./middleware/per-ip-rate-limit.js";
@@ -93,10 +94,11 @@ export function createApp(
     });
   }
 
-  // auth.enabled: false turns off client auth on non-admin routes only;
-  // /admin/* keeps its own adminAuth gate below. Production startup refuses
-  // auth.enabled: false (see validateProductionSafety).
-  const clientAuthEnabled = config.auth?.enabled !== false;
+  // Only an explicit auth.enabled: false turns off client auth on non-admin
+  // routes; omitting `enabled` keeps it on. /admin/* keeps its own adminAuth
+  // gate below. Production startup refuses auth.enabled: false (see
+  // validateProductionSafety).
+  const clientAuthEnabled = isClientAuthEnabled(config.auth);
   if (keyStore && clientAuthEnabled) {
     app.use("*", authMiddleware({
       keyStore,

@@ -30,7 +30,7 @@ targets:
     costPer1kOutputTokens: 0.0002
 
 auth:
-  enabled: false
+  enabled: true
   # keys:
   #   - "sk-my-api-key-1"
 
