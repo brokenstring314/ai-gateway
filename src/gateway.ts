@@ -40,6 +40,7 @@ import { PluginManager } from "./plugins/manager.js";
 import { createPluginContext } from "./plugins/context.js";
 import { PluginRejectionError } from "./plugins/error.js";
 import type { IPlugin, Stage } from "./plugins/types.js";
+import { buildPluginsFromConfig, type PluginRegistration } from "./plugins/builtins/from-config.js";
 import type { GatewayConfig, TargetConfig } from "./config/types.js";
 import { getMetrics } from "./observability/metrics.js";
 import { getTracer } from "./observability/tracing.js";
@@ -344,12 +345,14 @@ export class Gateway {
   private mcpExecutor: McpExecutor | null;
   private circuitBreakers: CircuitBreakerRegistry;
   private concurrencyLimiters: ConcurrencyLimiterRegistry;
+  private configPlugins: PluginRegistration[] = [];
 
   constructor(config: GatewayConfig) {
     this.config = config;
     this.aliases = config.aliases ?? {};
     this.registry = new ProviderRegistry();
     this.pluginManager = new PluginManager();
+    this.applyConfigPlugins(buildPluginsFromConfig(config.plugins));
     this.mcpRegistry = new McpRegistry();
     this.mcpExecutor = null;
     this.circuitBreakers = new CircuitBreakerRegistry();
@@ -441,7 +444,7 @@ export class Gateway {
 
     const resolved = this.resolveAlias(req);
 
-    const pluginCtx = createPluginContext(resolved);
+    const pluginCtx = createPluginContext(resolved, ctx);
     try {
       await this.pluginManager.runBefore(pluginCtx);
     } catch (err) {
@@ -524,7 +527,7 @@ export class Gateway {
 
     const resolved = this.resolveAlias(req);
 
-    const pluginCtx = createPluginContext(resolved);
+    const pluginCtx = createPluginContext(resolved, ctx);
     try {
       await this.pluginManager.runBefore(pluginCtx);
     } catch (err) {
@@ -565,7 +568,7 @@ export class Gateway {
     const pluginCtx = createPluginContext({
       model: req.model,
       messages: [{ role: "user", content: typeof req.input === "string" ? req.input : req.input.join("\n") }],
-    });
+    }, ctx);
     pluginCtx.metadata["_surface"] = "embedding";
 
     try {
@@ -597,7 +600,7 @@ export class Gateway {
     const pluginCtx = createPluginContext({
       model: req.model,
       messages: [{ role: "user", content: req.prompt }],
-    });
+    }, ctx);
     pluginCtx.metadata["_surface"] = "image";
 
     try {
@@ -668,7 +671,21 @@ export class Gateway {
     this.pluginManager.register(stage, plugin);
   }
 
+  /** Swap the plugins built from config.plugins; programmatic registrations are kept. */
+  private applyConfigPlugins(next: PluginRegistration[]): void {
+    for (const { stage, plugin } of this.configPlugins) {
+      this.pluginManager.unregister(stage, plugin);
+    }
+    for (const { stage, plugin } of next) {
+      this.pluginManager.register(stage, plugin);
+    }
+    this.configPlugins = next;
+  }
+
   reloadConfig(config: GatewayConfig): void {
+    // Build first so an invalid plugin config fails before any state changes.
+    const plugins = buildPluginsFromConfig(config.plugins);
+    this.applyConfigPlugins(plugins);
     this.config = config;
     this.aliases = config.aliases ?? {};
 
