@@ -4,6 +4,8 @@
  * When MCP tools are configured:
  * 1. Inject MCP tool definitions into the request (if caller didn't send their own tools)
  * 2. After getting a response with tool_calls, execute each via the matching MCP server
+ *    — only when the tools were injected by the gateway and every call is an MCP tool;
+ *    otherwise the response is returned to the client unchanged
  * 3. Build a new message with tool results and send the augmented conversation back
  * 4. Repeat until no more tool_calls or depth limit reached
  */
@@ -30,6 +32,9 @@ export class McpCallDepthError extends Error {
 }
 
 export class McpExecutor {
+  /** Requests whose `tools` were injected by this executor (vs. supplied by the caller). */
+  private readonly injectedRequests = new WeakSet<ChatCompletionRequest>();
+
   constructor(
     private readonly registry: McpToolRegistry,
     private readonly maxCallDepth: number = DEFAULT_MAX_CALL_DEPTH,
@@ -55,7 +60,23 @@ export class McpExecutor {
       },
     }));
 
-    return { ...req, tools };
+    const injected: ChatCompletionRequest = { ...req, tools };
+    this.injectedRequests.add(injected);
+    return injected;
+  }
+
+  /**
+   * Whether the gateway should run the agentic loop for this request/response:
+   * only when the request's tools are not caller-supplied and every tool_call
+   * targets a tool owned by an MCP server. Otherwise the tool_calls belong to
+   * the client and the response must be returned to it unchanged.
+   */
+  shouldHandle(req: ChatCompletionRequest, response: ChatCompletionResponse): boolean {
+    const toolCalls = this.extractToolCalls(response);
+    if (toolCalls.length === 0) return false;
+    if (req.tools && req.tools.length > 0 && !this.injectedRequests.has(req)) return false;
+    const mcpToolNames = new Set(this.registry.allTools().map((t) => t.name));
+    return toolCalls.every((call) => mcpToolNames.has(call.function.name));
   }
 
   /**
@@ -85,6 +106,9 @@ export class McpExecutor {
     while (true) {
       const toolCalls = this.extractToolCalls(currentResponse);
       if (toolCalls.length === 0) break;
+      // Client-owned tool calls (caller-supplied tools, or any call that no MCP
+      // server owns) are handed back to the client untouched.
+      if (!this.shouldHandle(req, currentResponse)) break;
 
       if (depth >= this.maxCallDepth) {
         throw new McpCallDepthError(this.maxCallDepth);
