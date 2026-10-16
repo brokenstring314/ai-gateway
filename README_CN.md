@@ -399,6 +399,19 @@ GET /v1/capabilities
 
 返回每个提供商的参数支持配置（哪些 OpenAI 参数被支持）。
 
+### 其他 `/v1/*` 路由（透传代理，需显式开启）
+
+路由前会先规范化路径：重复斜杠、末尾斜杠、`%2F` 以及上述路由的大小写变体（如 `/v1/chat/completions/`、`/v1//chat/completions`、`/V1/Chat/Completions`）都会进入真正的处理器，因此始终经过插件、熔断和回退。
+
+其他 `/v1/*` 路由（如 `/v1/responses`、`/v1/files`）默认返回 **404**，除非开启透传代理：
+
+```yaml
+passthroughProxy:
+  enabled: true   # 默认 false
+```
+
+开启后，请求会先运行 **before-request 插件**（限流、预算检查、对 `messages` / `input` / `prompt` / `instructions` 的敏感词过滤），再按 `X-Provider` 头或请求体顶层 `model` 原样转发。由于请求体结构未知，需要改写内容的插件（word-filter `redact`）或短路会直接返回 403。透传请求**没有**熔断、回退、after-request 插件和预算累计，因此默认关闭。
+
 ### 健康探针
 
 | 端点            | 用途                           | 状态码       |

@@ -113,6 +113,9 @@ server:
   idleTimeoutSeconds: 255   # Bun idle timeout; 0 = never, max/default 255
   sseHeartbeatSeconds: 5    # SSE ": ping" comment while a stream is idle; 0 = off
 
+passthroughProxy:
+  enabled: false            # forward other /v1/* routes upstream (see API Endpoints)
+
 strategy:
   mode: single              # single | fallback | loadbalance | conditional |
                              # least_latency | cost_optimized | content_based | abtest
@@ -400,6 +403,30 @@ GET /v1/capabilities
 ```
 
 Returns per-provider parameter support profiles (which OpenAI parameters each provider supports).
+
+### Other `/v1/*` routes (pass-through proxy, opt-in)
+
+Paths are normalized before routing: duplicate slashes, a trailing slash, `%2F`
+and case variants of the routes above (e.g. `/v1/chat/completions/`,
+`/v1//chat/completions`, `/V1/Chat/Completions`) are served by the real
+handlers, so they always get plugins, circuit breakers and fallback.
+
+Any other `/v1/*` route (e.g. `/v1/responses`, `/v1/files`) returns **404**
+unless the pass-through proxy is enabled:
+
+```yaml
+passthroughProxy:
+  enabled: true   # default: false
+```
+
+When enabled, the request is forwarded verbatim to the target chosen by the
+`X-Provider` header or the body's top-level `model`, after the
+**before-request plugins** run on it (rate-limit, budget check, word-filter on
+`messages` / `input` / `prompt` / `instructions`). Because the body shape is
+unknown, a plugin that would rewrite content (word-filter `redact`) or
+short-circuit causes a 403 instead. Proxied requests do **not** get circuit
+breakers, fallback, after-request plugins or budget accrual, which is why the
+proxy is off by default.
 
 ### Health Probes
 

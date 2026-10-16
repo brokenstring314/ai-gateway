@@ -19,6 +19,8 @@ import { bodyLimitMiddleware } from "./middleware/body-limit.js";
 import { securityHeadersMiddleware } from "./middleware/security-headers.js";
 import { corsMiddleware } from "./middleware/cors.js";
 import { authMiddleware } from "./middleware/auth.js";
+import { getNormalizedPath } from "./server/route-path.js";
+import { PluginRejectionError } from "./plugins/error.js";
 import { isClientAuthEnabled } from "./config/production-safety.js";
 import { adminAuthMiddleware } from "./middleware/auth.js";
 import type { KeyStore } from "./persistence/key-store.js";
@@ -62,7 +64,7 @@ export function createApp(
   keyStore?: KeyStore,
   options?: Omit<CreateAppOptions, "keyStore">,
 ): AppType {
-  const app: AppType = new Hono<AppEnv>();
+  const app: AppType = new Hono<AppEnv>({ getPath: getNormalizedPath });
 
   // ── Middleware (order matters) ──
   app.use("*", recoverMiddleware());
@@ -144,13 +146,42 @@ export function createApp(
     return target === undefined ? undefined : resolveProxyTarget(expandTargetEnvRefs(target));
   };
 
-  app.all("/v1/*", createProxyHandler({
-    resolveTarget,
-    keyStore,
-    environment: process.env["GATEWAY_ENV"],
-    allowUnauthenticatedProxy:
-      process.env["ALLOW_UNAUTHENTICATED_PROXY"] === "true" || !clientAuthEnabled,
-  }));
+  // Pass-through proxy for other /v1/* routes (e.g. /v1/responses, /v1/files).
+  // It cannot apply circuit breakers, fallback, response-side plugins or
+  // budget accrual (the body/usage shapes are unknown), so it is OPT-IN
+  // (passthroughProxy.enabled: true). When enabled, before-request plugins
+  // (rate-limit, budget check, word-filter on messages/input/prompt) run first.
+  if (config.passthroughProxy?.enabled === true) {
+    app.all("/v1/*", createProxyHandler({
+      resolveTarget,
+      keyStore,
+      environment: process.env["GATEWAY_ENV"],
+      allowUnauthenticatedProxy:
+        process.env["ALLOW_UNAUTHENTICATED_PROXY"] === "true" || !clientAuthEnabled,
+      beforeForward: async (c, bodyText) => {
+        try {
+          await gateway.runPassthroughBeforePlugins(
+            { metadata: { apiKey: (c.get as unknown as (k: string) => unknown)("apiKey") } },
+            bodyText,
+          );
+          return undefined;
+        } catch (err) {
+          if (err instanceof PluginRejectionError) {
+            return c.json({ error: { message: err.reason, type: "plugin_rejection", code: "plugin_rejected" } }, 403);
+          }
+          throw err;
+        }
+      },
+    }));
+  } else {
+    app.all("/v1/*", (c) => c.json({
+      error: {
+        message: `Unknown route ${c.req.method} ${c.req.path}. The pass-through proxy is disabled (set passthroughProxy.enabled: true to forward other /v1/* routes).`,
+        type: "invalid_request_error",
+        code: "unknown_route",
+      },
+    }, 404));
+  }
 
   // ── Admin API ──
   const adminApp = createAdminApp(gateway, config, configPath, {
