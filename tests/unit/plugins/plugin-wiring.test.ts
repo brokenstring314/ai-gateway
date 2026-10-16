@@ -203,3 +203,10 @@ describe("H3: config.plugins are instantiated", () => {
     await expect(gw.route({ metadata: {} }, msg("new"))).rejects.toThrow();
   });
 });
+
+describe("createPluginContext", () => {
+  it("tolerates a RequestContext without metadata", () => {
+    const ctx = createPluginContext(msg("a"), {} as RequestContext);
+    expect(ctx.metadata["api_key"]).toBeUndefined();
+  });
+});

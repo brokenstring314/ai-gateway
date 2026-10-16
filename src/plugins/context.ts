@@ -24,7 +24,8 @@ export function createPluginContext(
   reqCtx?: RequestContext,
 ): InternalPluginContext {
   const metadata: Record<string, unknown> = {};
-  const apiKey = reqCtx?.metadata["apiKey"];
+  // Callers may pass a bare context without metadata; tolerate it.
+  const apiKey = (reqCtx?.metadata as Record<string, unknown> | undefined)?.["apiKey"];
   if (typeof apiKey === "string" && apiKey.length > 0) {
     metadata["api_key"] = apiKeyId(apiKey);
   }
