@@ -13,7 +13,8 @@ export {
   McpCallDepthError,
   DEFAULT_MAX_CALL_DEPTH,
 } from "./executor.js";
-export { McpRegistry } from "./registry.js";
+export { McpRegistry, DEFAULT_MCP_RESTART_POLICY } from "./registry.js";
+export type { McpRestartPolicy } from "./registry.js";
 export type {
   McpTool,
   McpToolCall,

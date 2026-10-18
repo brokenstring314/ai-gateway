@@ -11,8 +11,17 @@ export function registerHealthHandler(app: AppType): void {
   });
 }
 
-export function registerLivenessHandler(app: AppType): void {
+/**
+ * GET /livez — process liveness. Fails (503) only when a required MCP server
+ * has failed too many consecutive reconnect attempts: restarting the pod is
+ * then the remedy, whereas readiness alone would leave a zombie replica.
+ */
+export function registerLivenessHandler(app: AppType, gateway?: Gateway): void {
   app.get("/livez", (c) => {
+    const live = (gateway as unknown as { isMcpLive?: () => boolean } | undefined)?.isMcpLive?.() ?? true;
+    if (!live) {
+      return c.json({ status: "failing", reason: "required MCP server keeps failing to reconnect" }, 503);
+    }
     return c.json({ status: "ok" }, 200);
   });
 }

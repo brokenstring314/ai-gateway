@@ -350,6 +350,15 @@ export class Gateway {
     );
   }
 
+  /**
+   * Liveness: false once a required MCP server has failed its reconnect
+   * attempts too many times in a row (see McpRestartPolicy), so the
+   * orchestrator restarts the process.
+   */
+  isMcpLive(): boolean {
+    return this.mcpRegistry.requiredServersLive();
+  }
+
   /** Whether every configured required MCP server completed initialization. */
   isMcpReady(): boolean {
     return this.mcpRegistry.requiredServersReady();

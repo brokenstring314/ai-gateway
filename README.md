@@ -431,7 +431,7 @@ proxy is off by default.
 | Endpoint      | Purpose                                      | Status Codes |
 | ------------- | -------------------------------------------- | ------------ |
 | `GET /health` | General health check                         | 200          |
-| `GET /livez`  | Process liveness (Kubernetes liveness probe) | 200          |
+| `GET /livez`  | Process liveness (Kubernetes liveness probe). 503 only when a `required` MCP server has failed 5 consecutive reconnect attempts, so the orchestrator restarts the pod | 200 / 503    |
 | `GET /readyz` | Readiness: config + providers loaded, config store and required MCP servers up, not draining. Upstream circuit-breaker state does **not** affect readiness (every replica shares the same upstreams; failing readiness would pull the whole fleet); it is reported in the body as `circuitBreakers` / `upstreamAvailable`. Returns 503 immediately once SIGTERM/SIGINT drain starts, and new requests are refused with 503 during the drain | 200 / 503    |
 
 ### Metrics
@@ -807,6 +807,7 @@ User request → LLM returns tool_calls → Gateway executes tools via MCP
 ```
 
 - MCP tool calls have a 30-second timeout per call
+- **Crash recovery:** if a stdio server fails to start or its process exits, the gateway reconnects it in the background with exponential backoff (1 s, 2 s, 4 s, … capped at 60 s) and logs every disconnect, failed attempt and recovery (`[mcp] server "name" ...`). Its tools are unavailable while it is down (and `/readyz` is 503 if it is `required`). After 5 consecutive failed attempts of a `required` server, `/livez` returns 503 so Kubernetes restarts the pod instead of keeping a never-ready replica.
 - **Environment:** stdio servers do **not** inherit the gateway's environment. They get only `PATH`, `HOME`, `USER`, `LOGNAME`, `SHELL`, `TERM`, `TZ`, `LANG`, `LANGUAGE`, `LC_ALL`, `LC_CTYPE`, `TMPDIR` (plus the Windows basics `SYSTEMROOT`, `WINDIR`, `COMSPEC`, `PATHEXT`, `TEMP`, `TMP`, `USERPROFILE`, `APPDATA`, `LOCALAPPDATA`) and the server's own `env` map, so provider API keys, `ADMIN_BOOTSTRAP_KEY`, OTLP tokens and cloud credentials never reach third-party MCP packages. Pass what a server needs in `env`, list extra variable names with `inheritEnv: ["HTTPS_PROXY", "NODE_EXTRA_CA_CERTS"]`, or opt back into full inheritance with `inheritEnv: true` (not recommended).
 - MCP tools are injected into **non-streaming** requests only. Streaming requests (`stream: true`) are forwarded without MCP tools and no agentic loop runs, so a streaming client never receives tool_calls for gateway-side tools it did not declare. Use a non-streaming request when you want the gateway to run MCP tools.
 

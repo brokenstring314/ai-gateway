@@ -92,7 +92,8 @@ describe("MCP handshake timeouts", () => {
       ]);
       expect(outcome).toBe("done");
       expect(Date.now() - start).toBeLessThan(1000);
-      expect(gw.mcpReadiness()).toEqual({ good: "initialized" });
+      // The hung server stays registered (unready) and is retried in the background.
+      expect(gw.mcpReadiness()).toEqual({ good: "initialized", hung: "unready" });
       expect(errSpy.mock.calls.some((c) => String(c[0]).includes('"hung"'))).toBe(true);
     } finally {
       errSpy.mockRestore();
