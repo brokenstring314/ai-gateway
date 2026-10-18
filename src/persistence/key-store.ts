@@ -9,7 +9,8 @@
  *   - timing-safe hash comparison via timingSafeEqual
  */
 
-import type { Database, Statement } from "bun:sqlite";
+import { Database, type Statement } from "bun:sqlite";
+import { join } from "node:path";
 import { hashKey, displayKey, generateAPIKey, generateID, timingSafeEqual } from "@/auth/key-hash";
 import { runMigrations, type MigrationStep } from "@/persistence/migrations";
 
@@ -33,6 +34,54 @@ export interface APIKey {
   lastUsedAt: Date | null;
 }
 
+/**
+ * Thrown by create()/update() with `requireUnlatched` when the bootstrap
+ * latch is already set (see isBootstrapLatched). Callers authenticated with a
+ * bootstrap key map it to 401, the same answer as an invalid credential.
+ */
+export class BootstrapLatchedError extends Error {
+  constructor() {
+    super("bootstrap latch is set; bootstrap credentials are refused");
+    this.name = "BootstrapLatchedError";
+  }
+}
+
+export interface KeyWriteOptions {
+  /**
+   * Fail with BootstrapLatchedError (and write nothing) if the bootstrap
+   * latch is already set. Checked inside the write transaction, so of two
+   * concurrent bootstrap-authenticated requests creating an admin key only
+   * the first succeeds.
+   */
+  requireUnlatched?: boolean;
+}
+
+/** Data directory used when none is given: GATEWAY_DATA_DIR, else ./.data. */
+export function resolveDataDir(dataDir?: string): string {
+  return dataDir ?? process.env["GATEWAY_DATA_DIR"] ?? ".data";
+}
+
+/** The API key store database inside a data directory. */
+export function keyStorePath(dataDir: string): string {
+  return join(dataDir, "api-keys.sqlite");
+}
+
+/**
+ * Open (or create) the key store database with the settings every process
+ * sharing it uses: WAL journal (readers never block the writer) and a busy
+ * timeout, so the CLI (`ai-gateway keys ...`) can write while the server runs.
+ */
+export function openKeyStoreDatabase(path: string, opts: { create?: boolean } = {}): Database {
+  const db = new Database(path, { create: opts.create ?? true, readwrite: true });
+  db.exec("PRAGMA busy_timeout = 5000");
+  try {
+    db.exec("PRAGMA journal_mode = WAL");
+  } catch {
+    // Another connection holds the database in rollback mode; keep its mode.
+  }
+  return db;
+}
+
 export class KeyNotFoundError extends Error {
   constructor(id: string) {
     super(`key not found: ${id}`);
@@ -45,6 +94,8 @@ export class KeyNotFoundError extends Error {
 // ---------------------------------------------------------------------------
 
 const LEDGER = "api_key_schema_migrations";
+/** Meta table row: set once the first admin key exists; never cleared. */
+const META_BOOTSTRAP_LATCH = "admin_bootstrap_latched_at";
 const PRIMARY_TABLE = "api_keys";
 /** Full management access: /admin/* (read and write) and /v1/*. */
 export const SCOPE_ADMIN = "admin";
@@ -136,7 +187,34 @@ CREATE TABLE IF NOT EXISTS api_keys (
         }
       },
     },
+    {
+      // Small key/value table for store-wide state, starting with the
+      // one-way bootstrap latch. A database that already holds any
+      // admin-scoped key (active, revoked or expired) is latched on upgrade:
+      // an admin credential has existed, so the bootstrap key is retired.
+      version: 4,
+      name: "api_key_meta_bootstrap_latch",
+      fn: (db) => {
+        db.exec("CREATE TABLE IF NOT EXISTS api_key_meta (key TEXT PRIMARY KEY, value TEXT NOT NULL)");
+        const rows = db.query("SELECT scopes FROM api_keys").all() as Array<{ scopes: string }>;
+        if (rows.some((r) => scopesIncludeAdmin(r.scopes))) {
+          db.prepare("INSERT OR IGNORE INTO api_key_meta(key, value) VALUES(?, ?)").run(
+            META_BOOTSTRAP_LATCH,
+            new Date().toISOString(),
+          );
+        }
+      },
+    },
   ];
+}
+
+function scopesIncludeAdmin(raw: string): boolean {
+  try {
+    const scopes: unknown = JSON.parse(raw);
+    return Array.isArray(scopes) && scopes.includes(SCOPE_ADMIN);
+  } catch {
+    return false;
+  }
 }
 
 // ---------------------------------------------------------------------------
@@ -194,6 +272,10 @@ export class KeyStore {
   private stmtDelete!: Statement<unknown, [string]>;
   private stmtUsage!: Statement<unknown, [string, string]>;
   private stmtRotate!: Statement<unknown, [string, string, string, string]>;
+  private stmtGetLatch!: Statement<{ value: string }, [string]>;
+  private stmtSetLatch!: Statement<unknown, [string, string]>;
+  /** The latch is one-way, so once seen set it is cached. */
+  private latchedAt: Date | null = null;
 
   private constructor(db: Database) {
     this.db = db;
@@ -220,6 +302,50 @@ export class KeyStore {
       "UPDATE api_keys SET usage_count = usage_count + 1, last_used_at = ? WHERE id = ?",
     );
     this.stmtRotate = this.db.prepare("UPDATE api_keys SET key_hash = ?, key_display = ?, rotated_at = ? WHERE id = ?");
+    this.stmtGetLatch = this.db.prepare<{ value: string }, [string]>("SELECT value FROM api_key_meta WHERE key = ?");
+    this.stmtSetLatch = this.db.prepare("INSERT OR IGNORE INTO api_key_meta(key, value) VALUES(?, ?)");
+  }
+
+  // -------------------------------------------------------------------------
+  // Bootstrap latch
+  // -------------------------------------------------------------------------
+
+  /**
+   * When the bootstrap latch was set, or null while it is not. The latch is
+   * set in the same transaction that first stores an admin-scoped key
+   * (create, or update granting admin) and is never cleared: revoking,
+   * expiring or deleting every admin key does not re-enable
+   * ADMIN_BOOTSTRAP_KEY. Read from the database (not just this instance), so
+   * a key created by the CLI in another process is seen.
+   */
+  bootstrapLatchedAt(): Date | null {
+    if (this.latchedAt !== null) return this.latchedAt;
+    const row = this.stmtGetLatch.get(META_BOOTSTRAP_LATCH);
+    if (row !== null) this.latchedAt = new Date(row.value);
+    return this.latchedAt;
+  }
+
+  /** True once the first admin key has existed (see bootstrapLatchedAt). */
+  isBootstrapLatched(): boolean {
+    return this.bootstrapLatchedAt() !== null;
+  }
+
+  /**
+   * Run `write` in an IMMEDIATE transaction (the write lock is taken up
+   * front, so concurrent writers in other processes serialize), checking
+   * and setting the latch around it.
+   */
+  private latchedWrite<T>(grantsAdmin: boolean, opts: KeyWriteOptions | undefined, write: () => T): T {
+    return this.db
+      .transaction(() => {
+        if (opts?.requireUnlatched && this.stmtGetLatch.get(META_BOOTSTRAP_LATCH) !== null) {
+          throw new BootstrapLatchedError();
+        }
+        const result = write();
+        if (grantsAdmin) this.stmtSetLatch.run(META_BOOTSTRAP_LATCH, new Date().toISOString());
+        return result;
+      })
+      .immediate();
   }
 
   // -------------------------------------------------------------------------
@@ -230,31 +356,34 @@ export class KeyStore {
    * Generate a new API key. The full secret is returned; only the hash and
    * display form are persisted. Empty scopes default to ["inference"]
    * (inference only); admin access must be requested explicitly. Throws
-   * InvalidScopeError for an unknown scope.
+   * InvalidScopeError for an unknown scope. An admin-scoped key sets the
+   * bootstrap latch in the same transaction.
    */
-  create(name: string, scopes: string[], expiresAt?: Date): APIKey {
+  create(name: string, scopes: string[], expiresAt?: Date, opts?: KeyWriteOptions): APIKey {
     assertValidScopes(scopes);
     const finalScopes = scopes.length > 0 ? [...new Set(scopes)] : [...DEFAULT_SCOPES];
     const key = generateAPIKey();
     const id = generateID();
     const now = new Date();
 
-    this.db
-      .prepare(
-        `INSERT INTO api_keys(id, key_hash, key_display, name, scopes, created_at, revoked_at, expires_at, rotated_at, active, usage_count, last_used_at)
+    this.latchedWrite(finalScopes.includes(SCOPE_ADMIN), opts, () =>
+      this.db
+        .prepare(
+          `INSERT INTO api_keys(id, key_hash, key_display, name, scopes, created_at, revoked_at, expires_at, rotated_at, active, usage_count, last_used_at)
          VALUES(?, ?, ?, ?, ?, ?, NULL, ?, NULL, ?, ?, NULL)`,
-      )
-      .run(
-        id,
-        hashKey(key),
-        displayKey(key),
-        name,
-        JSON.stringify(finalScopes),
-        now.toISOString(),
-        expiresAt ? expiresAt.toISOString() : null,
-        1,
-        0,
-      );
+        )
+        .run(
+          id,
+          hashKey(key),
+          displayKey(key),
+          name,
+          JSON.stringify(finalScopes),
+          now.toISOString(),
+          expiresAt ? expiresAt.toISOString() : null,
+          1,
+          0,
+        ),
+    );
 
     return {
       id,
@@ -284,8 +413,8 @@ export class KeyStore {
 
   /**
    * True if at least one usable admin-scoped key exists (active, not
-   * revoked, not expired). Used to retire ADMIN_BOOTSTRAP_KEY once a real
-   * admin credential has been created.
+   * revoked, not expired). Not what retires ADMIN_BOOTSTRAP_KEY: that is the
+   * one-way latch (isBootstrapLatched), which revoking keys never clears.
    */
   hasActiveAdminKey(now: Date = new Date()): boolean {
     const rows = this.db
@@ -391,7 +520,7 @@ export class KeyStore {
    * ignored (matching Go). Throws InvalidScopeError for an unknown scope.
    * Returns the updated key.
    */
-  update(id: string, name: string, scopes: string[]): APIKey {
+  update(id: string, name: string, scopes: string[], opts?: KeyWriteOptions): APIKey {
     assertValidScopes(scopes);
     const current = this.get(id);
     if (current === null) {
@@ -401,7 +530,9 @@ export class KeyStore {
     const newName = name !== "" ? name : current.name;
     const newScopes = scopes.length > 0 ? [...new Set(scopes)] : current.scopes;
 
-    this.stmtUpdate.run(newName, JSON.stringify(newScopes), id);
+    this.latchedWrite(newScopes.includes(SCOPE_ADMIN), opts, () =>
+      this.stmtUpdate.run(newName, JSON.stringify(newScopes), id),
+    );
 
     return {
       ...current,

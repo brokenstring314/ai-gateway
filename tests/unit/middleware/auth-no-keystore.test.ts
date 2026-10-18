@@ -126,8 +126,8 @@ describe("ai-gateway serve CLI uses the main bootstrap", () => {
 });
 
 describe("clientCredentialWarning", () => {
-  const empty = { isEmpty: () => true, hasActiveAdminKey: () => false };
-  const full = { isEmpty: () => false, hasActiveAdminKey: () => true };
+  const empty = { isEmpty: () => true, isBootstrapLatched: () => false };
+  const full = { isEmpty: () => false, isBootstrapLatched: () => true };
   it("warns when auth is on and nothing can authenticate", () => {
     expect(clientCredentialWarning(cfg(), empty, undefined)).toContain("no client keys");
   });

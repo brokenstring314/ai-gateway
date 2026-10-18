@@ -119,6 +119,9 @@ export function authMiddleware(opts: AuthMiddlewareOptions): MiddlewareHandler {
     if (bootstrapScopes !== undefined) {
       c.set("apiKey", token);
       c.set("keyScopes", bootstrapScopes);
+      // Key-store writes under a bootstrap credential re-check the latch in
+      // their transaction (admin/key-handlers.ts).
+      c.set("authMethod", "bootstrap");
       await next();
       return;
     }
@@ -198,6 +201,9 @@ export function adminAuthMiddleware(opts: AdminAuthMiddlewareOptions): Middlewar
     if (bootstrapScopes !== undefined) {
       c.set("apiKey", token);
       c.set("keyScopes", bootstrapScopes);
+      // Key-store writes under a bootstrap credential re-check the latch in
+      // their transaction (admin/key-handlers.ts).
+      c.set("authMethod", "bootstrap");
       await next();
       return;
     }

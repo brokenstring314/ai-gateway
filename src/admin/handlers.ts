@@ -3,7 +3,7 @@
  *
  * Admin routes are protected by adminAuthMiddleware: admin- or read_only-scoped
  * API keys, the admin secret (X-Admin-Secret or Bearer), or bootstrap keys
- * (while the key store is empty) are accepted. Every mutating route is further
+ * (until the first admin credential exists, see auth/bootstrap.ts) are accepted. Every mutating route is further
  * gated by requireScope(SCOPE_ADMIN), so read_only credentials can only read. If no keyStore is provided, the legacy
  * X-Admin-Secret-only check applies.
  */

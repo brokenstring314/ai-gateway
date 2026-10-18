@@ -16,7 +16,13 @@
 
 import type { Context, MiddlewareHandler } from "hono";
 import type { ConfigState } from "./config-handlers.js";
-import { KeyNotFoundError, VALID_SCOPES, type APIKey, type KeyStore } from "@/persistence/key-store";
+import {
+  BootstrapLatchedError,
+  KeyNotFoundError,
+  VALID_SCOPES,
+  type APIKey,
+  type KeyStore,
+} from "@/persistence/key-store";
 
 export { SCOPE_ADMIN, SCOPE_READ_ONLY, SCOPE_INFERENCE } from "@/persistence/key-store";
 
@@ -67,6 +73,29 @@ function serializeKey(key: APIKey) {
     usageCount: key.usageCount,
     lastUsedAt: key.lastUsedAt !== null ? key.lastUsedAt.toISOString() : null,
   };
+}
+
+/**
+ * Writes made with a bootstrap credential must re-check the latch inside the
+ * write transaction: two requests can both pass auth before either stores an
+ * admin key, and only the first may succeed.
+ */
+function writeOptions(c: Context) {
+  return { requireUnlatched: c.get("authMethod") === "bootstrap" };
+}
+
+/** Same 401 as adminAuthMiddleware gives an invalid credential. */
+function bootstrapRefused(c: Context) {
+  return c.json(
+    {
+      error: {
+        message: "Invalid admin credentials",
+        type: "authentication_error",
+        code: "invalid_admin_secret",
+      },
+    },
+    401,
+  );
 }
 
 function notFound(c: Context) {
@@ -144,7 +173,13 @@ export function createKeyHandler(state: KeyHandlerState) {
     }
 
     // Empty/omitted scopes default to ["inference"] in the store.
-    const created = state.keyStore.create(name, scopes, expiresAt);
+    let created: APIKey;
+    try {
+      created = state.keyStore.create(name, scopes, expiresAt, writeOptions(c));
+    } catch (err) {
+      if (err instanceof BootstrapLatchedError) return bootstrapRefused(c);
+      throw err;
+    }
     return c.json(
       {
         id: created.id,
@@ -173,10 +208,16 @@ export function updateKeyHandler(state: KeyHandlerState) {
     try {
       const id = c.req.param("id");
       if (id === undefined) return notFound(c);
-      const updated = state.keyStore.update(id, typeof body?.name === "string" ? body.name : "", scopes);
+      const updated = state.keyStore.update(
+        id,
+        typeof body?.name === "string" ? body.name : "",
+        scopes,
+        writeOptions(c),
+      );
       return c.json(serializeKey(updated));
     } catch (err) {
       if (err instanceof KeyNotFoundError) return notFound(c);
+      if (err instanceof BootstrapLatchedError) return bootstrapRefused(c);
       throw err;
     }
   };

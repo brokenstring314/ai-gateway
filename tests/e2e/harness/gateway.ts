@@ -17,6 +17,10 @@ export interface GatewayProcess {
   readonly base: string; // http://127.0.0.1:<port>
   readonly port: number;
   readonly proc: ReturnType<typeof Bun.spawn>;
+  /** The config file the gateway was started with. */
+  readonly configPath: string;
+  /** Its GATEWAY_DATA_DIR (key and log stores). */
+  readonly dataDir: string;
   /** Everything the process printed so far (stdout + stderr). */
   logs(): string;
   /** OpenAI SDK client pointed at the gateway (no retries). */
@@ -34,6 +38,8 @@ export interface StartOptions {
   entry?: "index" | "cli";
   env?: Record<string, string>;
   readyTimeoutMs?: number;
+  /** GATEWAY_DATA_DIR to use (kept on stop, so a restart sees the same stores); default: a temp dir. */
+  dataDir?: string;
 }
 
 async function freePort(): Promise<number> {
@@ -75,12 +81,13 @@ export async function startGateway(opts: StartOptions): Promise<GatewayProcess> 
   const cfgPath = join(dir, "config.json");
   writeFileSync(cfgPath, JSON.stringify(config, null, 2));
   const entry = opts.entry === "cli" ? "src/cli/index.ts" : "src/index.ts";
+  const dataDir = opts.dataDir ?? join(dir, "data");
 
   const proc = Bun.spawn([process.execPath, entry, "serve", "-c", cfgPath], {
     cwd: REPO_ROOT,
     env: {
       ...process.env,
-      GATEWAY_DATA_DIR: join(dir, "data"),
+      GATEWAY_DATA_DIR: dataDir,
       // Keep any per-IP limiter out of the way of the test client.
       RATE_LIMIT_RPS: "100000",
       RATE_LIMIT_BURST: "100000",
@@ -132,6 +139,8 @@ export async function startGateway(opts: StartOptions): Promise<GatewayProcess> 
     base,
     port,
     proc,
+    configPath: cfgPath,
+    dataDir,
     logs: () => out,
     client: (o = {}) =>
       new OpenAI({
