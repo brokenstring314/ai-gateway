@@ -41,6 +41,10 @@ export interface Surface<Req, Res, Chunk = never> {
    * the model.
    */
   readonly candidates: "strategy" | "capable";
+  /** Capability name in "model does not support …" errors (capable surfaces). */
+  readonly unsupportedLabel?: string;
+  /** Value of plugin metadata `_surface` (unset for chat, which plugins treat as the default). */
+  readonly pluginSurfaceTag?: string;
   model(req: Req): string;
   withModel(req: Req, model: string): Req;
   /** The unified view before-request plugins see (messages + model + maxTokens). */
@@ -52,8 +56,10 @@ export interface Surface<Req, Res, Chunk = never> {
   call(p: IProvider, ctx: RequestCtx, req: Req): Promise<Res>;
   callStream?(p: IProvider, ctx: RequestCtx, req: Req): AsyncIterable<Chunk>;
   usage(res: Res): Usage | undefined;
-  /** Chat-shaped view of a result for after-request plugins. */
-  toPluginResponse(res: Res, target: string): ChatCompletionResponse;
+  /** Chat-shaped view of a result for after-request plugins (undefined: plugins see no response). */
+  toPluginResponse(res: Res, target: string): ChatCompletionResponse | undefined;
+  /** Expose the raw result to after-request plugins (e.g. metadata._embeddingResponse). */
+  exposeResult?(pc: PluginContext, res: Res): void;
   /** Apply an after-plugin replacement back onto the result (chat only); default keeps `res`. */
   fromPluginResponse?(res: Res, view: ChatCompletionResponse): Res;
   /** Result for a before-plugin short-circuit; undefined → the short-circuit is rejected. */
@@ -124,6 +130,8 @@ export interface RequestRun<Req, Res, Chunk = never> {
   /** Request after alias resolution and before-plugins (what goes upstream). */
   request: Req;
   readonly pluginCtx: PluginContext;
+  /** Tracing span ended by finalize(). */
+  readonly span?: unknown;
   /** Set once finalize() has run. */
   finalized: boolean;
 }

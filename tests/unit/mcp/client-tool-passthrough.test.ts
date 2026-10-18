@@ -109,15 +109,22 @@ describe("Gateway.route with caller-supplied tools", () => {
       targets: [{ name: "a", provider: "openai", apiKey: "sk-test", baseURL: "http://localhost:1/v1" }],
       mcpServers: [{ name: "srv", command: "fake" }],
     } as never);
-    const g = gw as unknown as Record<string, unknown>;
-    g["executeWithCircuitBreaker"] = async () => toolResponse("client_weather");
-    const { strategy, calls } = countingStrategy();
-    g["strategy"] = strategy;
+    let upstreamCalls = 0;
+    gw.registerProvider({
+      name: "a",
+      supportedModels: () => [],
+      supportsModel: () => true,
+      models: () => [],
+      complete: async () => {
+        upstreamCalls++;
+        return toolResponse("client_weather");
+      },
+    } as never);
     const out = await gw.route({ traceId: "t" } as RequestContext, {
       ...baseReq,
       tools: [{ type: "function", function: { name: "client_weather", parameters: {} } }],
     });
-    expect(calls()).toBe(0);
+    expect(upstreamCalls).toBe(1); // no agentic loop round
     expect(out.choices[0]?.message?.toolCalls?.[0]?.function.name).toBe("client_weather");
   });
 });

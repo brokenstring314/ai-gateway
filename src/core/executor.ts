@@ -51,6 +51,10 @@ export interface ExecutorDeps {
   readonly limiter?: (name: string) => ConcurrencyLimiter | undefined;
   /** Per-target retry; undefined means a single attempt. */
   readonly retryConfig?: (name: string) => RetryConfig | undefined;
+  /** Called for every failed admitted attempt (metrics: provider errors), including ones that fail over. */
+  readonly onAttemptFailure?: (name: string, err: unknown) => void;
+  /** Called after a breaker permit is settled (metrics: breaker state). */
+  readonly onBreakerSettled?: (name: string, breaker: CircuitBreaker) => void;
 }
 
 export interface RunOptions {
@@ -127,22 +131,34 @@ export class TargetExecutor {
   /** Settle a failed admitted attempt and return the error to rethrow. */
   private settleFailure(name: string, a: Admission, ctx: RequestContext, err: unknown, started: boolean): unknown {
     const c = classifyAttemptError(err, { signal: ctx?.signal, admitted: true, started });
-    this.settle(a, c.breaker);
+    this.settle(a, c.breaker, name);
+    if (c.breaker === "failure") this.notify(() => this.deps.onAttemptFailure?.(name, c.timedOut ? gatewayTimeout(name) : err));
     return c.timedOut ? gatewayTimeout(name) : err;
   }
 
-  private settle(a: Admission, how: "success" | "failure" | "release"): void {
+  private settle(a: Admission, how: "success" | "failure" | "release", name: string): void {
     if (!a.breaker) return;
     if (how === "success") a.breaker.recordSuccess(a.permit);
     else if (how === "failure") a.breaker.recordFailure(a.permit);
     else a.breaker.release(a.permit);
+    const breaker = a.breaker;
+    this.notify(() => this.deps.onBreakerSettled?.(name, breaker));
+  }
+
+  /** Observability hooks must never break a request. */
+  private notify(fn: () => void): void {
+    try {
+      fn();
+    } catch (err) {
+      console.error(`[executor] hook failed: ${err instanceof Error ? err.message : String(err)}`);
+    }
   }
 
   private async attempt<T>(name: string, ctx: RequestContext, fn: () => Promise<T>): Promise<T> {
     const a = await this.admit(name, ctx);
     try {
       const result = await fn();
-      this.settle(a, "success");
+      this.settle(a, "success", name);
       return result;
     } catch (err) {
       throw this.settleFailure(name, a, ctx, err, false);
@@ -166,14 +182,14 @@ export class TargetExecutor {
       // empty "success" (T3-5).
       if (!started) throw new ReadableStreamError(`${name}: upstream stream ended without any chunk`, "upstream_empty_stream");
       settled = true;
-      this.settle(a, "success");
+      this.settle(a, "success", name);
     } catch (err) {
       settled = true;
       throw this.settleFailure(name, a, ctx, err, started);
     } finally {
       // Consumer stopped early. With output, upstream was healthy; without
       // any, there is no signal: return the permit.
-      if (!settled) this.settle(a, started ? "success" : "release");
+      if (!settled) this.settle(a, started ? "success" : "release", name);
       a.limiter?.release();
     }
   }

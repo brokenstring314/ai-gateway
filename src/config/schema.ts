@@ -214,7 +214,7 @@ export const ObservabilityConfigSchema = strictObject(
     .optional(),
   metrics: strictObject({
       enabled: z.boolean().optional().default(false),
-      port: z.number().int().positive().optional().default(9090),
+      port: z.number().int().positive().optional(),
     })
     .optional(),
   },

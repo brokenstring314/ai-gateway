@@ -18,6 +18,12 @@ export interface PluginContext {
   error?: Error;
   metadata: Record<string, unknown>;
   shortCircuit(response: ChatCompletionResponse): void;
+  /**
+   * Run `fn` once when the request is finished, however it ended (served,
+   * failed, rejected by a later plugin, short-circuited, client gone) —
+   * after the after/on-error plugins. Used to release reservations (budget).
+   */
+  onSettled?(fn: () => void): void;
 }
 
 export type PluginResult =

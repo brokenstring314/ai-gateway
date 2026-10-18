@@ -14,11 +14,12 @@ import type {
   RequestContext,
   ChatCompletionRequest,
   ChatCompletionResponse,
-  ChatMessage,
   ToolDefinition,
   ToolCall,
 } from "../providers/types.js";
 import type { McpToolResult, McpToolRegistry } from "./types.js";
+import { GatewayError } from "../core/errors.js";
+import { runMcpLoop } from "../core/mcp-loop.js";
 
 /** How the agentic loop makes its next model call: a function, or any object with execute(). */
 export type ChatCompleter =
@@ -27,11 +28,22 @@ export type ChatCompleter =
 
 export const DEFAULT_MAX_CALL_DEPTH = 5;
 
-/** Stable error thrown when the agentic loop exceeds its tool-call depth budget. */
-export class McpCallDepthError extends Error {
+/**
+ * Stable error thrown when the agentic loop exceeds its tool-call depth
+ * budget. A GatewayError: answered 502 `mcp_depth_exceeded` (was a bare
+ * Error → 500 "Internal server error").
+ */
+export class McpCallDepthError extends GatewayError {
+  override name = "McpCallDepthError";
+  readonly limit: number;
   constructor(limit: number) {
-    super(`MCP tool call depth exceeded limit of ${limit}`);
-    this.name = "McpCallDepthError";
+    super("internal", {
+      status: 502,
+      message: `MCP tool call depth exceeded limit of ${limit}`,
+      type: "server_error",
+      code: "mcp_depth_exceeded",
+    });
+    this.limit = limit;
   }
 }
 
@@ -102,56 +114,12 @@ export class McpExecutor {
     next: ChatCompleter,
   ): Promise<ChatCompletionResponse> {
     const complete = typeof next === "function" ? next : (c: RequestContext, r: ChatCompletionRequest) => next.execute(c, r);
-    let currentResponse = response;
-    let messages = [...req.messages];
-    // Each independent request starts its agentic loop at depth 0.
-    let depth = 0;
+    return (await runMcpLoop(this, ctx, req, response, complete)).response;
+  }
 
-    // eslint-disable-next-line no-constant-condition
-    while (true) {
-      const toolCalls = this.extractToolCalls(currentResponse);
-      if (toolCalls.length === 0) break;
-      // Client-owned tool calls (caller-supplied tools, or any call that no MCP
-      // server owns) are handed back to the client untouched.
-      if (!this.shouldHandle(req, currentResponse)) break;
-
-      if (depth >= this.maxCallDepth) {
-        throw new McpCallDepthError(this.maxCallDepth);
-      }
-
-      // Append the assistant message with tool_calls
-      const assistantMessage: ChatMessage = {
-        role: "assistant",
-        content: currentResponse.choices[0]?.message?.content,
-        toolCalls,
-      };
-      messages = [...messages, assistantMessage];
-
-      // Execute each tool call and collect results
-      const toolResults = await this.executeToolCalls(toolCalls);
-
-      // Append tool result messages
-      const toolMessages: ChatMessage[] = toolResults.map((result) => ({
-        role: "tool" as const,
-        content: result.content,
-        toolCallId: result.toolCallId,
-      }));
-      messages = [...messages, ...toolMessages];
-
-      // Build next request with augmented conversation
-      const nextReq: ChatCompletionRequest = {
-        ...req,
-        messages,
-        // Keep the injected tools so the LLM can make further calls
-        tools: req.tools,
-      };
-
-      // Next model call (through the gateway's executor: breaker, retry, failover)
-      currentResponse = await complete(ctx, nextReq);
-      depth++;
-    }
-
-    return currentResponse;
+  /** Tool-call depth budget of the agentic loop. */
+  get maxDepth(): number {
+    return this.maxCallDepth;
   }
 
   /** Extract tool_calls from the first choice of a response. */
@@ -162,7 +130,7 @@ export class McpExecutor {
   }
 
   /** Execute a batch of tool calls, returning results for each. */
-  private async executeToolCalls(toolCalls: readonly ToolCall[]): Promise<McpToolResult[]> {
+  async executeToolCalls(toolCalls: readonly ToolCall[]): Promise<McpToolResult[]> {
     const results = await Promise.all(
       toolCalls.map(async (call) => this.executeSingleToolCall(call)),
     );

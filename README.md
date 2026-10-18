@@ -962,13 +962,16 @@ Spans created:
 
 ### Prometheus Metrics
 
+`GET /metrics` (no auth) is served on the main port unless configured otherwise:
+
 ```yaml
 observability:
   metrics:
-    enabled: true
+    enabled: true   # false: /metrics is not served at all
+    port: 9090      # optional; a port other than server.port gets its own listener
 ```
 
-Available at `GET /metrics`:
+Without an `observability.metrics` block, `/metrics` stays on the main port.
 
 | Metric                           | Type      | Labels              |
 | -------------------------------- | --------- | ------------------- |
@@ -976,11 +979,16 @@ Available at `GET /metrics`:
 | `ai_gateway_request_duration_seconds` | histogram | `method`, `status`, `provider` |
 | `ai_gateway_tokens_input_total`  | counter   | `provider`, `model` |
 | `ai_gateway_tokens_output_total` | counter   | `provider`, `model` |
+| `ai_gateway_request_cost_usd`    | counter   | `provider`, `model` (targets with `costPer1k*Tokens`) |
+| `ai_gateway_provider_errors_total` | counter | `provider`, `error_type` (every failed upstream attempt, including ones that failed over) |
+| `ai_gateway_circuit_breaker_state` | gauge   | `provider`, `state` (1 = current state) |
+| `ai_gateway_mcp_server_up`       | gauge     | `server` |
+| `ai_gateway_rate_limit_rejections_total` | counter | `provider` |
 | `ai_gateway_plugin_blocked_total` | counter  | `plugin`, `outcome`, `surface` |
 
 ### Structured Logging
 
-All requests are logged as structured JSON to stdout:
+Every request is logged exactly once as structured JSON to stdout (and to the request-log store behind `GET /admin/logs` and the dashboard):
 
 ```json
 {
