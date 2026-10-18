@@ -5,6 +5,7 @@
 
 import { Gateway } from "./gateway.js";
 import { createApp } from "./app.js";
+import { createBootstrapGate } from "./auth/bootstrap.js";
 import { loadConfigFromPath } from "./config/loader.js";
 import { safeParseConfig } from "./config/schema.js";
 import type { GatewayConfig } from "./config/types.js";
@@ -240,11 +241,21 @@ export async function serve(configPath: string, overrides: ServeOverrides = {}):
       await otelHandle.shutdown();
     },
   });
+  const bootstrap = createBootstrapGate({
+    bootstrapKey: process.env["ADMIN_BOOTSTRAP_KEY"],
+    bootstrapReadOnlyKey: process.env["ADMIN_BOOTSTRAP_READ_ONLY_KEY"],
+    keyStore,
+    adminSecret: () => config.adminSecret,
+    configKeys: () => config.auth?.keys,
+  });
+  // Logs "[auth] ... disabled: <reason>" now if a real admin credential exists.
+  bootstrap.disabledReason();
   const app = createApp(gateway, config, configPath, keyStore, {
     logStore,
     adminSecret: config.adminSecret,
     bootstrapKey: process.env["ADMIN_BOOTSTRAP_KEY"],
     bootstrapReadOnlyKey: process.env["ADMIN_BOOTSTRAP_READ_ONLY_KEY"],
+    bootstrap,
     inFlightTracker: shutdown.inFlight,
   });
 
@@ -288,25 +299,30 @@ export async function serve(configPath: string, overrides: ServeOverrides = {}):
 }
 
 /**
- * Startup warnings about client credentials: auth on but nothing can
- * authenticate yet, or the bootstrap admin key is live because the key store
- * is still empty (it stays valid until the first store key is created).
+ * Startup warnings about client credentials: the bootstrap admin key is live
+ * because no real admin credential exists yet (it is refused automatically
+ * once one does, see auth/bootstrap.ts), or auth is on but nothing can
+ * authenticate yet.
  */
 export function clientCredentialWarning(
   config: GatewayConfig,
-  keyStore: Pick<KeyStore, "isEmpty">,
+  keyStore: Pick<KeyStore, "isEmpty" | "hasActiveAdminKey">,
   bootstrapKey: string | undefined,
 ): string | undefined {
-  if (!isClientAuthEnabled(config.auth) || !keyStore.isEmpty()) return undefined;
   const hasConfigKeys = (config.auth?.keys ?? []).some((k) => typeof k === "string" && k !== "");
-  if (bootstrapKey !== undefined && bootstrapKey !== "") {
+  const hasAdminSecret = config.adminSecret !== undefined && config.adminSecret !== "";
+  if (
+    bootstrapKey !== undefined && bootstrapKey !== "" &&
+    !hasAdminSecret && !hasConfigKeys && !keyStore.hasActiveAdminKey()
+  ) {
     return (
-      "WARNING: ADMIN_BOOTSTRAP_KEY is active because the API key store is empty" +
-      (hasConfigKeys ? " (auth.keys do not count)" : "") +
-      ". It is a full admin credential until the first key is created via POST /admin/keys; " +
-      "create one and then remove ADMIN_BOOTSTRAP_KEY from the environment."
+      "WARNING: ADMIN_BOOTSTRAP_KEY is active because no admin credential exists yet " +
+      "(no admin key in the store, no adminSecret, no auth.keys). It is a full admin credential until " +
+      'one exists, e.g. POST /admin/keys {"scopes": ["admin"]}; it is then refused automatically. ' +
+      "Remove ADMIN_BOOTSTRAP_KEY from the environment afterwards."
     );
   }
+  if (!isClientAuthEnabled(config.auth) || !keyStore.isEmpty()) return undefined;
   if (!hasConfigKeys) {
     return (
       "WARNING: client auth is enabled but no client keys exist (no auth.keys, empty key store): " +

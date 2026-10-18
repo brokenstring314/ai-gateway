@@ -4,8 +4,8 @@
  * authMiddleware protects non-admin routes: any valid key (store key of any
  * scope — inference, read_only, admin — or a config.auth.keys entry) is accepted.
  * adminAuthMiddleware protects /admin/* routes: admin- or read_only-scoped
- * API keys, the admin secret, or (while the store is empty) bootstrap keys are
- * accepted; inference-only keys get 403.
+ * API keys, the admin secret, or (while no real admin credential exists, see
+ * auth/bootstrap.ts) bootstrap keys are accepted; inference-only keys get 403.
  *
  * All secret comparisons use timingSafeEqual — never === or Set.has().
  */
@@ -13,6 +13,7 @@
 import type { Context, MiddlewareHandler } from "hono";
 import { timingSafeEqual } from "@/auth/key-hash";
 import type { KeyStore } from "@/persistence/key-store";
+import { createBootstrapGate, type BootstrapGate } from "@/auth/bootstrap";
 
 const SCOPE_ADMIN = "admin";
 const SCOPE_READ_ONLY = "read_only";
@@ -35,11 +36,22 @@ export interface AuthMiddlewareOptions {
    * granted no admin scopes.
    */
   configKeys?: () => readonly string[] | undefined;
+  /** Admin secret, only used to decide whether bootstrap keys are still accepted. */
+  adminSecret?: string;
+  /** Shared bootstrap gate; built from the options above when omitted. */
+  bootstrap?: BootstrapGate;
 }
 
 export function authMiddleware(opts: AuthMiddlewareOptions): MiddlewareHandler {
   const { keyStore } = opts;
   const skipPaths = new Set(opts.skipPaths ?? DEFAULT_SKIP_PATHS);
+  const bootstrap = opts.bootstrap ?? createBootstrapGate({
+    bootstrapKey: opts.bootstrapKey,
+    bootstrapReadOnlyKey: opts.bootstrapReadOnlyKey,
+    keyStore,
+    adminSecret: () => opts.adminSecret,
+    configKeys: opts.configKeys,
+  });
 
   return async function auth(c, next) {
     const path = new URL(c.req.url).pathname;
@@ -99,24 +111,14 @@ export function authMiddleware(opts: AuthMiddlewareOptions): MiddlewareHandler {
       return;
     }
 
-    // Bootstrap keys are honored only while the store has no keys at all
+    // Bootstrap keys are honored only while no real admin credential exists
     // (and never without a store).
-    if (keyStore !== undefined && keyStore.isEmpty()) {
-      if (opts.bootstrapKey !== undefined && timingSafeEqual(token, opts.bootstrapKey)) {
-        c.set("apiKey", token);
-        c.set("keyScopes", [SCOPE_ADMIN]);
-        await next();
-        return;
-      }
-      if (
-        opts.bootstrapReadOnlyKey !== undefined &&
-        timingSafeEqual(token, opts.bootstrapReadOnlyKey)
-      ) {
-        c.set("apiKey", token);
-        c.set("keyScopes", [SCOPE_READ_ONLY]);
-        await next();
-        return;
-      }
+    const bootstrapScopes = bootstrap.match(token);
+    if (bootstrapScopes !== undefined) {
+      c.set("apiKey", token);
+      c.set("keyScopes", bootstrapScopes);
+      await next();
+      return;
     }
 
     return c.json(
@@ -137,10 +139,21 @@ export interface AdminAuthMiddlewareOptions {
   adminSecret?: string;
   bootstrapKey?: string;
   bootstrapReadOnlyKey?: string;
+  /** Static client keys (config.auth.keys); their presence retires bootstrap keys. */
+  configKeys?: () => readonly unknown[] | undefined;
+  /** Shared bootstrap gate; built from the options above when omitted. */
+  bootstrap?: BootstrapGate;
 }
 
 export function adminAuthMiddleware(opts: AdminAuthMiddlewareOptions): MiddlewareHandler {
   const { keyStore } = opts;
+  const bootstrap = opts.bootstrap ?? createBootstrapGate({
+    bootstrapKey: opts.bootstrapKey,
+    bootstrapReadOnlyKey: opts.bootstrapReadOnlyKey,
+    keyStore,
+    adminSecret: () => opts.adminSecret,
+    configKeys: opts.configKeys,
+  });
 
   return async function adminAuth(c, next) {
     const headerSecret = c.req.header("X-Admin-Secret");
@@ -180,23 +193,12 @@ export function adminAuthMiddleware(opts: AdminAuthMiddlewareOptions): Middlewar
       return;
     }
 
-    if (keyStore.isEmpty()) {
-      if (opts.bootstrapKey !== undefined && timingSafeEqual(token, opts.bootstrapKey)) {
-        c.set("apiKey", token);
-        c.set("keyScopes", [SCOPE_ADMIN]);
-        await next();
-        return;
-      }
-      if (
-        opts.bootstrapReadOnlyKey !== undefined &&
-        timingSafeEqual(token, opts.bootstrapReadOnlyKey)
-      ) {
-        c.set("apiKey", token);
-        c.set("keyScopes", [SCOPE_READ_ONLY]);
-        await next();
-        return;
-      }
-      return adminUnauthorized(c);
+    const bootstrapScopes = bootstrap.match(token);
+    if (bootstrapScopes !== undefined) {
+      c.set("apiKey", token);
+      c.set("keyScopes", bootstrapScopes);
+      await next();
+      return;
     }
 
     const apiKey = keyStore.validateKey(token);

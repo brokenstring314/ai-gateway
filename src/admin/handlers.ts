@@ -14,6 +14,7 @@ import type { GatewayConfig } from "../config/types.js";
 import type { KeyStore } from "../persistence/key-store.js";
 import type { RequestLogStore } from "../persistence/request-log-store.js";
 import { adminAuthMiddleware } from "../middleware/auth.js";
+import type { BootstrapGate } from "../auth/bootstrap.js";
 import {
   type ConfigState,
   getConfigHandler,
@@ -47,6 +48,8 @@ export interface AdminAppOptions {
   adminSecret?: string;
   bootstrapKey?: string;
   bootstrapReadOnlyKey?: string;
+  /** Shared bootstrap-key gate (see auth/bootstrap.ts). */
+  bootstrap?: BootstrapGate;
 }
 
 export type AdminAppEnv = {
@@ -74,6 +77,8 @@ export function createAdminApp(
       adminSecret,
       bootstrapKey: options?.bootstrapKey,
       bootstrapReadOnlyKey: options?.bootstrapReadOnlyKey,
+      configKeys: () => config.auth?.keys,
+      bootstrap: options?.bootstrap,
     }));
   } else {
     app.use("*", async (c, next) => {
