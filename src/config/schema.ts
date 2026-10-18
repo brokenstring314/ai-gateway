@@ -258,6 +258,8 @@ export const GatewayConfigSchema = z.object({
     .object({
       enabled: z.boolean().optional().default(false),
       origins: z.array(z.string()).optional(),
+      // Unset/empty = reflect the preflight's Access-Control-Request-Headers.
+      allowHeaders: z.array(z.string()).optional(),
     })
     .optional(),
 });

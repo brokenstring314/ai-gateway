@@ -190,5 +190,7 @@ export interface GatewayConfig {
   cors?: {
     enabled?: boolean;
     origins?: string[];
+    /** Access-Control-Allow-Headers. Unset/empty = reflect Access-Control-Request-Headers. */
+    allowHeaders?: string[];
   };
 }

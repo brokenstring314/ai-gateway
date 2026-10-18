@@ -922,6 +922,9 @@ cors:
   enabled: true
   origins:
     - "https://my-app.example.com"
+  # allowHeaders: ["Content-Type", "Authorization"]  # 可选；默认反射浏览器的
+  #   Access-Control-Request-Headers（SDK 的 x-stainless-*、openai-organization、
+  #   openai-project 等请求头需要）
 ```
 
 ### 请求超时
