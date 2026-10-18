@@ -1154,6 +1154,8 @@ gateway.close();
 | ------------------------------------ | ------------------------------------------ |
 | `route(ctx, req)`                    | Non-streaming chat completion              |
 | `routeStream(ctx, req)`              | Streaming chat completion (AsyncGenerator) |
+| `execute(surface, req, ctx)`         | Any surface (`core/surfaces/*`) through the pipeline |
+| `executeStream(surface, req, ctx)`   | Chat-shaped surface (chat, completions) streamed |
 | `embed(ctx, req)`                    | Embedding generation                       |
 | `embedWithPlugins(ctx, req)`         | Embedding with plugin lifecycle            |
 | `generateImage(ctx, req)`            | Image generation                           |
@@ -1236,7 +1238,7 @@ Client Request
 ```
 src/
 ├── index.ts                   # Entry point + CLI + embedded mode exports
-├── gateway.ts                 # Gateway core orchestrator
+├── gateway.ts                 # Gateway facade (embedded API)
 ├── app.ts                     # Hono app factory + middleware wiring
 │
 ├── config/
@@ -1253,6 +1255,15 @@ src/
 │   └── (presets: src/core/provider-presets.ts — one table of 20+ providers)
 │
 ├── core/
+│   ├── assembly.ts            # Config → providers, plugins, strategy, breakers, executor, pipeline
+│   ├── pipeline.ts            # execute(surface, req, ctx): plugins → executor → MCP loop → finalize once
+│   ├── chat-stream.ts         # executeStream for chat / completions (finalize once per stream)
+│   ├── stream-runner.ts       # First chunk, stream end reasons, SSE writer
+│   ├── surfaces/              # chat, completions, embeddings, images, passthrough
+│   ├── mcp-loop.ts            # MCP agentic loop (usage summed)
+│   ├── mcp-runtime.ts         # MCP server connect / readiness
+│   ├── strategy-config.ts     # config.strategy → strategy mode + config
+│   ├── usage.ts               # Usage sums, stream estimate, costOf
 │   ├── executor.ts            # Candidate executor: breaker → limiter → call → settle → failover, retry
 │   ├── outcome.ts             # Attempt classification (breaker settlement, failover)
 │   ├── errors.ts              # GatewayError, toGatewayError, OpenAI error shape
