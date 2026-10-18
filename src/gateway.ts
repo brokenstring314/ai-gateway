@@ -510,7 +510,7 @@ export class Gateway {
       tracer.endSpan(span);
 
       const durationMs = Date.now() - startTime;
-      logger.logRequest({
+      void logger.logRequest({
         timestamp: new Date().toISOString(),
         requestId: ctx.traceId ?? "",
         model: req.model,
@@ -537,7 +537,7 @@ export class Gateway {
     const provider = response.provider;
     metrics.recordRequest(provider, response.model, durationMs, response.usage);
 
-    logger.logRequest({
+    void logger.logRequest({
       timestamp: new Date().toISOString(),
       requestId: ctx.traceId ?? "",
       model: response.model,

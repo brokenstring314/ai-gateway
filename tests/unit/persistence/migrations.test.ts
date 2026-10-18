@@ -2,7 +2,7 @@ import { describe, it, expect, beforeEach, afterEach } from "bun:test";
 import { Database } from "bun:sqlite";
 import {
   runMigrations,
-  MigrationStep,
+  type MigrationStep,
   MigrationError,
   DeferredStepError,
 } from "@/persistence/migrations";

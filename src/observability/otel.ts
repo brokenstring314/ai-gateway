@@ -15,7 +15,7 @@
  */
 
 import { AsyncLocalStorage } from "node:async_hooks";
-import { type TextMapPropagator } from "@opentelemetry/api";
+import type { TextMapPropagator } from "@opentelemetry/api";
 import {
   CompositePropagator,
   W3CBaggagePropagator,

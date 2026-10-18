@@ -6,7 +6,7 @@
  */
 import { describe, it, expect, vi, beforeEach, afterEach } from "bun:test";
 import { createOpenAICompatProvider, ProviderError } from "@/providers/openai-compat";
-import type { ChatCompletionRequest, ChatCompletionResponse } from "@/providers/types";
+import type { ChatCompletionRequest, } from "@/providers/types";
 
 // ---------------------------------------------------------------------------
 // Helpers

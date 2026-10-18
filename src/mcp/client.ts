@@ -325,7 +325,7 @@ export class McpClient {
       this.handleDisconnect("stdio stream ended");
     };
 
-    pump();
+    void pump();
   }
 
   /** Mark the connection unready, drop cached tools, and reject in-flight calls. */

@@ -9,7 +9,7 @@
  *   - timing-safe hash comparison via timingSafeEqual
  */
 
-import { Database, Statement } from "bun:sqlite";
+import type { Database, Statement } from "bun:sqlite";
 import {
   hashKey,
   displayKey,

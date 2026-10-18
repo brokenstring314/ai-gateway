@@ -81,6 +81,7 @@ function sanitizeLabel(value: unknown): string {
     str = "";
   }
   const cleaned = str
+    // biome-ignore lint/suspicious/noControlCharactersInRegex: intentionally strips control chars from label values
     .replace(/[\u0000-\u001f\u007f\\"]/g, "_")
     .trim()
     .slice(0, MAX_LABEL_LENGTH);

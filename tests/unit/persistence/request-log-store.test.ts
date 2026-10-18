@@ -2,9 +2,7 @@ import { describe, it, expect, beforeEach, afterEach } from "bun:test";
 import { Database } from "bun:sqlite";
 import {
   RequestLogStore,
-  RequestLogEntry,
-  RequestLogQuery,
-  RequestLogMaintenanceQuery,
+  type RequestLogEntry,
 } from "@/persistence/request-log-store";
 
 // ---------------------------------------------------------------------------
