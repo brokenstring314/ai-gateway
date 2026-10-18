@@ -200,6 +200,7 @@ export const McpServerConfigSchema = z
     command: z.string().optional(),
     args: z.array(z.string()).optional(),
     env: z.record(z.string(), z.string()).optional(),
+    inheritEnv: z.union([z.boolean(), z.array(z.string())]).optional(),
     url: z.string().url().optional(),
     headers: z.record(z.string(), z.string()).optional(),
     allowedTools: z.array(z.string()).optional(),

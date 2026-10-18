@@ -41,11 +41,49 @@ export interface McpSubprocess {
 /** Spawns the stdio subprocess for a server config. Injectable for tests. */
 export type McpSpawner = (config: McpServerConfig) => McpSubprocess;
 
+/**
+ * Environment variables an MCP stdio server inherits from the gateway by
+ * default. Everything else (provider API keys, ADMIN_BOOTSTRAP_KEY, OTLP
+ * tokens, cloud credentials, ...) is withheld; pass what a server needs via
+ * `env`, or name extra variables in `inheritEnv`.
+ */
+export const MCP_ENV_ALLOWLIST: readonly string[] = [
+  "PATH", "HOME", "USER", "LOGNAME", "SHELL", "TERM", "TZ",
+  "LANG", "LANGUAGE", "LC_ALL", "LC_CTYPE", "TMPDIR",
+  // Windows equivalents needed to start most processes.
+  "SYSTEMROOT", "WINDIR", "COMSPEC", "PATHEXT", "TEMP", "TMP",
+  "USERPROFILE", "APPDATA", "LOCALAPPDATA",
+];
+
+/**
+ * Build the environment for an MCP subprocess: the allowlist (plus any names
+ * in `inheritEnv`), or the whole parent env when `inheritEnv: true`, then
+ * `config.env` on top.
+ */
+export function buildMcpEnv(
+  config: Pick<McpServerConfig, "env" | "inheritEnv">,
+  parentEnv: Record<string, string | undefined> = Bun.env,
+): Record<string, string> {
+  const env: Record<string, string> = {};
+  if (config.inheritEnv === true) {
+    for (const [name, value] of Object.entries(parentEnv)) {
+      if (value !== undefined) env[name] = value;
+    }
+  } else {
+    const names = [...MCP_ENV_ALLOWLIST, ...(Array.isArray(config.inheritEnv) ? config.inheritEnv : [])];
+    for (const name of names) {
+      const value = parentEnv[name];
+      if (value !== undefined) env[name] = value;
+    }
+  }
+  return { ...env, ...config.env };
+}
+
 /** Production spawner backed by Bun. Only evaluated when a connection is made. */
 export const defaultSpawner: McpSpawner = (config: McpServerConfig): McpSubprocess => {
   const proc = Bun.spawn({
     cmd: [config.command ?? "", ...(config.args ?? [])],
-    env: { ...Bun.env, ...config.env },
+    env: buildMcpEnv(config),
     stdin: "pipe",
     stdout: "pipe",
     stderr: "pipe",

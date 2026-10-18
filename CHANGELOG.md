@@ -28,3 +28,9 @@
   live admin backdoor. They still work on a first run with nothing configured,
   and inference-only store keys no longer retire them. The gateway logs
   `[auth] ... disabled: <reason>` when they are refused.
+- **MCP stdio servers no longer inherit the gateway's environment** (S3-3).
+  They get a small allowlist (`PATH`, `HOME`, `LANG`, `TMPDIR`, ...) plus their
+  own `env`. New per-server option `inheritEnv`: a list of extra variable names
+  to pass through, or `true` for the old full inheritance.
+  *Migration:* a server that relied on an inherited variable needs it in `env`
+  or `inheritEnv`.
