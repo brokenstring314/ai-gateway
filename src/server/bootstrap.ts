@@ -11,7 +11,7 @@ import { createApp, metricsPlacement, metricsResponse } from "../app.js";
 import { createBootstrapGate } from "../auth/bootstrap.js";
 import { loadConfigFromPath } from "../config/loader.js";
 import type { GatewayConfig } from "../config/types.js";
-import { KeyStore } from "../persistence/key-store.js";
+import { KeyStore, keyStorePath, openKeyStoreDatabase, resolveDataDir } from "../persistence/key-store.js";
 import { RequestLogStore } from "../persistence/request-log-store.js";
 import {
   parseAllowUnauthenticatedProxy,
@@ -59,10 +59,11 @@ export interface RunningGateway {
 export async function bootstrap(configPath: string, overrides: ServeOverrides = {}): Promise<RunningGateway> {
   const config: GatewayConfig = loadConfigFromPath(configPath);
 
-  const dataDir = overrides.dataDir ?? process.env["GATEWAY_DATA_DIR"] ?? ".data";
+  const dataDir = resolveDataDir(overrides.dataDir);
   mkdirSync(dataDir, { recursive: true });
 
-  const keyDb = new Database(join(dataDir, "api-keys.sqlite"));
+  // WAL + busy timeout: `ai-gateway keys ...` may write while the server runs.
+  const keyDb = openKeyStoreDatabase(keyStorePath(dataDir));
   const logDb = new Database(join(dataDir, "request-logs.sqlite"));
 
   let keyStore: KeyStore;
@@ -131,7 +132,10 @@ export async function bootstrap(configPath: string, overrides: ServeOverrides = 
     adminSecret: () => config.adminSecret,
     configKeys: () => config.auth?.keys,
   });
-  // Logs "[auth] ... disabled: <reason>" now if a real admin credential exists.
+  // Logs "[auth] ... disabled: <reason>" now (once) if a real admin credential
+  // exists, e.g. "permanently disabled: bootstrap latch is set ... remove them
+  // from the environment" when ADMIN_BOOTSTRAP_KEY is still set after the
+  // first admin key was created.
   bootstrap.disabledReason();
   const port = overrides.port ?? config.server?.port ?? 3000;
   const host = overrides.host ?? config.server?.host ?? "0.0.0.0";
@@ -227,7 +231,7 @@ export async function bootstrap(configPath: string, overrides: ServeOverrides = 
  */
 export function clientCredentialWarning(
   config: GatewayConfig,
-  keyStore: Pick<KeyStore, "isEmpty" | "hasActiveAdminKey">,
+  keyStore: Pick<KeyStore, "isEmpty" | "isBootstrapLatched">,
   bootstrapKey: string | undefined,
 ): string | undefined {
   const hasConfigKeys = (config.auth?.keys ?? []).some((k) => typeof k === "string" && k !== "");
@@ -237,13 +241,13 @@ export function clientCredentialWarning(
     bootstrapKey !== "" &&
     !hasAdminSecret &&
     !hasConfigKeys &&
-    !keyStore.hasActiveAdminKey()
+    !keyStore.isBootstrapLatched()
   ) {
     return (
       "WARNING: ADMIN_BOOTSTRAP_KEY is active because no admin credential exists yet " +
-      "(no admin key in the store, no adminSecret, no auth.keys). It is a full admin credential until " +
-      'one exists, e.g. POST /admin/keys {"scopes": ["admin"]}; it is then refused automatically. ' +
-      "Remove ADMIN_BOOTSTRAP_KEY from the environment afterwards."
+      "(no admin key has ever been created in the store, no adminSecret, no auth.keys). It is a full admin " +
+      'credential until one exists, e.g. POST /admin/keys {"scopes": ["admin"]}; it is then refused ' +
+      "permanently, even if that key is revoked later. Remove ADMIN_BOOTSTRAP_KEY from the environment afterwards."
     );
   }
   if (!isClientAuthEnabled(config.auth) || !keyStore.isEmpty()) return undefined;

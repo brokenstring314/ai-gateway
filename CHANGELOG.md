@@ -4,6 +4,14 @@
 
 ### Breaking changes
 
+- **The bootstrap admin key can no longer be revived by revoking admin keys.**
+  An existing key store that already contains any admin-scoped key (active,
+  revoked or expired) is latched on upgrade, and `ADMIN_BOOTSTRAP_KEY` /
+  `ADMIN_BOOTSTRAP_READ_ONLY_KEY` are refused from then on.
+  *Migration:* remove the variables from the environment. If no admin
+  credential works any more, run `ai-gateway keys create --admin -c config.yaml`
+  on the gateway host (see Added). `clientCredentialWarning()` now takes a key
+  store with `isEmpty()` and `isBootstrapLatched()`.
 - **Config is file-only; hot reload and the config write API are removed.**
   `PUT /admin/config`, `DELETE /admin/config`, `POST /admin/config/reload`,
   `GET /admin/config/history` and `POST /admin/config/rollback/:version` now
@@ -199,12 +207,24 @@
   update, delete, revoke and rotate stay `admin`-only.
 
 - **`ADMIN_BOOTSTRAP_KEY` / `ADMIN_BOOTSTRAP_READ_ONLY_KEY` are retired once a
-  real admin credential exists**: a usable admin key in the key store,
-  `adminSecret`, or `auth.keys`. Previously they stayed valid as long as the
-  key store was empty, so deployments using `adminSecret` or `auth.keys` kept a
-  live admin backdoor. They still work on a first run with nothing configured,
-  and inference-only store keys no longer retire them. The gateway logs
-  `[auth] ... disabled: <reason>` when they are refused.
+  real admin credential exists**: an admin key has been created in the key
+  store, `adminSecret`, or `auth.keys`. Previously they stayed valid as long as
+  the key store was empty, so deployments using `adminSecret` or `auth.keys`
+  kept a live admin backdoor. They still work on a first run with nothing
+  configured, and inference-only / `read_only` store keys do not retire them.
+  The gateway logs `[auth] ... disabled: <reason>` when they are refused.
+- **One-way bootstrap latch.** The key store records (new `api_key_meta`
+  table, migration v4) the moment the first admin-scoped key exists, created
+  through the bootstrap key or otherwise (`POST /admin/keys`, a `PUT` granting
+  `admin`, or `ai-gateway keys create --admin`), in the same transaction as the
+  key write. Once latched the bootstrap keys are refused for good (401, same
+  body as an invalid credential), even if every admin key is later revoked,
+  expires or is deleted; before, they silently came back as a full admin
+  credential. Writes made with a bootstrap credential re-check the latch inside
+  their transaction, so of two concurrent bootstrap requests creating an admin
+  key only one succeeds. If `ADMIN_BOOTSTRAP_KEY` is still set while latched,
+  startup logs one warning (`permanently disabled ... remove them from the
+  environment`). `adminSecret` / `auth.keys` behaviour is unchanged.
 - **MCP stdio servers no longer inherit the gateway's environment** (S3-3).
   They get a small allowlist (`PATH`, `HOME`, `LANG`, `TMPDIR`, ...) plus their
   own `env`. New per-server option `inheritEnv`: a list of extra variable names
@@ -221,6 +241,13 @@
 
 ### Added
 
+- **`ai-gateway keys create|list|revoke`**: manage the API key store directly
+  (`<data dir>/api-keys.sqlite`, data dir = `--data-dir`, `GATEWAY_DATA_DIR` or
+  `./.data`, as for `serve`), with the server stopped or running. `keys create
+  --admin [--name N] [--expires ISO] -c config.yaml` is the admin recovery path:
+  it prints the new key once on stdout (`--json` for scripts) and nothing else
+  secret; diagnostics go to stderr. The key store database now uses WAL mode
+  and a 5 s busy timeout so the CLI and the server can write concurrently.
 - Licensed under Apache-2.0 (`LICENSE`); `NOTICE` credits Ferro Labs AI Gateway (Apache-2.0), whose design this project derives from. Both files are shipped in the Docker image.
 - **Admin console** at `/admin/dashboard` replaces the placeholder dashboard
   (which rendered fixed demo numbers). Four pages backed by the admin API:

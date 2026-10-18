@@ -84,14 +84,20 @@ ai-gateway <command> [options]
 Commands:
   serve      Start the gateway server
   validate   Validate a config file
+  keys       Manage the API key store directly (create | list | revoke)
   version    Print version information
 
 Options:
   -c, --config <path>   Path to config file (YAML or JSON)
   -p, --port <port>     Override server.port (serve)
   -h, --host <host>     Override server.host (serve)
+  --data-dir <dir>      Data directory (keys; default GATEWAY_DATA_DIR or ./.data)
   --help                Show help
   -v, --version         Show version
+
+ai-gateway keys create [--admin] [--read-only] [--name <name>] [--expires <ISO>] [--json] -c <config>
+ai-gateway keys list   [--json] -c <config>
+ai-gateway keys revoke <id> -c <config>
 ```
 
 `ai-gateway serve`, `bun src/index.ts serve` and `bun src/cli/index.ts serve` are the same CLI and start the server through one `bootstrap()` (key store, production-safety checks, client auth, OpenTelemetry, graceful shutdown). Embedders can call `bootstrap(configPath, { port, host, dataDir })` from the package entry point; it returns a handle with `stop()`.
@@ -104,6 +110,9 @@ ai-gateway serve -c config.yaml
 
 # Validate config without starting
 ai-gateway validate -c config.yaml
+
+# Recover admin access (works while the server is running); prints the key once
+ai-gateway keys create --admin --name ops-recovery -c config.yaml
 
 # Print version
 ai-gateway version
@@ -273,7 +282,7 @@ These are read directly from the environment (not via `AI_GATEWAY_*`):
 | --- | --- | --- |
 | `GATEWAY_DATA_DIR` | `.data` (relative to the working directory) | Where the SQLite databases live (see below). Put it on a persistent volume. |
 | `GATEWAY_ENV` | unset | `production` turns on the startup safety guard: refuses `auth.enabled: false`, `ALLOW_UNAUTHENTICATED_PROXY=true`, an `adminSecret` shorter than 16 chars, and starting with no client key at all (no `auth.keys` and an empty key store). |
-| `ADMIN_BOOTSTRAP_KEY` | unset | First-run admin credential; refused once a real admin credential exists (see [Key scopes](#key-scopes-key-store-mode)). |
+| `ADMIN_BOOTSTRAP_KEY` | unset | First-run admin credential; refused once a real admin credential exists, permanently once an admin key has been created (see [Key scopes](#key-scopes-key-store-mode)). |
 | `ADMIN_BOOTSTRAP_READ_ONLY_KEY` | unset | Same, with `read_only` scope. |
 | `ALLOW_UNAUTHENTICATED_PROXY` | `false` | `true` lets the opt-in pass-through proxy forward requests without a client key. Refused when `GATEWAY_ENV=production`. |
 | `RATE_LIMIT_RPS` | unset (limiter off) | Per-client-IP limit on `/v1/*`, requests/second. Overrides `server.perIpRateLimit.rps`. `0` disables. |
@@ -594,11 +603,26 @@ A key created without `scopes` (or with `[]`) gets `["inference"]`: admin access
 
 `ADMIN_BOOTSTRAP_KEY` / `ADMIN_BOOTSTRAP_READ_ONLY_KEY` exist only for the first run. They are accepted (with `admin` / `read_only` scope) only while **no real admin credential exists**, and are refused as soon as any of these holds:
 
-- the key store has a usable admin key (active, not revoked, not expired), e.g. after `POST /admin/keys {"name": "ops", "scopes": ["admin"]}`;
+- an admin key has been created in the key store (the **bootstrap latch**, below), e.g. by `POST /admin/keys {"name": "ops", "scopes": ["admin"]}`;
 - `adminSecret` is configured;
 - `auth.keys` are configured.
 
 Inference-only or `read_only` store keys do not retire them (otherwise creating a client key first would lock you out of the admin API). The check runs on every request, so the bootstrap key stops working the moment the first admin key is created. Startup prints a warning while the bootstrap key is live, and the gateway logs `[auth] ADMIN_BOOTSTRAP_KEY / ADMIN_BOOTSTRAP_READ_ONLY_KEY disabled: <reason>` when it is refused (at startup or at runtime). Remove the variables from the environment once you have an admin credential. Without a key store (embedded `createApp(gateway, config)`) they are never accepted.
+
+**Bootstrap latch (one-way).** The first time an admin-scoped key exists in the key store (created with the bootstrap key, with `adminSecret`, by a `PUT` granting `admin`, or by the CLI), the store records it in the same transaction as the key write. From then on the bootstrap keys are refused **for good** with the same 401 as an invalid key, even if every admin key is later revoked, expires or is deleted. A key store from an older version that already contains any admin key (active, revoked or expired) is latched when it is upgraded. If two requests authenticated with the bootstrap key create admin keys at the same time, only the first succeeds. While latched, a still-set `ADMIN_BOOTSTRAP_KEY` produces one startup line: `... permanently disabled: bootstrap latch is set ... remove them from the environment`.
+
+#### Recovering admin access
+
+If no admin credential works any more (all admin keys revoked or expired, no `adminSecret`), mint a new admin key on the gateway host with the CLI. It opens the same key store as `serve` (`<data dir>/api-keys.sqlite`; data dir = `--data-dir`, `GATEWAY_DATA_DIR` or `./.data`) and is safe to run while the server is up (WAL mode, busy timeout); the server accepts the new key on the next request:
+
+```bash
+GATEWAY_DATA_DIR=/var/lib/ai-gateway ai-gateway keys create --admin --name ops-recovery -c config.yaml
+# stdout: the new key, printed once (use --json for id/name/scopes too); details go to stderr
+ai-gateway keys list -c config.yaml            # ids, names, scopes, status, latch state; never secrets
+ai-gateway keys revoke <id> -c config.yaml
+```
+
+Options: `--expires 2027-01-01T00:00:00Z`, `--read-only` (instead of `--admin`; neither = `inference`). The command validates the config but never prints it or any secret except the new key; it refuses to create a store where none exists, so a wrong data directory fails loudly. In Docker: `docker exec <container> bun src/index.ts keys create --admin -c /config/config.yaml` (the image sets `GATEWAY_DATA_DIR=/data`).
 
 ### Admin console
 

@@ -82,14 +82,20 @@ ai-gateway <命令> [选项]
 命令：
   serve      启动网关服务
   validate   验证配置文件
+  keys       直接管理 API 密钥库（create | list | revoke）
   version    显示版本信息
 
 选项：
   -c, --config <路径>   配置文件路径（YAML 或 JSON）
   -p, --port <端口>     覆盖 server.port（serve）
   -h, --host <地址>     覆盖 server.host（serve）
+  --data-dir <目录>     数据目录（keys；默认 GATEWAY_DATA_DIR 或 ./.data）
   --help                显示帮助
   -v, --version         显示版本
+
+ai-gateway keys create [--admin] [--read-only] [--name <名称>] [--expires <ISO>] [--json] -c <配置>
+ai-gateway keys list   [--json] -c <配置>
+ai-gateway keys revoke <id> -c <配置>
 ```
 
 `ai-gateway serve`、`bun src/index.ts serve` 和 `bun src/cli/index.ts serve` 是同一个 CLI，都通过同一个 `bootstrap()` 启动服务（key store、生产环境安全检查、客户端鉴权、OpenTelemetry、优雅关闭）。嵌入方可以从包入口调用 `bootstrap(configPath, { port, host, dataDir })`，返回带 `stop()` 的句柄。
@@ -102,6 +108,9 @@ ai-gateway serve -c config.yaml
 
 # 仅验证配置（不启动）
 ai-gateway validate -c config.yaml
+
+# 恢复管理员权限（服务运行中也可执行）；新密钥只打印一次
+ai-gateway keys create --admin --name ops-recovery -c config.yaml
 
 # 显示版本
 ai-gateway version
@@ -262,7 +271,7 @@ AI_GATEWAY_CORS_ORIGINS=https://a.example,https://b.example   # 数组：逗号�
 | --- | --- | --- |
 | `GATEWAY_DATA_DIR` | `.data`（相对于工作目录） | SQLite 数据库所在目录（见下文），应放在持久卷上。 |
 | `GATEWAY_ENV` | 未设置 | 设为 `production` 时启用启动安全检查：拒绝 `auth.enabled: false`、`ALLOW_UNAUTHENTICATED_PROXY=true`、少于 16 个字符的 `adminSecret`，以及完全没有客户端密钥（无 `auth.keys` 且密钥库为空）时启动。 |
-| `ADMIN_BOOTSTRAP_KEY` | 未设置 | 首次启动用的管理员凭据；一旦存在真正的管理员凭据即被拒绝（见[密钥作用域](#密钥作用域密钥库模式)）。 |
+| `ADMIN_BOOTSTRAP_KEY` | 未设置 | 首次启动用的管理员凭据；一旦存在真正的管理员凭据即被拒绝，创建过 admin 密钥后永久拒绝（见[密钥作用域](#密钥作用域密钥库模式)）。 |
 | `ADMIN_BOOTSTRAP_READ_ONLY_KEY` | 未设置 | 同上，`read_only` 权限。 |
 | `ALLOW_UNAUTHENTICATED_PROXY` | `false` | `true` 时允许可选的透传代理在没有客户端密钥时转发。`GATEWAY_ENV=production` 下被拒绝。 |
 | `RATE_LIMIT_RPS` | 未设置（限流关闭） | `/v1/*` 按客户端 IP 的每秒请求数，优先于 `server.perIpRateLimit.rps`；`0` 表示关闭。 |
@@ -532,11 +541,26 @@ curl -X POST \
 
 `ADMIN_BOOTSTRAP_KEY` / `ADMIN_BOOTSTRAP_READ_ONLY_KEY` 只用于首次启动。只有在**还没有任何真正的管理员凭据**时才接受（分别授予 `admin` / `read_only` 权限），只要满足以下任一条件就会被拒绝：
 
-- 密钥库中存在可用的 admin 密钥（active、未吊销、未过期），例如执行过 `POST /admin/keys {"name": "ops", "scopes": ["admin"]}`；
+- 密钥库中曾经创建过 admin 密钥（即下文的 **bootstrap 闩锁**），例如执行过 `POST /admin/keys {"name": "ops", "scopes": ["admin"]}`；
 - 配置了 `adminSecret`；
 - 配置了 `auth.keys`。
 
 只有 inference 或 `read_only` 权限的密钥不会让它们失效（否则先创建客户端密钥会把你锁在管理 API 之外）。每个请求都会重新检查，因此创建第一个 admin 密钥后 bootstrap 密钥立即失效。bootstrap 密钥有效期间启动时会打印警告；被拒绝时（启动时或运行中）会记录日志 `[auth] ADMIN_BOOTSTRAP_KEY / ADMIN_BOOTSTRAP_READ_ONLY_KEY disabled: <原因>`。拿到管理员凭据后请把这两个变量从环境中删除。没有密钥库时（嵌入式 `createApp(gateway, config)`）它们永远不被接受。
+
+**Bootstrap 闩锁（单向）。** 密钥库中第一次出现 admin 权限的密钥时（无论是用 bootstrap 密钥、`adminSecret` 创建，还是 `PUT` 授予 `admin`，或通过 CLI 创建），会在写入密钥的同一事务中记录下来。此后 bootstrap 密钥**永久**被拒绝，返回与无效密钥相同的 401，即使之后所有 admin 密钥都被吊销、过期或删除也不会恢复。旧版本的密钥库如果已经包含任何 admin 密钥（active、已吊销或已过期），升级时即视为已上锁。两个用 bootstrap 密钥认证的请求同时创建 admin 密钥时，只有第一个成功。已上锁但 `ADMIN_BOOTSTRAP_KEY` 仍在环境中时，启动时会打印一行警告：`... permanently disabled: bootstrap latch is set ... remove them from the environment`。
+
+#### 恢复管理员权限
+
+如果已经没有可用的管理员凭据（admin 密钥全部吊销或过期、也没有 `adminSecret`），在网关所在主机上用 CLI 创建新的 admin 密钥。它打开与 `serve` 相同的密钥库（`<数据目录>/api-keys.sqlite`；数据目录 = `--data-dir`、`GATEWAY_DATA_DIR` 或 `./.data`），服务运行中也可以安全执行（WAL 模式 + busy timeout），服务在下一个请求即可接受新密钥：
+
+```bash
+GATEWAY_DATA_DIR=/var/lib/ai-gateway ai-gateway keys create --admin --name ops-recovery -c config.yaml
+# stdout：新密钥，只打印一次（--json 同时输出 id/name/scopes）；其他信息输出到 stderr
+ai-gateway keys list -c config.yaml            # id、名称、作用域、状态、闩锁状态；不输出密钥
+ai-gateway keys revoke <id> -c config.yaml
+```
+
+可选：`--expires 2027-01-01T00:00:00Z`、`--read-only`（代替 `--admin`；都不指定则为 `inference`）。该命令会校验配置，但不会打印配置或除新密钥以外的任何秘密；数据目录下没有密钥库时直接报错（不会新建），所以数据目录写错会立即暴露。Docker 中：`docker exec <容器> bun src/index.ts keys create --admin -c /config/config.yaml`（镜像已设置 `GATEWAY_DATA_DIR=/data`）。
 
 ### 管理控制台
 
