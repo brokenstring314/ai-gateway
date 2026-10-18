@@ -283,11 +283,13 @@ AI_GATEWAY_MAX_REQUEST_BYTES=20971520
 | `openrouter`  | `https://openrouter.ai/api/v1`                      |
 | `perplexity`  | `https://api.perplexity.ai`                         |
 | `replicate`   | `https://api.replicate.com/v1`                      |
-| `cloudflare`  | `https://api.cloudflare.com/client/v4/accounts`     |
-| `databricks`  | `https://.databricks.com/serving-endpoints`         |
+| `cloudflare`  | 无：需设置 `baseURL`（`https://api.cloudflare.com/client/v4/accounts/<ACCOUNT_ID>/ai/v1`） |
+| `databricks`  | 无：需设置 `baseURL`（`https://<workspace>.cloud.databricks.com/serving-endpoints`） |
 | `huggingface` | `https://api-inference.huggingface.co/v1`           |
 
-任何未知的提供商，只要提供了 `baseURL`，就会被当作通用 OpenAI 兼容端点处理。
+任何未知的提供商，只要提供了 `baseURL`，就会被当作通用 OpenAI 兼容端点处理；未知提供商且没有 `baseURL` 会在启动时报错。`nvidia-nim` 是 `nvidia_nim` 的别名。`openrouter` 目标会发送 `HTTP-Referer` / `X-Title` 归属头。`baseURL` 可以包含 `${VAR}` 引用（如 `"${OPENAI_BASE_URL}"`、`"http://localhost:${PORT}/v1"`），展开后必须是 http(s) URL。
+
+参数支持按 `provider`（预设）查找，而不是按目标的 `name`：名为 `my-mistral`、`provider: mistral` 的目标会使用 Mistral 的能力检查（见“兼容性模式”）。
 
 ---
 
@@ -939,9 +941,11 @@ compatibility:
   onUnsupportedParam: warn  # warn | drop | reject
 ```
 
-- **`warn`**（默认）：记录警告，移除参数，继续
-- **`drop`**：静默移除参数
-- **`reject`**：返回 400 错误
+- **`warn`**（默认）：记录警告，请求原样发送
+- **`drop`**：发送前移除不支持的参数（对不支持 developer 角色的提供商，`developer` 消息改为 `system`；图片内容保留并告警）
+- **`reject`**：返回 400，列出不支持的参数（wire 名称，如 `seed`、`stream_options`）
+
+检查依据目标的 `provider`（如 `mistral`、`ollama`、`replicate`、`cloudflare`、`huggingface` 支持的参数较少）；不在矩阵中的提供商视为全部支持。
 
 ---
 
@@ -1077,7 +1081,7 @@ src/
 │   ├── openai-compat.ts       # 通用 OpenAI 兼容适配器
 │   ├── capabilities.ts        # 每个提供商的参数支持矩阵
 │   ├── sse-parser.ts          # SSE 流解析器
-│   └── definitions/           # 20+ 提供商配置定义
+│   └── （预设：src/core/provider-presets.ts，一张表覆盖 20+ 提供商）
 │
 ├── routing/
 │   ├── types.ts               # IStrategy 接口

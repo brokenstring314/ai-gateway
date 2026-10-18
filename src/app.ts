@@ -38,6 +38,7 @@ import { registerCapabilitiesHandler } from "./handlers/capabilities.js";
 import { createAdminApp, type AdminAppOptions } from "./admin/handlers.js";
 import { createDashboardApp } from "./dashboard/index.js";
 import { createProxyHandler, createProxyKeyValidator, resolveProxyTarget } from "./proxy/proxy.js";
+import { resolveBaseURL } from "./core/provider-presets.js";
 import { expandTargetEnvRefs } from "./config/envref.js";
 import { getMetrics as getPrometheusMetrics } from "./metrics/metrics.js";
 import type { InFlightTracker } from "./server/shutdown.js";
@@ -181,7 +182,10 @@ export function createApp(
     const target = "provider" in selector
       ? config.targets.find((candidate) => candidate.name === selector.provider || candidate.provider === selector.provider)
       : config.targets.find((candidate) => candidate.models?.includes(selector.model));
-    return target === undefined ? undefined : resolveProxyTarget(expandTargetEnvRefs(target));
+    if (target === undefined) return undefined;
+    const expanded = expandTargetEnvRefs(target);
+    // A target without baseURL uses its provider preset's default.
+    return resolveProxyTarget({ ...expanded, baseURL: resolveBaseURL(expanded) });
   };
 
   // Pass-through proxy for other /v1/* routes (e.g. /v1/responses, /v1/files).

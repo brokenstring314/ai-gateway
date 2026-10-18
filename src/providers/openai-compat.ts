@@ -30,7 +30,13 @@ import { parseSSEStream } from "./sse-parser.js";
 import { extractForwardableHeaders } from "./response-headers.js";
 
 export interface OpenAiCompatOptions {
+  /** Target name (errors, metrics, served-by). */
   name: string;
+  /**
+   * Provider preset id (`target.provider`, e.g. "mistral") used for the
+   * capability matrix. Defaults to `name` for direct embedded use.
+   */
+  providerType?: string;
   baseURL: string;
   apiKey: string;
   models?: readonly string[];
@@ -53,6 +59,7 @@ export type OpenAICompatProvider = IProvider & IStreamProvider & IEmbeddingProvi
 export function createOpenAICompatProvider(opts: OpenAiCompatOptions): OpenAICompatProvider {
   const baseURL = opts.baseURL.replace(/\/+$/, "");
   const compatibilityMode = opts.compatibility ?? "warn";
+  const capabilityKey = opts.providerType ?? opts.name;
   const extraHeaders = opts.extraHeaders ?? {};
   const modelList: readonly ModelInfo[] = (opts.models ?? []).map((id) => ({
     id,
@@ -113,7 +120,7 @@ export function createOpenAICompatProvider(opts: OpenAiCompatOptions): OpenAICom
     },
 
     async complete(ctx: RequestContext, req: ChatCompletionRequest): Promise<ChatCompletionResponse> {
-      const enforced = enforceUnsupportedParams(opts.name, req, compatibilityMode);
+      const enforced = enforceUnsupportedParams(capabilityKey, req, compatibilityMode, opts.name);
       if (enforced.action === "rejected") {
         throw new ProviderError(opts.name, 400, enforced.reason);
       }
@@ -161,7 +168,7 @@ export function createOpenAICompatProvider(opts: OpenAiCompatOptions): OpenAICom
       ctx: RequestContext,
       req: ChatCompletionRequest,
     ): AsyncGenerator<StreamChunk> {
-      const enforced = enforceUnsupportedParams(opts.name, req, compatibilityMode);
+      const enforced = enforceUnsupportedParams(capabilityKey, req, compatibilityMode, opts.name);
       if (enforced.action === "rejected") {
         throw new ProviderError(opts.name, 400, enforced.reason);
       }

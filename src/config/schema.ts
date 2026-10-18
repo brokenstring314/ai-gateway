@@ -78,7 +78,12 @@ export const TargetConfigSchema = z.object({
   name: z.string().min(1),
   provider: z.string().min(1),
   apiKey: z.string().min(1),
-  baseURL: z.string().url().optional(),
+  // A URL, or a string with ${VAR} refs (validated as a URL after expansion,
+  // when the provider is built).
+  baseURL: z
+    .string()
+    .refine((v) => /\$\{[^}]+\}/.test(v) || URL.canParse(v), { message: "Invalid URL" })
+    .optional(),
   models: z.array(z.string()).optional(),
   weight: z.number().nonnegative().optional(),
   priority: z.number().int().nonnegative().optional(),

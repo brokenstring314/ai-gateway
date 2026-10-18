@@ -290,11 +290,13 @@ All providers use the OpenAI-compatible protocol. The gateway adapts request/res
 | `openrouter`  | `https://openrouter.ai/api/v1`                      |
 | `perplexity`  | `https://api.perplexity.ai`                         |
 | `replicate`   | `https://api.replicate.com/v1`                      |
-| `cloudflare`  | `https://api.cloudflare.com/client/v4/accounts`     |
-| `databricks`  | `https://.databricks.com/serving-endpoints`         |
+| `cloudflare`  | none: set `baseURL` (`https://api.cloudflare.com/client/v4/accounts/<ACCOUNT_ID>/ai/v1`) |
+| `databricks`  | none: set `baseURL` (`https://<workspace>.cloud.databricks.com/serving-endpoints`) |
 | `huggingface` | `https://api-inference.huggingface.co/v1`           |
 
-Any unknown provider with an explicit `baseURL` is treated as a generic OpenAI-compatible endpoint.
+Any unknown provider with an explicit `baseURL` is treated as a generic OpenAI-compatible endpoint; an unknown provider without one fails at startup. `nvidia-nim` is accepted as an alias of `nvidia_nim`. `openrouter` targets send an `HTTP-Referer` / `X-Title` attribution header. `baseURL` may contain `${VAR}` references (e.g. `"${OPENAI_BASE_URL}"`, `"http://localhost:${PORT}/v1"`); the expanded value must be an http(s) URL.
+
+Parameter support is looked up by `provider` (the preset), not by the target's `name`, so a target called `my-mistral` with `provider: mistral` gets Mistral's capability checks (see [Compatibility Mode](#compatibility-mode)).
 
 ---
 
@@ -982,9 +984,11 @@ compatibility:
   onUnsupportedParam: warn  # warn | drop | reject
 ```
 
-- **`warn`** (default): Log a warning, strip the parameter, proceed
-- **`drop`**: Silently strip the parameter
-- **`reject`**: Return a 400 error
+- **`warn`** (default): log a warning and send the request unchanged
+- **`drop`**: remove the unsupported parameters before sending (a `developer` message becomes `system` for providers without the developer role; image parts are kept, with a warning)
+- **`reject`**: return a 400 naming the unsupported parameters (wire names, e.g. `seed`, `stream_options`)
+
+The check uses the target's `provider` (e.g. `mistral`, `ollama`, `replicate`, `cloudflare`, `huggingface` have reduced parameter sets); providers not in the matrix are assumed to support everything.
 
 ---
 
@@ -1121,7 +1125,7 @@ src/
 │   ├── openai-compat.ts       # Universal OpenAI-compatible adapter
 │   ├── capabilities.ts        # Per-provider parameter support matrix
 │   ├── sse-parser.ts          # SSE stream parser
-│   └── definitions/           # 20+ provider config definitions
+│   └── (presets: src/core/provider-presets.ts — one table of 20+ providers)
 │
 ├── routing/
 │   ├── types.ts               # IStrategy interface
