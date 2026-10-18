@@ -11,81 +11,73 @@ import type {
   IStreamProvider,
 } from "../providers/types.js";
 import type { LoadBalanceConfig, LoadBalanceTarget } from "./strategy-factory.js";
+import type { RetryConfig } from "../config/types.js";
+import { executeCandidates, streamCandidates, type CandidateHooks } from "./executor.js";
 
 export class LoadBalanceStrategy implements IStrategy {
   public readonly mode: StrategyMode = "loadbalance";
   private readonly targets: readonly LoadBalanceTarget[];
   private readonly lookup: ProviderLookup;
+  private readonly retryConfigs: ReadonlyMap<string, RetryConfig>;
 
   constructor(lookup: ProviderLookup, config: LoadBalanceConfig) {
     this.lookup = lookup;
+    this.retryConfigs = config.retryConfigs ?? new Map();
     this.targets = config.targets;
   }
 
+  /**
+   * Candidate order: weighted sampling without replacement. The first
+   * candidate is picked with probability proportional to its weight; the
+   * rest follow in weighted order so the executor can fail over to them.
+   */
   selectTargets(_req: ChatCompletionRequest): string[] {
-    const totalWeight = this.targets.reduce(
-      (s, t) => s + effectiveWeight(t.weight),
-      0,
-    );
-    if (totalWeight <= 0) return [...this.targets].map((t) => t.name);
+    const remaining = [...this.targets];
+    const order: string[] = [];
+    while (remaining.length > 0) {
+      const total = remaining.reduce((s, t) => s + effectiveWeight(t.weight), 0);
+      let r = Math.random() * total;
+      let idx = remaining.length - 1;
+      for (let k = 0; k < remaining.length; k++) {
+        r -= effectiveWeight(remaining[k]!.weight);
+        if (r <= 0) {
+          idx = k;
+          break;
+        }
+      }
+      order.push(remaining[idx]!.name);
+      remaining.splice(idx, 1);
+    }
+    return order;
+  }
 
-    // Weighted shuffle: sort by weight-adjusted random score descending
-    const shuffled = [...this.targets]
-      .map((t) => ({
-        name: t.name,
-        score: Math.random() * (effectiveWeight(t.weight) / totalWeight),
-      }))
-      .sort((a, b) => b.score - a.score)
-      .map((t) => t.name);
-
-    return shuffled;
+  private hooks(): CandidateHooks {
+    return {
+      label: "LoadBalanceStrategy",
+      retryConfigFor: (name) => this.retryConfigs.get(name),
+    };
   }
 
   async execute(
     ctx: RequestContext,
     req: ChatCompletionRequest,
   ): Promise<ChatCompletionResponse> {
-    const picked = this.pickWeighted();
-    const provider = this.lookup(picked);
-    if (!provider) {
-      throw new Error(
-        `LoadBalanceStrategy: provider "${picked}" not found`,
-      );
-    }
-    return provider.complete(ctx, req);
+    return executeCandidates(ctx, this.selectTargets(req), this.lookup, (p) => p.complete(ctx, req), this.hooks());
   }
 
   async *executeStream(
     ctx: RequestContext,
     req: ChatCompletionRequest,
   ): AsyncIterable<StreamChunk> {
-    const picked = this.pickWeighted();
-    const provider = this.lookup(picked);
-    if (!provider || !("completeStream" in provider)) {
-      throw new Error(
-        `LoadBalanceStrategy: streaming provider "${picked}" not found`,
-      );
-    }
-    yield* (provider as IStreamProvider).completeStream(ctx, req);
-  }
-
-  private pickWeighted(): string {
-    const totalWeight = this.targets.reduce(
-      (s, t) => s + effectiveWeight(t.weight),
-      0,
+    yield* streamCandidates(
+      ctx,
+      this.selectTargets(req),
+      this.lookup,
+      (p) => (p as IStreamProvider).completeStream(ctx, req),
+      this.hooks(),
     );
-    if (totalWeight <= 0 && this.targets.length > 0) {
-      return this.targets[0]!.name;
-    }
-
-    let r = Math.random() * totalWeight;
-    for (const target of this.targets) {
-      r -= effectiveWeight(target.weight);
-      if (r <= 0) return target.name;
-    }
-    // Fallback to last
-    return this.targets[this.targets.length - 1]!.name;
   }
+
 }
 
 function effectiveWeight(weight: number): number {

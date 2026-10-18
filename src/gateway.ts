@@ -237,6 +237,12 @@ function buildStrategyConfig(config: GatewayConfig): {
 } {
   const sc = config.strategy;
   const targetNames = config.targets.map((t) => t.name);
+  // Per-target retry config, honored by every multi-target strategy's
+  // candidate executor (a target without one gets a single attempt).
+  const retryConfigs = new Map<string, import("./config/types.js").RetryConfig>();
+  for (const t of config.targets) {
+    if (t.retry) retryConfigs.set(t.name, t.retry);
+  }
 
   switch (sc.mode) {
     case "single": {
@@ -246,11 +252,6 @@ function buildStrategyConfig(config: GatewayConfig): {
     }
     case "fallback": {
       const fallbackTargets = sc.targets ?? targetNames;
-      const retryConfigs = new Map<string, import("./config/types.js").RetryConfig>();
-      for (const name of fallbackTargets) {
-        const t = config.targets.find((tgt) => tgt.name === name);
-        if (t?.retry) retryConfigs.set(name, t.retry);
-      }
       return { mode: "fallback", config: { targets: fallbackTargets, retryConfigs } };
     }
     case "loadbalance": {
@@ -258,7 +259,7 @@ function buildStrategyConfig(config: GatewayConfig): {
         const t = config.targets.find((tgt) => tgt.name === name);
         return { name, weight: t?.weight ?? sc.weights?.[name] ?? 1 };
       });
-      return { mode: "loadbalance", config: { targets } };
+      return { mode: "loadbalance", config: { targets, retryConfigs } };
     }
     case "conditional": {
       // Go-style conditions (key/value/targetKey) are bridged to TS
@@ -276,11 +277,12 @@ function buildStrategyConfig(config: GatewayConfig): {
         config: {
           rules,
           defaultTarget: sc.targets?.[0] ?? targetNames[0],
+          retryConfigs,
         },
       };
     }
     case "least_latency": {
-      return { mode: "least_latency", config: { targets: sc.targets ?? targetNames } };
+      return { mode: "least_latency", config: { targets: sc.targets ?? targetNames, retryConfigs } };
     }
     case "cost_optimized": {
       const targets = (sc.targets ?? targetNames).map((name) => {
@@ -296,6 +298,7 @@ function buildStrategyConfig(config: GatewayConfig): {
         config: {
           targets,
           unpricedStrategy: sc.unpricedStrategy ?? "fallback",
+          retryConfigs,
         },
       };
     }
@@ -315,6 +318,7 @@ function buildStrategyConfig(config: GatewayConfig): {
           keywords,
           contentConditions,
           defaultTarget: sc.targets?.[0] ?? targetNames[0],
+          retryConfigs,
         },
       };
     }
@@ -329,7 +333,7 @@ function buildStrategyConfig(config: GatewayConfig): {
             name,
             weight: sc.weights?.[name] ?? 1,
           }));
-      return { mode: "abtest", config: { variants } };
+      return { mode: "abtest", config: { variants, retryConfigs } };
     }
     default: {
       const _exhaustive: never = sc.mode;
