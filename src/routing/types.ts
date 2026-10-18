@@ -8,11 +8,7 @@ export type StrategyMode =
   | "single"
   | "fallback"
   | "loadbalance"
-  | "conditional"
-  | "least_latency"
-  | "cost_optimized"
-  | "content_based"
-  | "abtest";
+  | "conditional";
 
 export interface IStrategy {
   readonly mode: StrategyMode;

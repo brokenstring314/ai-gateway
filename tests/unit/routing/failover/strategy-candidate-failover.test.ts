@@ -5,22 +5,6 @@ import { mk, req, tgt, code } from "./_h";
 const cb = { failureThreshold: 1, timeoutMs: 60_000 };
 
 describe("strategies do not route around an open breaker", () => {
-  it("cost_optimized: cheapest target down -> 100% of requests fail, expensive healthy target never used", async () => {
-    const { g, calls } = mk({ strategy: { mode: "cost_optimized" }, targets: [
-      tgt("cheap", { costPer1kInputTokens: 0.1, circuitBreaker: cb }),
-      tgt("pricey", { costPer1kInputTokens: 1, circuitBreaker: cb })] }, ["cheap", "pricey"], { cheap: "fail", pricey: "ok" });
-    const r: string[] = [];
-    for (let i = 0; i < 20; i++) r.push(await code(g.route({} as any, req)));
-    console.log(r.join(","), calls);
-    expect(r.filter((x) => x.startsWith("ok")).length).toBeGreaterThan(15); // FAILS: 0 ok (1x 503 upstream, 19x 503 circuit open)
-  });
-  it("least_latency: a dead target never records latency, keeps p50=0 and wins every pick", async () => {
-    const { g } = mk({ strategy: { mode: "least_latency" }, targets: [tgt("dead", { circuitBreaker: cb }), tgt("live")] }, ["dead", "live"], { dead: "fail", live: "ok" });
-    const r: string[] = [];
-    for (let i = 0; i < 20; i++) r.push(await code(g.route({} as any, req)));
-    console.log(r.join(","));
-    expect(r.filter((x) => x.startsWith("ok")).length).toBeGreaterThan(15); // FAILS: 0
-  });
   it("loadbalance: half of all traffic gets 503 CircuitOpen while the other target is healthy", async () => {
     const { g } = mk({ strategy: { mode: "loadbalance" }, targets: [tgt("a", { circuitBreaker: cb }), tgt("b", { circuitBreaker: cb })] }, ["a", "b"], { a: "fail", b: "ok" });
     const r: string[] = [];
@@ -33,7 +17,6 @@ describe("strategies do not route around an open breaker", () => {
 
 // ── R3-H3: shared candidate executor, beyond the original repro ──
 import { LoadBalanceStrategy } from "@/routing/loadbalance";
-import { LeastLatencyStrategy } from "@/routing/least-latency";
 import { ConditionalStrategy } from "@/routing/conditional";
 
 function streamProvider(name: string, mode: "ok" | "fail-before" | "fail-after" | "400") {
@@ -67,7 +50,7 @@ async function drain(it: AsyncIterable<any>): Promise<string> {
 }
 
 describe("shared candidate executor", () => {
-  it("abtest: a variant behind an open breaker fails over to the other variant", async () => {
+  it("abtest alias (-> loadbalance): a target behind an open breaker fails over to the other one", async () => {
     const { g } = mk({ strategy: { mode: "abtest" }, targets: [tgt("a", { circuitBreaker: cb }), tgt("b")] }, ["a", "b"], { a: "fail", b: "ok" });
     const r: string[] = [];
     for (let i = 0; i < 40; i++) r.push(await code(g.route({} as any, req)));
@@ -106,16 +89,6 @@ describe("shared candidate executor", () => {
     const lb2 = new LoadBalanceStrategy((n) => (n === "a" ? a2.p : b2.p), { targets: [{ name: "a", weight: 1e9 }, { name: "b", weight: 1e-9 }] });
     expect(await drain(lb2.executeStream({ metadata: {} } as any, req as any))).toBe("err(502):a");
     expect(b2.calls.n).toBe(0);
-  });
-
-  it("least_latency: unmeasured targets are explored, failed targets ranked last", async () => {
-    const ll = new LeastLatencyStrategy(() => undefined, { targets: ["x", "y", "z"] });
-    expect(ll.selectTargets(req as any)).toEqual(["x", "y", "z"]);
-    (ll as any).recordLatency("y", 50);
-    (ll as any).recordFailure("x");
-    expect(ll.selectTargets(req as any)).toEqual(["z", "y", "x"]);
-    (ll as any).recordLatency("x", 10); // success clears the penalty
-    expect(ll.selectTargets(req as any)).toEqual(["z", "x", "y"]);
   });
 
   it("conditional strategy with nothing matched and no default still errors", async () => {

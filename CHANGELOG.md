@@ -18,6 +18,28 @@
   load balancer). Delete `.data/gateway-config.sqlite`.
   (Closes B3-5, S3-4, the history part of S3-5, and the non-atomic reload
   issue from round 2.)
+- **Routing strategies reduced to four: `single`, `fallback`, `loadbalance`,
+  `conditional`.** Removed: `least_latency` (a dead target kept winning every
+  pick), `cost_optimized` (the cheapest target being down failed 100% of
+  requests), `content_based` (folded into `conditional`), and the Go config
+  bridge (`strategy.conditions`, `contentConditions`/`content_conditions`,
+  `keywords`, `abVariants`/`ab_variants`, `unpricedStrategy`/`unpriced_strategy`).
+  Each removed mode or key fails `validate` and startup with a hint, e.g.
+  `strategy mode least_latency was removed in 0.2.0; use fallback`.
+  `abtest` (and `ab-test`) remain one release as a deprecated alias of
+  `loadbalance`, with a startup warning.
+  *Migration:* `least_latency` → `fallback`; `cost_optimized` → `fallback`
+  ordered by price; `content_based` keywords → `conditional` rules
+  `{ field: prompt, contains: <keyword>, target }` (or `pattern:` for a regex);
+  `abtest` → `loadbalance` with `weights`; Go `conditions` →
+  `rules: [{ field, pattern, target }]`.
+- **Conditional rules**: new `field: prompt` (all user-message text) and
+  `contains:` (case-insensitive substring) next to `pattern:`. A rule needs
+  exactly one of the two; `field` must be `model`, `user`, `message` or
+  `prompt`; regexes are validated at startup instead of failing per request.
+- **Load balance weight 0 now drains a target** (it was treated as weight 1).
+  A drained target gets no traffic, not even as a failover candidate; negative
+  weights and an all-zero pool are rejected. (Closes C3-9.)
 
 ### Security
 

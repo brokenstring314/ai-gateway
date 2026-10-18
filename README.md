@@ -119,19 +119,15 @@ passthroughProxy:
   enabled: false            # forward other /v1/* routes upstream (see API Endpoints)
 
 strategy:
-  mode: single              # single | fallback | loadbalance | conditional |
-                             # least_latency | cost_optimized | content_based | abtest
+  mode: single              # single | fallback | loadbalance | conditional
   targets: ["openai-main"]  # Target names for the strategy
-  weights:                  # Per-target weights (loadbalance, abtest)
+  weights:                  # Per-target weights (loadbalance; 0 = drained)
     openai-main: 3
     deepseek-backup: 1
-  rules:                    # Conditional routing rules
-    - field: "model"
-      pattern: "^gpt-4"
+  rules:                    # Conditional routing rules (first match wins)
+    - field: "model"        # model | user | message | prompt
+      pattern: "^gpt-4"     # regex, or contains: "<substring>"
       target: "openai-main"
-  keywords:                 # Content-based routing keywords
-    code: "openai-main"
-    translate: "deepseek"
 
 targets:
   - name: openai-main
@@ -139,8 +135,8 @@ targets:
     apiKey: "sk-..."
     baseURL: "https://api.openai.com/v1"   # Optional, has per-provider defaults
     models: ["gpt-4o", "gpt-4o-mini"]
-    weight: 3                               # For loadbalance strategy
-    costPer1kInputTokens: 0.005             # For cost_optimized strategy
+    weight: 3                               # For loadbalance strategy (0 = drained)
+    costPer1kInputTokens: 0.005             # Pricing (budget plugin / metrics)
     costPer1kOutputTokens: 0.015
     retry:                                  # Per-target retry config
       attempts: 3                           # Max attempts (default: 1 = no retry)
@@ -515,15 +511,17 @@ The gateway adds these headers to responses:
 
 ## Routing Strategies
 
-Every multi-target strategy (fallback, loadbalance, least_latency,
-cost_optimized, conditional, content_based, abtest) produces an **ordered
+Four strategies are available: `single`, `fallback`, `loadbalance` and
+`conditional` (`least_latency`, `cost_optimized`, `content_based` and `abtest`
+were removed in 0.2.0, see [Removed strategies](#removed-strategies-020)).
+Every multi-target strategy produces an **ordered
 candidate list** (its preferred target first) and runs it through one shared
 executor: a candidate whose circuit breaker is open, that hits its
 concurrency limit, or that fails with a failover-eligible error (network,
 5xx, 408, 429, 401/403/404) is skipped and the next candidate is tried, using
 each target's own `retry` config. Caller-caused 4xx (400/409/413/422...),
 client aborts and the gateway request timeout end the request. Streams fail
-over only before their first chunk. Conditional / content_based fail over
+over only before their first chunk. Conditional fails over
 from the matched target to the default target only. `/v1/embeddings` and
 `/v1/images/generations` use the same strategy order (filtered to targets
 that support the model and capability), with the same breakers, concurrency
@@ -567,7 +565,11 @@ targets:
 
 ### Load Balance
 
-Distribute requests across targets by weight:
+Distribute requests across targets by weight (weighted random; the remaining
+targets follow in weighted order as failover candidates). A weight of `0`
+drains a target: it receives no traffic, not even as a failover candidate.
+At least one weight must be greater than 0. Weights come from
+`targets[].weight`, then `strategy.weights`, default 1.
 
 ```yaml
 strategy:
@@ -580,7 +582,18 @@ strategy:
 
 ### Conditional
 
-Route based on request field matching (regex supported):
+Route on request fields. Rules are checked in order and the first match wins;
+when nothing matches, the first entry of `strategy.targets` is the default
+target (and also the failover target for a matched rule). Each rule has a
+`field` and exactly one of `pattern` (regex, validated at startup) or
+`contains` (case-insensitive substring):
+
+| `field`   | Matched against                                   |
+| --------- | ------------------------------------------------- |
+| `model`   | the requested model                               |
+| `user`    | the request's `user` field                        |
+| `message` | the text of the first message                     |
+| `prompt`  | the text of every user message (newline-joined)   |
 
 ```yaml
 strategy:
@@ -589,73 +602,23 @@ strategy:
     - field: "model"
       pattern: "^gpt-4"
       target: "openai-main"
-    - field: "model"
-      pattern: "^deepseek"
+    - field: "prompt"
+      contains: "translate"
       target: "deepseek-main"
   targets: ["openai-main"]  # default target
 ```
 
-### Least Latency
+### Removed strategies (0.2.0)
 
-Route to the target with the lowest observed p50 latency. Targets with no
-samples yet are tried first (so they get measured); a target that just failed
-is ranked last for 30 s (or until it succeeds as a failover candidate):
+These modes now fail `ai-gateway validate` and startup with a migration hint:
 
-```yaml
-strategy:
-  mode: least_latency
-  targets: ["openai-main", "groq-fast", "cerebras-fast"]
-```
-
-### Cost Optimized
-
-Route to the cheapest provider that supports the requested model:
-
-```yaml
-strategy:
-  mode: cost_optimized
-  targets: ["openai-main", "deepseek-cheap"]
-targets:
-  - name: openai-main
-    provider: openai
-    apiKey: "sk-..."
-    models: ["gpt-4o"]
-    costPer1kInputTokens: 0.005
-    costPer1kOutputTokens: 0.015
-  - name: deepseek-cheap
-    provider: deepseek
-    apiKey: "sk-..."
-    models: ["deepseek-chat"]
-    costPer1kInputTokens: 0.0001
-    costPer1kOutputTokens: 0.0002
-```
-
-### Content Based
-
-Route based on keywords in the user prompt:
-
-```yaml
-strategy:
-  mode: content_based
-  keywords:
-    code: "openai-main"
-    translate: "deepseek-main"
-    math: "groq-fast"
-  targets: ["openai-main"]  # default
-```
-
-### A/B Test
-
-Weighted traffic splitting with labels:
-
-```yaml
-strategy:
-  mode: abtest
-  targets: ["model-a", "model-b"]
-  weights:
-    model-a: 80
-    model-b: 20
-```
+| Removed                                         | Use instead                                                                 |
+| ----------------------------------------------- | --------------------------------------------------------------------------- |
+| `least_latency`                                 | `fallback` with targets in order of preference                              |
+| `cost_optimized` (+ `unpricedStrategy`)         | `fallback` with targets ordered from cheapest to most expensive             |
+| `content_based` (+ `keywords`, `contentConditions`) | `conditional` with `field: prompt` rules (`contains` or `pattern`)      |
+| `abtest` (+ `abVariants`)                       | `loadbalance` with `weights`. `abtest` still works as a deprecated alias of `loadbalance` (warning at startup) and will be removed in 0.3.0 |
+| `strategy.conditions` (Go `key/value/target_key`) | `strategy.rules: [{ field, pattern, target }]`                            |
 
 ---
 
@@ -1149,11 +1112,7 @@ src/
 │   ├── single.ts              # Single target routing
 │   ├── fallback.ts            # Fallback with error classification
 │   ├── loadbalance.ts         # Weighted load balancing
-│   ├── conditional.ts         # Field-pattern routing
-│   ├── least-latency.ts       # p50 latency routing
-│   ├── cost-optimized.ts      # Cost-based routing
-│   ├── content-based.ts       # Keyword-based routing
-│   └── abtest.ts              # A/B traffic splitting
+│   └── conditional.ts         # Field/prompt rule routing
 │
 ├── plugins/
 │   ├── types.ts               # IPlugin, Stage, PluginResult

@@ -112,19 +112,15 @@ server:
   host: "0.0.0.0"          # 绑定地址（默认：0.0.0.0）
 
 strategy:
-  mode: single              # single | fallback | loadbalance | conditional |
-                             # least_latency | cost_optimized | content_based | abtest
+  mode: single              # single | fallback | loadbalance | conditional
   targets: ["openai-main"]  # 策略使用的目标名称
-  weights:                  # 每个目标的权重（loadbalance、abtest）
+  weights:                  # 每个目标的权重（loadbalance；0 = 摘除）
     openai-main: 3
     deepseek-backup: 1
-  rules:                    # 条件路由规则
-    - field: "model"
-      pattern: "^gpt-4"
+  rules:                    # 条件路由规则（第一条命中的生效）
+    - field: "model"        # model | user | message | prompt
+      pattern: "^gpt-4"     # 正则，或 contains: "<子串>"
       target: "openai-main"
-  keywords:                 # 内容路由关键词
-    code: "openai-main"
-    translate: "deepseek"
 
 targets:
   - name: openai-main
@@ -133,7 +129,7 @@ targets:
     baseURL: "https://api.openai.com/v1"   # 可选，每个 provider 有默认值
     models: ["gpt-4o", "gpt-4o-mini"]
     weight: 3                               # 用于 loadbalance 策略
-    costPer1kInputTokens: 0.005             # 用于 cost_optimized 策略
+    costPer1kInputTokens: 0.005             # 价格（budget 插件 / 指标）
     costPer1kOutputTokens: 0.015
     retry:                                  # 每个目标的重试配置
       attempts: 3                           # 最大尝试次数（默认：1 = 不重试）
@@ -497,7 +493,7 @@ curl -X POST \
 
 ## 路由策略
 
-所有多目标策略（fallback、loadbalance、least_latency、cost_optimized、conditional、content_based、abtest）都会生成一个**有序候选列表**（首选目标在前），并交给同一个执行器：候选目标熔断器打开、达到并发上限、或出现可切换错误（网络错误、5xx、408、429、401/403/404）时跳过，尝试下一个候选（按各目标自己的 `retry` 配置）。调用方导致的 4xx（400/409/413/422 等）、客户端中断和网关请求超时会直接结束请求。流式请求只在第一个 chunk 之前切换。conditional / content_based 只从命中的目标切换到默认目标。least_latency 中尚无样本的目标优先尝试；刚失败的目标在 30 秒内（或作为候选成功之前）排在最后。`/v1/embeddings` 和 `/v1/images/generations` 使用相同的策略顺序（仅保留支持该模型和能力的目标），同样经过熔断器、并发限制、重试和故障切换。
+可用策略有 4 种：`single`、`fallback`、`loadbalance`、`conditional`（`least_latency`、`cost_optimized`、`content_based`、`abtest` 已在 0.2.0 移除，见下文“已移除的策略”）。所有多目标策略都会生成一个**有序候选列表**（首选目标在前），并交给同一个执行器：候选目标熔断器打开、达到并发上限、或出现可切换错误（网络错误、5xx、408、429、401/403/404）时跳过，尝试下一个候选（按各目标自己的 `retry` 配置）。调用方导致的 4xx（400/409/413/422 等）、客户端中断和网关请求超时会直接结束请求。流式请求只在第一个 chunk 之前切换。conditional 只从命中的目标切换到默认目标。`/v1/embeddings` 和 `/v1/images/generations` 使用相同的策略顺序（仅保留支持该模型和能力的目标），同样经过熔断器、并发限制、重试和故障切换。
 
 ### Single（单目标）
 
@@ -537,7 +533,7 @@ targets:
 
 ### Load Balance（负载均衡）
 
-按权重分配请求：
+按权重分配请求（加权随机；其余目标按权重顺序作为故障切换候选）。权重为 `0` 表示摘除该目标：不分配任何流量，也不作为切换候选。至少要有一个权重大于 0。权重取值顺序：`targets[].weight`，然后 `strategy.weights`，默认 1。
 
 ```yaml
 strategy:
@@ -550,80 +546,39 @@ strategy:
 
 ### Conditional（条件路由）
 
-根据请求字段匹配路由（支持正则）：
+按请求字段路由。规则按顺序检查，第一条命中的生效；都不命中时使用 `strategy.targets` 的第一个作为默认目标（命中规则时它也是故障切换目标）。每条规则有一个 `field`，以及 `pattern`（正则，启动时校验）和 `contains`（不区分大小写的子串）二者之一：
+
+| `field`   | 匹配对象                      |
+| --------- | ------------------------- |
+| `model`   | 请求的模型                     |
+| `user`    | 请求的 `user` 字段             |
+| `message` | 第一条消息的文本                  |
+| `prompt`  | 所有 user 消息的文本（换行拼接）       |
 
 ```yaml
 strategy:
   mode: conditional
   rules:
     - field: "model"
-      pattern: "^g7pt-4"
+      pattern: "^gpt-4"
       target: "openai-main"
-    - field: "model"
-      pattern: "^deepseek"
+    - field: "prompt"
+      contains: "translate"
       target: "deepseek-main"
   targets: ["openai-main"]  # 默认目标
 ```
 
-### Least Latency（最低延迟）
+### 已移除的策略（0.2.0）
 
-路由到观测 p50 延迟最低的目标：
+以下写法现在会让 `ai-gateway validate` 和启动直接报错，并给出迁移提示：
 
-```yaml
-strategy:
-  mode: least_latency
-  targets: ["openai-main", "groq-fast", "cerebras-fast"]
-```
-
-### Cost Optimized（成本优化）
-
-路由到支持请求模型且最便宜的提供商：
-
-```yaml
-strategy:
-  mode: cost_optimized
-  targets: ["openai-main", "deepseek-cheap"]
-targets:
-  - name: openai-main
-    provider: openai
-    apiKey: "sk-..."
-    models: ["gpt-4o"]
-    costPer1kInputTokens: 0.005
-    costPer1kOutputTokens: 0.015
-  - name: deepseek-cheap
-    provider: deepseek
-    apiKey: "sk-..."
-    models: ["deepseek-chat"]
-    costPer1kInputTokens: 0.0001
-    costPer1kOutputTokens: 0.0002
-```
-
-### Content Based（内容路由）
-
-根据用户提示中的关键词路由：
-
-```yaml
-strategy:
-  mode: content_based
-  keywords:
-    code:@ "openai-main"
-    translate: "deepseek-main"
-    math: "groq-fast"
-  targets: ["openai-main"]  # 默认
-```
-
-### A/B Test（A/B 测试）
-
-带标签的加权流量分流：
-
-```yaml
-strategy:
-  mode: abtest
-  targets: ["model-a", "model-b"]
-  weights:
-    model-a: 80
-    model-b: 20
-```
+| 已移除                                         | 改用                                                   |
+| ------------------------------------------- | ---------------------------------------------------- |
+| `least_latency`                             | `fallback`，targets 按偏好顺序排列                           |
+| `cost_optimized`（及 `unpricedStrategy`）      | `fallback`，targets 按价格从低到高排列                         |
+| `content_based`（及 `keywords`、`contentConditions`） | `conditional` + `field: prompt` 规则（`contains` 或 `pattern`） |
+| `abtest`（及 `abVariants`）                    | `loadbalance` + `weights`。`abtest` 暂时作为 `loadbalance` 的废弃别名保留（启动时告警），0.3.0 移除 |
+| `strategy.conditions`（Go 的 `key/value/target_key`） | `strategy.rules: [{ field, pattern, target }]`  |
 
 ---
 
@@ -1116,11 +1071,7 @@ src/
 │   ├── single.ts              # 单目标路由
 │   ├── fallback.ts            # 降级回退（含错误分类）
 │   ├── loadbalance.ts         # 加权负载均衡
-│   ├── conditional.ts         # 字段-模式条件路由
-│   ├── least-latency.ts       # p50 延迟路由
-│   ├── cost-optimized.ts      # 成本优化路由
-│   ├── content-based.ts       # 关键词内容路由
-│   └── abtest.ts              # A/B 流量分流
+│   └── conditional.ts         # 字段 / prompt 规则路由
 │
 ├── plugins/
 │   ├── types.ts               # IPlugin、Stage、PluginResult
