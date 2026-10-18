@@ -13,7 +13,7 @@ afterEach(() => { cleanup.forEach((f) => f()); cleanup = []; });
 const toolCallMsg = (id: string) => ({ role: "assistant", content: null, tool_calls: [{ id, type: "function", function: { name: "echo", arguments: "{\"text\":\"a\"}" } }] });
 
 describe("MCP loop", () => {
-  it.failing("M2 depth exceeded: OpenAI-shaped error with a meaningful message, and the failure is request-logged", async () => {
+  it("M2 depth exceeded: OpenAI-shaped error with a meaningful message, and the failure is request-logged", async () => {
     const up = startUpstream(() => Response.json(completion(toolCallMsg("call_" + Math.random()), { finish_reason: "tool_calls" })));
     const gw = startGateway(up.url, { mcpServers } as any); cleanup.push(up.stop, gw.stop);
     await gw.gw.initMcp();
@@ -21,13 +21,17 @@ describe("MCP loop", () => {
     const r = await fetch(`${gw.base}/v1/chat/completions`, { method: "POST", headers: { "content-type": "application/json" },
       body: JSON.stringify({ model: "gpt-4o", messages: [{ role: "user", content: "loop" }] }) });
     const j: any = await r.json();
+    // mockRestore() clears mock.calls: read them first.
+    const logged = spy.mock.calls.map((c: any[]) => c[0]);
     spy.mockRestore(); console.log("M2 status", r.status, JSON.stringify(j));
     expect(up.bodies.length).toBe(3); // initial + maxCallDepth(2) loop rounds
-    expect(spy.mock.calls.some((c: any[]) => c[0]?.error)).toBe(true); // currently never logged
+    expect(logged.some((e: any) => e?.error)).toBe(true);
+    expect(r.status).toBe(502);
+    expect(j.error.code).toBe("mcp_depth_exceeded");
     expect(j.error.message).toMatch(/depth/i); // currently "Internal server error" (500)
   }, 15000);
 
-  it.failing("M3 usage: the response usage covers every upstream call made by the loop", async () => {
+  it("M3 usage: the response usage covers every upstream call made by the loop", async () => {
     let n = 0;
     const up = startUpstream(() => Response.json(n++ === 0
       ? completion(toolCallMsg("call_1"), { finish_reason: "tool_calls" })

@@ -12,6 +12,22 @@ export interface InternalPluginContext extends PluginContext {
   _shortCircuitedBy?: string;
   /** Names of the before-request plugins that returned a modified request. */
   _modifiedBy?: string[];
+  /** Callbacks registered with onSettled(), run once by settlePluginContext(). */
+  _settled: (() => void)[];
+}
+
+/** Run the context's onSettled() callbacks once (the pipeline's finalize calls this). */
+export function settlePluginContext(ctx: PluginContext): void {
+  const internal = ctx as Partial<InternalPluginContext>;
+  const callbacks = internal._settled ?? [];
+  internal._settled = [];
+  for (const fn of callbacks) {
+    try {
+      fn();
+    } catch (err) {
+      console.error(`[plugins] onSettled callback failed: ${err instanceof Error ? err.message : String(err)}`);
+    }
+  }
 }
 
 /**
@@ -40,6 +56,10 @@ export function createPluginContext(
     error: undefined,
     metadata,
     _shortCircuited: false,
+    _settled: [],
+    onSettled(fn: () => void): void {
+      ctx._settled.push(fn);
+    },
     shortCircuit(response: ChatCompletionResponse): void {
       ctx._shortCircuited = true;
       ctx.response = response;

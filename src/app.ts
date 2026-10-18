@@ -44,6 +44,7 @@ import { resolveBaseURL } from "./core/provider-presets.js";
 import { expandTargetEnvRefs } from "./config/envref.js";
 import { getMetrics as getPrometheusMetrics } from "./metrics/metrics.js";
 import type { InFlightTracker } from "./server/shutdown.js";
+import { requestLogStoreSink } from "./observability/request-log.js";
 
 /** Shared Hono environment type for all handlers and middleware. */
 export type AppEnv = {
@@ -59,6 +60,30 @@ export interface CreateAppOptions extends AdminAppOptions {
   bootstrapKey?: string;
   bootstrapReadOnlyKey?: string;
   inFlightTracker?: InFlightTracker;
+  /** Where GET /metrics is served (default: metricsPlacement(config, config.server.port)). */
+  metrics?: MetricsPlacement;
+}
+
+export type MetricsPlacement = "main" | "separate" | "off";
+
+/**
+ * Where /metrics is served, from observability.metrics:
+ *  - no `metrics` block: on the main port (pre-0.2 behavior);
+ *  - enabled: false → not served;
+ *  - enabled: true and port = the server port → main port;
+ *  - enabled: true and another port → its own listener (bootstrap starts it).
+ */
+export function metricsPlacement(config: GatewayConfig, serverPort: number): MetricsPlacement {
+  const m = config.observability?.metrics;
+  if (m === undefined) return "main";
+  if (m.enabled !== true) return "off";
+  return m.port === undefined || m.port === serverPort ? "main" : "separate";
+}
+
+/** GET /metrics handler body (Prometheus text format). */
+export async function metricsResponse(): Promise<Response> {
+  const text = await getPrometheusMetrics().format();
+  return new Response(text, { status: 200, headers: { "Content-Type": "text/plain; version=0.0.4" } });
 }
 
 /** Probe endpoints that keep answering while the server drains. */
@@ -82,6 +107,9 @@ export function createApp(
     adminSecret: () => options?.adminSecret ?? config.adminSecret,
     configKeys: () => config.auth?.keys,
   });
+
+  // Every finalized request is also written to the log store (/admin/logs, dashboard).
+  if (options?.logStore) gateway.addRequestLogSink(requestLogStoreSink(options.logStore));
 
   // ── Middleware (order matters) ──
   app.use("*", recoverMiddleware());
@@ -288,11 +316,9 @@ export function createApp(
   app.route("/", dashboardApp);
 
   // ── Prometheus metrics endpoint ──
-  app.get("/metrics", (c) => {
-    return getPrometheusMetrics().format().then((text) =>
-      c.text(text, 200, { "Content-Type": "text/plain; version=0.0.4" }),
-    );
-  });
+  if ((options?.metrics ?? metricsPlacement(config, config.server?.port ?? 3000)) === "main") {
+    app.get("/metrics", () => metricsResponse());
+  }
 
   return app;
 }

@@ -8,7 +8,7 @@ import { RequestLogStore } from "@/persistence/request-log-store";
 import { startUpstream, completion } from "./prev/harness";
 
 describe("round-2: initRequestLogger never called", () => {
-  it.failing("(b) request log store stays empty after a successful request", async () => {
+  it("(b) request log store stays empty after a successful request", async () => {
     const up = startUpstream(() => Response.json(completion({ role: "assistant", content: "hi" })));
     const ls = await RequestLogStore.create(new Database(":memory:"));
     const cfg: any = { auth: { enabled: false }, strategy: { mode: "single", targets: ["a"] }, targets: [{ name: "a", provider: "openai", apiKey: "k", baseURL: up.url }] };

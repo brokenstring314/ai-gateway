@@ -38,16 +38,16 @@ describe("ops", () => {
     expect(hasSample(await r.text(), "requests_total")).toBe(true);
   });
 
-  // B3-6 (open): token / provider-error / breaker recorders are never called.
-  it.failing("/metrics has token, provider error and circuit breaker samples", async () => {
+  // B3-6 (fixed in 2.3): token / provider-error / breaker recorders are wired.
+  it("/metrics has token, provider error and circuit breaker samples", async () => {
     const text = await (await gw.fetch("/metrics", { auth: null })).text();
     expect(hasSample(text, "tokens_input_total")).toBe(true);
     expect(hasSample(text, "provider_errors_total")).toBe(true);
     expect(hasSample(text, "circuit_breaker_state")).toBe(true);
   });
 
-  // round-2 (open): initRequestLogger is never called, the log store stays empty.
-  it.failing("/admin/logs lists the requests that were served", async () => {
+  // round-2 (fixed in 2.3): finalize writes every request to the log store.
+  it("/admin/logs lists the requests that were served", async () => {
     const r = await gw.fetch("/admin/logs", { auth: null, headers: { "X-Admin-Secret": ADMIN_SECRET } });
     expect(r.status).toBe(200);
     const j = (await r.json()) as { total: number };

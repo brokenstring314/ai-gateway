@@ -7,7 +7,7 @@ import type { Server } from "bun";
 import { existsSync, mkdirSync } from "node:fs";
 import { join } from "node:path";
 import { Gateway } from "../gateway.js";
-import { createApp } from "../app.js";
+import { createApp, metricsPlacement, metricsResponse } from "../app.js";
 import { createBootstrapGate } from "../auth/bootstrap.js";
 import { loadConfigFromPath } from "../config/loader.js";
 import type { GatewayConfig } from "../config/types.js";
@@ -20,7 +20,7 @@ import {
   authExposureWarning,
 } from "../config/production-safety.js";
 import { ShutdownManager } from "./shutdown.js";
-import { getRequestLogger } from "../observability/request-log.js";
+import { getRequestLogger, initRequestLogger } from "../observability/request-log.js";
 import { initOtel } from "../observability/otel.js";
 import { initOtelTracer } from "../observability/otel-tracer.js";
 import { parseShutdownGrace } from "../observability/otel-policy.js";
@@ -39,6 +39,8 @@ export interface ServeOverrides {
 /** A started gateway server (see bootstrap()). */
 export interface RunningGateway {
   readonly server: Server<undefined>;
+  /** Separate /metrics listener when observability.metrics.port ≠ the server port. */
+  readonly metricsServer?: Server<undefined>;
   readonly gateway: Gateway;
   readonly config: GatewayConfig;
   readonly shutdown: ShutdownManager;
@@ -97,6 +99,9 @@ export async function bootstrap(configPath: string, overrides: ServeOverrides = 
     keyStoreEmpty: keyStore.isEmpty(),
   });
 
+  // Fresh process-wide request logger (console JSON); the log store is
+  // attached as a sink by createApp (logStore), so /admin/logs has data.
+  initRequestLogger();
   const gateway = new Gateway(config);
   await gateway.initMcp();
   const shutdown = new ShutdownManager({
@@ -133,7 +138,11 @@ export async function bootstrap(configPath: string, overrides: ServeOverrides = 
   });
   // Logs "[auth] ... disabled: <reason>" now if a real admin credential exists.
   bootstrap.disabledReason();
+  const port = overrides.port ?? config.server?.port ?? 3000;
+  const host = overrides.host ?? config.server?.host ?? "0.0.0.0";
+  const metrics = metricsPlacement(config, port);
   const app = createApp(gateway, config, configPath, keyStore, {
+    metrics,
     logStore,
     adminSecret: config.adminSecret,
     bootstrapKey: process.env["ADMIN_BOOTSTRAP_KEY"],
@@ -141,9 +150,6 @@ export async function bootstrap(configPath: string, overrides: ServeOverrides = 
     bootstrap,
     inFlightTracker: shutdown.inFlight,
   });
-
-  const port = overrides.port ?? config.server?.port ?? 3000;
-  const host = overrides.host ?? config.server?.host ?? "0.0.0.0";
 
   console.log(`AI Gateway starting on ${host}:${port}`);
   const exposureWarning = authExposureWarning(config.auth, host);
@@ -173,6 +179,22 @@ export async function bootstrap(configPath: string, overrides: ServeOverrides = 
 
   console.log(`AI Gateway listening on http://${host}:${port}`);
 
+  // observability.metrics.port ≠ server port: /metrics on its own listener (no auth, metrics only).
+  let metricsServer: Server<undefined> | undefined;
+  if (metrics === "separate") {
+    const metricsPort = config.observability?.metrics?.port;
+    metricsServer = Bun.serve({
+      port: metricsPort,
+      hostname: host,
+      fetch: (req) => (new URL(req.url).pathname === "/metrics" && req.method === "GET"
+        ? metricsResponse()
+        : new Response("Not Found", { status: 404 })),
+    });
+    console.log(`Metrics listening on http://${host}:${metricsServer.port}/metrics`);
+  } else if (metrics === "off") {
+    console.log("Metrics endpoint disabled (observability.metrics.enabled: false)");
+  }
+
   // SIGTERM: readiness 503 -> stop accepting new connections (non-forced, so
   // in-flight streams can finish within the grace) -> drain -> force-close
   // whatever is left once the grace expires -> close components -> exit.
@@ -181,6 +203,10 @@ export async function bootstrap(configPath: string, overrides: ServeOverrides = 
   // After the drain nothing should be left; a forced stop guarantees that a
   // non-forced stop() cannot wait on a hung connection (found by tests/e2e/ops.e2e.ts).
   shutdown.register({ name: "http", close: () => server.stop(true) });
+  if (metricsServer) {
+    const ms = metricsServer;
+    shutdown.register({ name: "metrics-http", close: () => ms.stop(true) });
+  }
   shutdown.register({ name: "gateway", close: () => gateway.close() });
   shutdown.register({ name: "request-logger", close: () => getRequestLogger().close() });
   shutdown.register({ name: "api-key-store", close: () => keyStore.close() });
@@ -189,6 +215,7 @@ export async function bootstrap(configPath: string, overrides: ServeOverrides = 
 
   return {
     server,
+    metricsServer,
     gateway,
     config,
     shutdown,

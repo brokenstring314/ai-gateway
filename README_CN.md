@@ -870,13 +870,16 @@ observability:
 
 ### Prometheus 指标
 
+`GET /metrics`（无需鉴权）默认挂在主端口：
+
 ```yaml
 observability:
   metrics:
-    enabled: true
+    enabled: true   # false：完全不提供 /metrics
+    port: 9090      # 可选；与 server.port 不同时单独监听
 ```
 
-通过 `GET /metrics` 获取：
+没有 `observability.metrics` 配置块时，`/metrics` 仍在主端口。
 
 | 指标                               | 类型        | 标签                  |
 | -------------------------------- | --------- | ------------------- |
@@ -884,11 +887,16 @@ observability:
 | `ai_gateway_request_duration_seconds` | histogram | `method`, `status`, `provider` |
 | `ai_gateway_tokens_input_total`  | counter   | `provider`, `model` |
 | `ai_gateway_tokens_output_total` | counter   | `provider`, `model` |
+| `ai_gateway_request_cost_usd`    | counter   | `provider`, `model`（target 配了 `costPer1k*Tokens` 时） |
+| `ai_gateway_provider_errors_total` | counter | `provider`, `error_type`（每次失败的上游尝试，含已 failover 的） |
+| `ai_gateway_circuit_breaker_state` | gauge   | `provider`, `state`（当前状态为 1） |
+| `ai_gateway_mcp_server_up`       | gauge     | `server` |
+| `ai_gateway_rate_limit_rejections_total` | counter | `provider` |
 | `ai_gateway_plugin_blocked_total` | counter  | `plugin`, `outcome`, `surface` |
 
 ### 结构化日志
 
-所有请求以结构化 JSON 格式输出到 stdout：
+每个请求恰好记录一次，以结构化 JSON 输出到 stdout（同时写入 `GET /admin/logs` 与 dashboard 使用的请求日志库）：
 
 ```json
 {
