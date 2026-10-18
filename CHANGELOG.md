@@ -166,6 +166,17 @@
   proxied bodies (`max_output_tokens` / `max_tokens` /
   `max_completion_tokens`, injected as `max_output_tokens` on `/v1/responses`).
 
+- **`observability.metrics` is honored** (B3-6, 2.3). `enabled: false` stops
+  serving `/metrics`; `port` other than `server.port` serves `/metrics` on its
+  own listener (metrics only, no auth); without a `metrics` block `/metrics`
+  stays on the main port. `port` no longer defaults to 9090 (so
+  `enabled: true` alone keeps the main port).
+  *Migration:* if you had `enabled: false` and scraped `/metrics` anyway,
+  set `enabled: true`.
+- **Request-log entries carry `surface` and `status` on every request**, and a
+  failed request is logged once with the provider that failed (was
+  `"unknown"`). `McpCallDepthError` is now a `GatewayError`.
+
 ### Security
 
 - **`ADMIN_BOOTSTRAP_KEY` / `ADMIN_BOOTSTRAP_READ_ONLY_KEY` are retired once a
@@ -204,6 +215,24 @@
   CI builds it and runs `scripts/docker-smoke.sh`.
 
 ### Fixes
+
+- **One request pipeline with a single finalize** (2.3, `src/core/pipeline.ts`).
+  Non-stream chat, embeddings, images and (via `begin`/`finalize`) streams run
+  after/on-error plugins, one request-log line and the metrics exactly once.
+  The request log now reaches the SQLite store, so `GET /admin/logs` and the
+  dashboard show traffic (round-2). `/metrics` now has tokens, cost (targets
+  with `costPer1k*Tokens`), provider errors (every failed upstream attempt,
+  including ones that failed over), circuit-breaker state, MCP server up and
+  rate-limit rejections (B3-6). A plugin short-circuit response without
+  `usage` answers 200 instead of 500.
+- **MCP agentic loop** (2.7, `src/core/mcp-loop.ts`): every round goes through
+  the executor; the response `usage` sums every upstream call (was the last
+  round only); exceeding `maxCallDepth` answers `502 mcp_depth_exceeded` with
+  a meaningful message and is request-logged (was a bare 500).
+- **Embeddings / images** (2.4): `encoding_format` (`float` | `base64`; a base64
+  embedding is passed through as a string) and images `quality` / `style`
+  reach the upstream (were dropped); a client disconnect now aborts the
+  upstream call (was only the request timeout).
 
 - **Streaming lifecycle and SSE parsing hardened (T3-3, T3-4, T3-5, T3-10).**
   `data: [DONE]` from upstream ends the client stream at once (the upstream
