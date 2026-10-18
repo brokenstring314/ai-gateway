@@ -1,0 +1,13 @@
+.git
+.github
+.data
+node_modules
+tests
+scripts
+coverage
+*.md
+*.log
+.env
+.env.*
+config.yaml
+config.json

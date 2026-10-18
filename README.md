@@ -53,6 +53,27 @@ curl http://localhost:3000/v1/chat/completions \
   }'
 ```
 
+### Docker
+
+```bash
+docker build -t ai-gateway .
+docker run -d --name ai-gateway -p 3000:3000 \
+  -v "$PWD/config.yaml:/config/config.yaml:ro" \
+  -v ai-gateway-data:/data \
+  -e OPENAI_API_KEY \
+  ai-gateway
+```
+
+The image runs as a non-root user (uid 1000) under `tini`, with
+`GATEWAY_ENV=production` (so the config must enable auth with at least one key;
+an `adminSecret` must be 16+ characters) and `GATEWAY_DATA_DIR=/data` (API keys
+and request logs; mount a volume to keep them). Mount the config at
+`/config/config.yaml` (read-only is fine). The built-in `HEALTHCHECK` probes
+`/livez` on port 3000; point your load balancer / k8s readiness probe at
+`/readyz`. `docker stop` sends SIGTERM: `/readyz` turns 503, new connections are
+refused and in-flight requests drain for `SHUTDOWN_GRACE_MS` (default 10000).
+`scripts/docker-smoke.sh <image>` is the smoke test CI runs against the image.
+
 ---
 
 ## CLI Reference

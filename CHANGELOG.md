@@ -99,6 +99,12 @@
   *Migration:* a server that relied on an inherited variable needs it in `env`
   or `inheritEnv`.
 
+### Added
+
+- **Docker image** (`Dockerfile`): non-root (uid 1000), `tini` as PID 1,
+  `HEALTHCHECK` on `/livez`, config at `/config/config.yaml`, data in `/data`.
+  CI builds it and runs `scripts/docker-smoke.sh`.
+
 ### Fixes
 
 - **CORS preflight reflects the requested headers** (B3-8). It allowed only
