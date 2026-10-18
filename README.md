@@ -4,15 +4,48 @@ A high-performance OpenAI-compatible API gateway built with TypeScript, Bun, and
 
 Route requests across 20+ LLM providers through a single unified endpoint, with 4 routing strategies, 6 built-in plugins (incl. a PII & secret guardrail), circuit breakers, retry with backoff, MCP agentic tool calling, and full observability.
 
+> **Acknowledgement:** the design of this project originates from [Ferro Labs AI Gateway](https://github.com/ferro-labs/ai-gateway) (Apache-2.0). Thanks to the Ferro Labs team; see [NOTICE](NOTICE).
+
 ---
 
 ## Quick Start
 
-### Prerequisites
+### Install
 
-- [Bun](https://bun.sh/) 1.3+
+**Docker image** (linux/amd64, linux/arm64) from GitHub Container Registry:
 
-### Install & Run
+```bash
+docker pull ghcr.io/brokenstring314/ai-gateway:0.2.0   # or :0.2, :latest
+docker run -d --name ai-gateway -p 3000:3000 \
+  -v "$PWD/config.yaml:/config/config.yaml:ro" \
+  -v ai-gateway-data:/data \
+  -e OPENAI_API_KEY \
+  ghcr.io/brokenstring314/ai-gateway:0.2.0
+```
+
+See [Docker](#docker) below for what the image expects (production mode, auth on).
+
+**Prebuilt binary** (single file, no Bun needed): download the archive for your
+platform from [Releases](https://github.com/brokenstring314/ai-gateway/releases)
+(`linux-x64`, `linux-arm64`, `darwin-x64`, `darwin-arm64` as `.tar.gz`,
+`windows-x64` as `.zip`). Each archive holds the `ai-gateway` binary, LICENSE,
+NOTICE, README.md and `config.example.yaml`.
+
+```bash
+V=0.2.0 P=linux-x64
+curl -LO https://github.com/brokenstring314/ai-gateway/releases/download/v$V/ai-gateway-$V-$P.tar.gz
+curl -LO https://github.com/brokenstring314/ai-gateway/releases/download/v$V/SHA256SUMS
+sha256sum --ignore-missing -c SHA256SUMS
+tar xzf ai-gateway-$V-$P.tar.gz && cd ai-gateway-$V-$P
+./ai-gateway serve -c config.yaml     # start from config.example.yaml
+```
+
+The binaries are not code-signed. On macOS, clear the quarantine flag first:
+`xattr -d com.apple.quarantine ./ai-gateway`.
+
+**From source** (needs [Bun](https://bun.sh/) 1.4.3+): see below.
+
+### Run from source
 
 ```bash
 git clone <repo-url> && cd ai-gateway-rewrite

@@ -2,12 +2,19 @@
 # Keep in sync with .bun-version.
 ARG BUN_VERSION=1.4.3
 
-FROM oven/bun:${BUN_VERSION}-alpine AS deps
+# Dependencies are pure JS, so install them on the build host's platform: a
+# multi-arch build (buildx --platform linux/amd64,linux/arm64) then never runs
+# bun under QEMU emulation.
+FROM --platform=$BUILDPLATFORM oven/bun:${BUN_VERSION}-alpine AS deps
 WORKDIR /app
 COPY package.json bun.lock ./
 RUN bun install --frozen-lockfile --production
 
 FROM oven/bun:${BUN_VERSION}-alpine
+LABEL org.opencontainers.image.title="ai-gateway" \
+      org.opencontainers.image.description="OpenAI-compatible AI gateway (TypeScript, Bun, Hono)" \
+      org.opencontainers.image.licenses="Apache-2.0" \
+      org.opencontainers.image.source="https://github.com/brokenstring314/ai-gateway"
 # tini: PID 1 that forwards SIGTERM to bun and reaps zombies (MCP stdio children).
 # hadolint ignore=DL3018
 RUN apk add --no-cache tini

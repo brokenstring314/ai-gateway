@@ -4,6 +4,7 @@ on:
   push:
     branches: [master]
   pull_request: {}
+  workflow_call: {} # reused by release.yml before anything is published
 
 concurrency:
   group: ci-${{ github.ref }}

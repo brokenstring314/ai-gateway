@@ -1,6 +1,8 @@
 # Changelog
 
-## 0.2.0 (Unreleased)
+## Unreleased
+
+## 0.2.0 (2026-10-18)
 
 ### Breaking changes
 
@@ -241,6 +243,12 @@
 
 ### Added
 
+- **Release artifacts**: tagged releases publish a multi-arch Docker image
+  (`ghcr.io/brokenstring314/ai-gateway`, linux/amd64 + linux/arm64) and
+  standalone `bun build --compile` binaries for linux-x64, linux-arm64,
+  darwin-x64, darwin-arm64 and windows-x64 with `SHA256SUMS`. The admin
+  console's static assets are now embedded in the build instead of read from
+  `src/dashboard/static` at runtime, so the binary needs no source tree.
 - **`ai-gateway keys create|list|revoke`**: manage the API key store directly
   (`<data dir>/api-keys.sqlite`, data dir = `--data-dir`, `GATEWAY_DATA_DIR` or
   `./.data`, as for `serve`), with the server stopped or running. `keys create
