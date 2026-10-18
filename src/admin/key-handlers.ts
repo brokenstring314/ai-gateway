@@ -18,12 +18,12 @@ import type { Context, MiddlewareHandler } from "hono";
 import type { ConfigState } from "./config-handlers.js";
 import {
   KeyNotFoundError,
+  VALID_SCOPES,
   type APIKey,
   type KeyStore,
 } from "@/persistence/key-store";
 
-export const SCOPE_ADMIN = "admin";
-export const SCOPE_READ_ONLY = "read_only";
+export { SCOPE_ADMIN, SCOPE_READ_ONLY, SCOPE_INFERENCE } from "@/persistence/key-store";
 
 export interface KeyHandlerState {
   keyStore: KeyStore;
@@ -133,13 +133,9 @@ export function createKeyHandler(state: KeyHandlerState) {
     }
     const name = body.name;
 
-    let scopes: string[] = [];
-    if (body.scopes !== undefined) {
-      if (!Array.isArray(body.scopes)) {
-        return invalidRequest(c, "'scopes' must be an array of strings");
-      }
-      scopes = body.scopes.filter((s): s is string => typeof s === "string");
-    }
+    const parsedScopes = parseScopes(body.scopes);
+    if (parsedScopes === null) return invalidScopes(c);
+    const scopes = parsedScopes;
 
     let expiresAt: Date | undefined;
     if (body.expiresAt !== undefined && body.expiresAt !== null) {
@@ -152,7 +148,7 @@ export function createKeyHandler(state: KeyHandlerState) {
       }
     }
 
-    // Empty scopes default to ["admin"] inside the store.
+    // Empty/omitted scopes default to ["inference"] in the store.
     const created = state.keyStore.create(name, scopes, expiresAt);
     return c.json(
       {
@@ -175,13 +171,9 @@ export function updateKeyHandler(state: KeyHandlerState) {
       scopes?: unknown;
     } | null;
 
-    let scopes: string[] = [];
-    if (body?.scopes !== undefined) {
-      if (!Array.isArray(body.scopes)) {
-        return invalidRequest(c, "'scopes' must be an array of strings");
-      }
-      scopes = body.scopes.filter((s): s is string => typeof s === "string");
-    }
+    const parsedScopes = parseScopes(body?.scopes);
+    if (parsedScopes === null) return invalidScopes(c);
+    const scopes = parsedScopes;
 
     try {
       const id = c.req.param("id");
@@ -334,6 +326,28 @@ export function addKeyHandler(state: ConfigState) {
     const keys = state.config.auth?.keys ?? [];
     return c.json({ id: keys.length - 1, key: redactKey(body.key) }, 201);
   };
+}
+
+/**
+ * Validate a request's `scopes`: omitted → [] (store default / unchanged);
+ * otherwise it must be an array of known scope strings. Returns null when
+ * invalid — never silently drops entries (a dropped entry used to fall back
+ * to the old ["admin"] default).
+ */
+function parseScopes(raw: unknown): string[] | null {
+  if (raw === undefined) return [];
+  if (!Array.isArray(raw)) return null;
+  for (const scope of raw) {
+    if (typeof scope !== "string" || !VALID_SCOPES.includes(scope)) return null;
+  }
+  return raw as string[];
+}
+
+function invalidScopes(c: Context) {
+  return invalidRequest(
+    c,
+    `'scopes' must be an array of: ${VALID_SCOPES.map((s) => `"${s}"`).join(", ")}`,
+  );
 }
 
 function invalidRequest(c: Context, message: string) {

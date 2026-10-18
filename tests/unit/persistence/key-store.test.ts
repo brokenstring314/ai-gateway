@@ -1,6 +1,6 @@
 import { describe, it, expect, beforeEach, afterEach } from "bun:test";
 import { Database } from "bun:sqlite";
-import { KeyStore, KeyNotFoundError } from "@/persistence/key-store";
+import { KeyStore, KeyNotFoundError, InvalidScopeError } from "@/persistence/key-store";
 import { hashKey } from "@/auth/key-hash";
 
 describe("KeyStore", () => {
@@ -62,9 +62,17 @@ describe("KeyStore", () => {
     }
   });
 
-  it("create key → defaults to admin scope when empty", () => {
+  it("create key → defaults to least-privilege inference scope when empty", () => {
     const apiKey = store.create("test-key", []);
-    expect(apiKey.scopes).toEqual(["admin"]);
+    expect(apiKey.scopes).toEqual(["inference"]);
+  });
+
+  it("create/update reject unknown scopes", () => {
+    expect(() => store.create("bad", ["superuser"])).toThrow(InvalidScopeError);
+    expect(() => store.create("bad", [1 as unknown as string])).toThrow(InvalidScopeError);
+    const k = store.create("ok", ["inference"]);
+    expect(() => store.update(k.id, "", ["root"])).toThrow(InvalidScopeError);
+    expect(store.get(k.id)?.scopes).toEqual(["inference"]);
   });
 
   it("create key with expiry → expires_at stored", () => {

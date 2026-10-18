@@ -1,9 +1,11 @@
 /**
  * Auth middleware — validates Bearer tokens against the KeyStore.
  *
- * authMiddleware protects non-admin routes. adminAuthMiddleware protects
- * /admin/* routes: admin-scoped API keys, the admin secret, or (while the
- * store is empty) bootstrap keys are accepted.
+ * authMiddleware protects non-admin routes: any valid key (store key of any
+ * scope — inference, read_only, admin — or a config.auth.keys entry) is accepted.
+ * adminAuthMiddleware protects /admin/* routes: admin- or read_only-scoped
+ * API keys, the admin secret, or (while the store is empty) bootstrap keys are
+ * accepted; inference-only keys get 403.
  *
  * All secret comparisons use timingSafeEqual — never === or Set.has().
  */
@@ -208,6 +210,21 @@ export function adminAuthMiddleware(opts: AdminAuthMiddlewareOptions): Middlewar
       c.set("keyScopes", apiKey.scopes);
       await next();
       return;
+    }
+
+    // A valid key without a management scope (e.g. "inference") is
+    // authenticated but not authorized for /admin/*.
+    if (apiKey !== null) {
+      return c.json(
+        {
+          error: {
+            message: "Insufficient scope: admin or read_only required",
+            type: "authorization_error",
+            code: "insufficient_scope",
+          },
+        },
+        403,
+      );
     }
 
     return adminUnauthorized(c);
