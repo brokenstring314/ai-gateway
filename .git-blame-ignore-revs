@@ -1,0 +1,3 @@
+# Formatter-only commits (git blame --ignore-revs-file .git-blame-ignore-revs)
+# style: biome format (no behavior change)
+20b535508a431a3c51bc00bd7cc92acdbc4454c2
