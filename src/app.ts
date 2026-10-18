@@ -36,7 +36,7 @@ import { registerHealthHandler, registerLivenessHandler, registerReadinessHandle
 import { registerCapabilitiesHandler } from "./handlers/capabilities.js";
 import { createAdminApp, type AdminAppOptions } from "./admin/handlers.js";
 import { createDashboardApp } from "./dashboard/index.js";
-import { createProxyHandler, resolveProxyTarget } from "./proxy/proxy.js";
+import { createProxyHandler, createProxyKeyValidator, resolveProxyTarget } from "./proxy/proxy.js";
 import { expandTargetEnvRefs } from "./config/envref.js";
 import { getMetrics as getPrometheusMetrics } from "./metrics/metrics.js";
 import type { InFlightTracker } from "./server/shutdown.js";
@@ -99,9 +99,17 @@ export function createApp(
   // Only an explicit auth.enabled: false turns off client auth on non-admin
   // routes; omitting `enabled` keeps it on. /admin/* keeps its own adminAuth
   // gate below. Production startup refuses auth.enabled: false (see
-  // validateProductionSafety).
+  // validateProductionSafety). Client auth is enforced whether or not a
+  // KeyStore is passed: without one, only config.auth.keys are accepted, and
+  // with no keys at all every request is rejected (fail closed).
   const clientAuthEnabled = isClientAuthEnabled(config.auth);
-  if (keyStore && clientAuthEnabled) {
+  if (clientAuthEnabled) {
+    if (keyStore === undefined && !hasConfigKeys(config.auth?.keys)) {
+      console.error(
+        "[auth] client auth is enabled but no credentials exist (no auth.keys and no key store): " +
+        "every /v1/* request will be rejected with 401. Add auth.keys or set auth.enabled: false.",
+      );
+    }
     app.use("*", authMiddleware({
       keyStore,
       bootstrapKey: options?.bootstrapKey,
@@ -155,6 +163,11 @@ export function createApp(
     app.all("/v1/*", createProxyHandler({
       resolveTarget,
       keyStore,
+      // Normally the global auth middleware has already authenticated the
+      // request; this fallback lets config.auth.keys through without a store.
+      validateKey: (token) => createProxyKeyValidator(
+        (config.auth?.keys ?? []).filter((k): k is string => typeof k === "string" && k !== ""),
+      )(token),
       environment: process.env["GATEWAY_ENV"],
       allowUnauthenticatedProxy:
         process.env["ALLOW_UNAUTHENTICATED_PROXY"] === "true" || !clientAuthEnabled,
@@ -229,6 +242,10 @@ export function createApp(
   });
 
   return app;
+}
+
+function hasConfigKeys(keys: readonly unknown[] | undefined): boolean {
+  return (keys ?? []).some((k) => typeof k === "string" && k !== "");
 }
 
 function parseEnvNumber(value: string | undefined): number | undefined {

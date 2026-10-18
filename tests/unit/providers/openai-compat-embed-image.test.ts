@@ -67,7 +67,7 @@ describe("openai-compat generateImage()", () => {
 
 describe("/v1/embeddings and /v1/images/generations end-to-end", () => {
   const cfg = {
-    strategy: { mode: "single", targets: ["t"] },
+    auth: { enabled: false }, strategy: { mode: "single", targets: ["t"] },
     targets: [{ name: "t", provider: "openai", apiKey: "sk", baseURL: "https://up.example/v1", models: ["text-embedding-3-small", "dall-e-3"] }],
   } as GatewayConfig;
 

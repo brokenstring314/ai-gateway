@@ -8,7 +8,6 @@
  */
 
 import { loadConfigFromPath } from "../config/loader.js";
-import type { GatewayConfig } from "../config/types.js";
 
 const VERSION = "0.1.0";
 
@@ -58,54 +57,11 @@ async function cmdServe(parsed: ParsedArgs): Promise<void> {
     process.exit(1);
   }
 
-  let config: GatewayConfig;
-  try {
-    config = loadConfigFromPath(parsed.configPath);
-  } catch (err) {
-    console.error(`Failed to load config: ${err instanceof Error ? err.message : String(err)}`);
-    process.exit(1);
-  }
-
-  const port = parsed.port ?? config.server?.port ?? 3000;
-  const hostname = parsed.host ?? config.server?.host ?? "0.0.0.0";
-
-  // Dynamic imports — Gateway and app are implemented by parallel agents
-  let Gateway: typeof import("../gateway.js").Gateway | undefined;
-  try {
-    const gatewayModule = await import("../gateway.js");
-    Gateway = gatewayModule.Gateway;
-  } catch {
-    console.error("Error: Gateway module not yet available. Ensure gateway.ts is implemented.");
-    process.exit(1);
-  }
-
-  let createApp: ((gateway: import("../gateway.js").Gateway, config: GatewayConfig) => import("hono").Hono) | undefined;
-  try {
-    const appPath = "../app.js";
-    const appModule = await import(appPath) as {
-      createApp?: (gateway: import("../gateway.js").Gateway, config: GatewayConfig) => import("hono").Hono;
-    };
-    createApp = appModule.createApp;
-  } catch {
-    console.error("Error: App module not yet available. Ensure app.ts is implemented.");
-    process.exit(1);
-  }
-
-  if (!Gateway || !createApp) {
-    console.error("Error: failed to initialize Gateway or app");
-    process.exit(1);
-  }
-
-  const gateway = new Gateway(config);
-  const app = createApp(gateway, config);
-
-  Bun.serve({
-    port,
-    hostname,
-    fetch: app.fetch,
-  });
-
-  console.log(`AI Gateway listening on http://${hostname}:${port}`);
+  // Reuse the main bootstrap (key store, persisted config, production safety,
+  // client auth, shutdown) so `ai-gateway serve` enforces the same auth as
+  // `bun src/index.ts serve`.
+  const { serve } = await import("../index.js");
+  await serve(parsed.configPath, { port: parsed.port, host: parsed.host });
 }
 
 async function cmdValidate(parsed: ParsedArgs): Promise<void> {

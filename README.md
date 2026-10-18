@@ -897,6 +897,8 @@ auth:
 
 Clients must send `Authorization: Bearer <key>`. Paths `/health`, `/livez`, `/readyz`, `/metrics`, and `/admin/*` skip auth.
 
+Client auth is **on unless `auth.enabled: false` is set explicitly** (omitting `auth` or `enabled` keeps it on), and it is enforced the same way by `bun src/index.ts serve`, the `ai-gateway serve` CLI (which runs the same bootstrap, including the API key store) and embedded `createApp(gateway, config)`. Accepted credentials are `auth.keys` and, when a key store is passed, its keys. With auth on and no credentials at all, every `/v1/*` request gets 401 (fail closed) and a warning is printed at startup.
+
 API key comparison uses constant-time equality to prevent timing attacks.
 
 ### Admin Authentication
@@ -999,7 +1001,10 @@ const response = await gateway.route(
 
 // Or create an HTTP app
 const app = createApp(gateway, config);
-// Use with any Hono-compatible server
+// Use with any Hono-compatible server.
+// Client auth applies here too: /v1/* requires a Bearer key from auth.keys
+// (401 for everything if auth is on and auth.keys is empty). Set
+// auth.enabled: false explicitly for an unauthenticated in-process app.
 
 // Clean up
 gateway.close();

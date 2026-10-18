@@ -14,7 +14,7 @@ import { createOpenAIWireStreamSerializer, fromOpenAIWireChatRequest } from "@/h
 
 function cfg(): GatewayConfig {
   return {
-    strategy: { mode: "single", targets: ["mock"] },
+    auth: { enabled: false }, strategy: { mode: "single", targets: ["mock"] },
     targets: [{ name: "mock", provider: "openai", apiKey: "sk", baseURL: "https://up.example/v1", models: ["gpt-4o"] }],
   } as GatewayConfig;
 }
