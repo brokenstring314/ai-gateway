@@ -10,15 +10,36 @@ import type { IProvider, RequestContext } from "@/providers/types";
 const ctx = (signal?: AbortSignal): RequestContext => ({ metadata: {}, ...(signal ? { signal } : {}) });
 
 const req = { model: "m", messages: [{ role: "user" as const, content: "hi" }] };
-const ok = (name: string) => ({ id: "x", object: "chat.completion", created: 0, model: "m", provider: name, choices: [] });
+const ok = (name: string) => ({
+  id: "x",
+  object: "chat.completion",
+  created: 0,
+  model: "m",
+  provider: name,
+  choices: [],
+});
 
 function provider(name: string, impl: () => Promise<unknown>): IProvider {
-  return { name, complete: impl, supportedModels: () => [], supportsModel: () => true, models: () => [] } as unknown as IProvider;
+  return {
+    name,
+    complete: impl,
+    supportedModels: () => [],
+    supportsModel: () => true,
+    models: () => [],
+  } as unknown as IProvider;
 }
 
 describe("classifyAttemptError (plan §1.4)", () => {
-  const timedOut = () => { const ac = new AbortController(); ac.abort(createTimeoutReason(1)); return ac.signal; };
-  const clientAbort = () => { const ac = new AbortController(); ac.abort(); return ac.signal; };
+  const timedOut = () => {
+    const ac = new AbortController();
+    ac.abort(createTimeoutReason(1));
+    return ac.signal;
+  };
+  const clientAbort = () => {
+    const ac = new AbortController();
+    ac.abort();
+    return ac.signal;
+  };
   it.each([
     ["not admitted", new Error("x"), { admitted: false }, "release"],
     ["deadline before output", new Error("x"), { admitted: true, signal: timedOut() }, "failure"],
@@ -38,7 +59,10 @@ describe("classifyAttemptError (plan §1.4)", () => {
 describe("TargetExecutor", () => {
   it("per-target retry applies to every strategy (single included)", async () => {
     let n = 0;
-    const p = provider("a", async () => { if (++n < 3) throw new ProviderError("a", 503, "busy"); return ok("a"); });
+    const p = provider("a", async () => {
+      if (++n < 3) throw new ProviderError("a", 503, "busy");
+      return ok("a");
+    });
     const ex = new TargetExecutor({ lookup: () => p, retryConfig: () => ({ attempts: 3, initialBackoffMs: 1 }) });
     const res = await executeChat(ex, new SingleStrategy({ target: "a" }), ctx(), req);
     expect(res.provider).toBe("a");
@@ -49,12 +73,18 @@ describe("TargetExecutor", () => {
     const breaker = new CircuitBreaker("a", { failureThreshold: 1, timeoutMs: 60_000 });
     const limiter = new ConcurrencyLimiter({ maxConcurrency: 1 });
     let calls = 0;
-    const p = provider("a", async () => { calls++; await Bun.sleep(100); return ok("a"); });
+    const p = provider("a", async () => {
+      calls++;
+      await Bun.sleep(100);
+      return ok("a");
+    });
     const ex = new TargetExecutor({ lookup: () => p, breaker: () => breaker, limiter: () => limiter });
     const long = ex.run(ctx(), ["a"], (pr) => pr.complete(ctx(), req), { label: "t" });
     const ac = new AbortController();
     setTimeout(() => ac.abort(createTimeoutReason(20)), 20);
-    const err = (await ex.run(ctx(ac.signal), ["a"], (pr) => pr.complete(ctx(), req), { label: "t" }).catch((e: unknown) => e)) as { status: number; code: string };
+    const err = (await ex
+      .run(ctx(ac.signal), ["a"], (pr) => pr.complete(ctx(), req), { label: "t" })
+      .catch((e: unknown) => e)) as { status: number; code: string };
     expect(err.status).toBe(429);
     expect(err.code).toBe("gateway_overloaded");
     await long;
@@ -73,7 +103,9 @@ describe("TargetExecutor", () => {
       breaker: (n) => (n === "a" ? breakerA : undefined),
       limiter: (n) => (n === "a" ? limiterA : undefined),
     });
-    const res = (await ex.run(ctx(), ["a", "b"], (pr) => pr.complete(ctx(), req), { label: "t" })) as { provider: string };
+    const res = (await ex.run(ctx(), ["a", "b"], (pr) => pr.complete(ctx(), req), { label: "t" })) as {
+      provider: string;
+    };
     expect(res.provider).toBe("b");
     expect(limiterA.inFlight).toBe(0);
   });

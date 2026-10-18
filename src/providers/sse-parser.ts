@@ -104,9 +104,7 @@ export async function* parseSSEStream(
         // A read rejected because the request was aborted (client disconnect
         // or gateway timeout) is an abort, not an upstream stream failure.
         if (signal?.aborted || isAbortError(err)) throw abortError();
-        throw new ReadableStreamError(
-          `SSE stream read failed: ${err instanceof Error ? err.message : String(err)}`,
-        );
+        throw new ReadableStreamError(`SSE stream read failed: ${err instanceof Error ? err.message : String(err)}`);
       }
 
       if (result.done) {
@@ -291,7 +289,11 @@ function errorMessageOf(parsed: unknown): string | undefined {
   const o = parsed as Record<string, unknown>;
   const errVal = o["error"];
   if (typeof errVal === "string" && errVal) return errVal;
-  if (typeof errVal === "object" && errVal !== null && typeof (errVal as Record<string, unknown>)["message"] === "string") {
+  if (
+    typeof errVal === "object" &&
+    errVal !== null &&
+    typeof (errVal as Record<string, unknown>)["message"] === "string"
+  ) {
     return (errVal as Record<string, string>)["message"];
   }
   if (typeof o["message"] === "string" && o["message"]) return o["message"] as string;
@@ -300,7 +302,8 @@ function errorMessageOf(parsed: unknown): string | undefined {
 
 function upstreamStreamError(providerName: string, parsed: unknown, fallback: string): ProviderError {
   const message = errorMessageOf(parsed) ?? fallback;
-  const errVal = typeof parsed === "object" && parsed !== null ? (parsed as Record<string, unknown>)["error"] : undefined;
+  const errVal =
+    typeof parsed === "object" && parsed !== null ? (parsed as Record<string, unknown>)["error"] : undefined;
   return new ProviderError(providerName, 502, `stream error: ${message}`, {
     origin: "upstream",
     upstream: typeof errVal === "object" && errVal !== null ? (errVal as Record<string, unknown>) : { message },
@@ -437,16 +440,16 @@ function normalizeDeltaMessage(raw: unknown): ChatMessage {
       .map((tc, i) => [tc, i] as const)
       .filter((e): e is readonly [Record<string, unknown>, number] => typeof e[0] === "object" && e[0] !== null)
       .map(([tc, i]) => ({
-      id: String(tc["id"] ?? ""),
-      type: "function" as const,
-      function: {
-        name: String((tc["function"] as Record<string, unknown>)?.["name"] ?? ""),
-        arguments: String((tc["function"] as Record<string, unknown>)?.["arguments"] ?? ""),
-      },
-      // Keep the upstream index: later deltas carry only one call at a time,
-      // so the array position does not identify which call they extend.
-      index: typeof tc["index"] === "number" ? (tc["index"] as number) : i,
-    }));
+        id: String(tc["id"] ?? ""),
+        type: "function" as const,
+        function: {
+          name: String((tc["function"] as Record<string, unknown>)?.["name"] ?? ""),
+          arguments: String((tc["function"] as Record<string, unknown>)?.["arguments"] ?? ""),
+        },
+        // Keep the upstream index: later deltas carry only one call at a time,
+        // so the array position does not identify which call they extend.
+        index: typeof tc["index"] === "number" ? (tc["index"] as number) : i,
+      }));
   }
 
   const extra = pickExtras(r, RESPONSE_MESSAGE_EXTRA_KEYS);

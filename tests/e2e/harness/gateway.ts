@@ -44,7 +44,10 @@ async function freePort(): Promise<number> {
 }
 
 /** Base config: auth on with one static client key, admin secret, the given targets (fallback when >1). */
-export function baseConfig(targets: { name: string; mock: MockUpstream; extra?: Record<string, unknown> }[], extra: Record<string, unknown> = {}) {
+export function baseConfig(
+  targets: { name: string; mock: MockUpstream; extra?: Record<string, unknown> }[],
+  extra: Record<string, unknown> = {},
+) {
   return {
     strategy: { mode: targets.length > 1 ? "fallback" : "single", targets: targets.map((t) => t.name) },
     targets: targets.map((t) => ({
@@ -65,7 +68,10 @@ export function baseConfig(targets: { name: string; mock: MockUpstream; extra?: 
 export async function startGateway(opts: StartOptions): Promise<GatewayProcess> {
   const dir = mkdtempSync(join(tmpdir(), "aigw-e2e-"));
   const port = await freePort();
-  const config = { ...opts.config, server: { host: "127.0.0.1", ...(opts.config["server"] as object | undefined), port } };
+  const config = {
+    ...opts.config,
+    server: { host: "127.0.0.1", ...(opts.config["server"] as object | undefined), port },
+  };
   const cfgPath = join(dir, "config.json");
   writeFileSync(cfgPath, JSON.stringify(config, null, 2));
   const entry = opts.entry === "cli" ? "src/cli/index.ts" : "src/index.ts";
@@ -92,7 +98,9 @@ export async function startGateway(opts: StartOptions): Promise<GatewayProcess> 
     const dec = new TextDecoder();
     try {
       for await (const c of stream) out += dec.decode(c, { stream: true });
-    } catch { /* process gone */ }
+    } catch {
+      /* process gone */
+    }
   };
   void pump(proc.stdout as ReadableStream<Uint8Array>);
   void pump(proc.stderr as ReadableStream<Uint8Array>);
@@ -104,8 +112,13 @@ export async function startGateway(opts: StartOptions): Promise<GatewayProcess> 
     if (proc.exitCode !== null) break;
     try {
       const r = await fetch(`${base}/livez`);
-      if (r.ok) { ready = true; break; }
-    } catch { /* not listening yet */ }
+      if (r.ok) {
+        ready = true;
+        break;
+      }
+    } catch {
+      /* not listening yet */
+    }
     await Bun.sleep(50);
   }
   if (!ready) {
@@ -120,7 +133,13 @@ export async function startGateway(opts: StartOptions): Promise<GatewayProcess> 
     port,
     proc,
     logs: () => out,
-    client: (o = {}) => new OpenAI({ apiKey: o.apiKey ?? CLIENT_KEY, baseURL: `${base}/v1`, maxRetries: 0, timeout: o.timeoutMs ?? 15_000 }),
+    client: (o = {}) =>
+      new OpenAI({
+        apiKey: o.apiKey ?? CLIENT_KEY,
+        baseURL: `${base}/v1`,
+        maxRetries: 0,
+        timeout: o.timeoutMs ?? 15_000,
+      }),
     fetch: (path, init = {}) => {
       const { auth, ...rest } = init;
       const headers = new Headers(rest.headers);
@@ -141,8 +160,18 @@ export async function startGateway(opts: StartOptions): Promise<GatewayProcess> 
 }
 
 /** POST JSON (raw fetch, for asserting on status/headers the SDK hides). */
-export function postJson(gw: GatewayProcess, path: string, body: unknown, init: RequestInit & { auth?: string | null } = {}) {
-  return gw.fetch(path, { ...init, method: "POST", headers: { "content-type": "application/json", ...(init.headers as Record<string, string> | undefined) }, body: JSON.stringify(body) });
+export function postJson(
+  gw: GatewayProcess,
+  path: string,
+  body: unknown,
+  init: RequestInit & { auth?: string | null } = {},
+) {
+  return gw.fetch(path, {
+    ...init,
+    method: "POST",
+    headers: { "content-type": "application/json", ...(init.headers as Record<string, string> | undefined) },
+    body: JSON.stringify(body),
+  });
 }
 
 /** Read an SSE body for at most `ms`; returns the text so far and whether the stream ended. */
@@ -157,11 +186,16 @@ export async function readFor(res: Response, ms: number): Promise<{ text: string
     let timer: ReturnType<typeof setTimeout> | undefined;
     const r = await Promise.race([
       reader.read(),
-      new Promise<"timeout">((resolve) => { timer = setTimeout(() => resolve("timeout"), left); }),
+      new Promise<"timeout">((resolve) => {
+        timer = setTimeout(() => resolve("timeout"), left);
+      }),
     ]);
     clearTimeout(timer);
     if (r === "timeout") break;
-    if (r.done) { ended = true; break; }
+    if (r.done) {
+      ended = true;
+      break;
+    }
     text += dec.decode(r.value, { stream: true });
   }
   if (!ended) await reader.cancel().catch(() => {});

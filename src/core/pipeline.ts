@@ -65,7 +65,11 @@ export class Pipeline {
   constructor(private readonly deps: PipelineDeps) {}
 
   /** Non-streaming request through the whole pipeline. */
-  async execute<Req, Res, Chunk>(surface: Surface<Req, Res, Chunk>, req: Req, ctx: RequestContext): Promise<Result<Res>> {
+  async execute<Req, Res, Chunk>(
+    surface: Surface<Req, Res, Chunk>,
+    req: Req,
+    ctx: RequestContext,
+  ): Promise<Result<Res>> {
     const begun = await this.begin(surface, req, ctx);
     if (begun.kind === "answered") return { kind: "ok", value: begun.value, target: NO_UPSTREAM_PROVIDER };
     const { run } = begun;
@@ -97,7 +101,11 @@ export class Pipeline {
   }
 
   /** Streaming chat-shaped request (chat, completions) through the pipeline: core/chat-stream.ts. */
-  executeStream(surface: ChatShapedSurface, req: ChatCompletionRequest, ctx: RequestContext): AsyncGenerator<StreamChunk> {
+  executeStream(
+    surface: ChatShapedSurface,
+    req: ChatCompletionRequest,
+    ctx: RequestContext,
+  ): AsyncGenerator<StreamChunk> {
     return runChatStream(this, this.deps.executor, this.deps.strategy, surface, req, ctx);
   }
 
@@ -106,14 +114,29 @@ export class Pipeline {
    * rejection is finalized and rethrown; a short-circuit is finalized and
    * returned as "answered" (or rejected when the surface cannot use it).
    */
-  async begin<Req, Res, Chunk>(surface: Surface<Req, Res, Chunk>, req: Req, ctx: RequestContext): Promise<Begun<Req, Res, Chunk>> {
+  async begin<Req, Res, Chunk>(
+    surface: Surface<Req, Res, Chunk>,
+    req: Req,
+    ctx: RequestContext,
+  ): Promise<Begun<Req, Res, Chunk>> {
     const startTime = Date.now();
     const requestedModel = surface.model(req);
     const resolved = surface.withModel(req, this.deps.aliases[requestedModel] ?? requestedModel);
     const pluginCtx = createPluginContext(surface.toPluginView(resolved), ctx);
     if (surface.pluginSurfaceTag) pluginCtx.metadata["_surface"] = surface.pluginSurfaceTag;
-    const span = getTracer().startSpan(SPAN_NAMES[surface.logLabel] ?? `gateway.${surface.logLabel}`, { "request.model": requestedModel });
-    const run: RequestRun<Req, Res, Chunk> = { surface, ctx, startTime, requestedModel, request: resolved, pluginCtx, finalized: false, span };
+    const span = getTracer().startSpan(SPAN_NAMES[surface.logLabel] ?? `gateway.${surface.logLabel}`, {
+      "request.model": requestedModel,
+    });
+    const run: RequestRun<Req, Res, Chunk> = {
+      surface,
+      ctx,
+      startTime,
+      requestedModel,
+      request: resolved,
+      pluginCtx,
+      finalized: false,
+      span,
+    };
 
     try {
       await this.deps.plugins.runBefore(pluginCtx);
@@ -145,8 +168,12 @@ export class Pipeline {
     try {
       run.request = surface.applyPluginView(resolved, pluginCtx.request);
     } catch (err) {
-      const plugin = (err instanceof PluginRejectionError ? err.plugin : undefined) ?? pluginCtx._modifiedBy?.join(",") ?? "unknown";
-      await this.finalize(run, err instanceof PluginRejectionError ? { kind: "rejected", error: err, plugin } : { kind: "error", error: err });
+      const plugin =
+        (err instanceof PluginRejectionError ? err.plugin : undefined) ?? pluginCtx._modifiedBy?.join(",") ?? "unknown";
+      await this.finalize(
+        run,
+        err instanceof PluginRejectionError ? { kind: "rejected", error: err, plugin } : { kind: "error", error: err },
+      );
       throw err;
     }
     return { kind: "proceed", run };
@@ -172,21 +199,29 @@ export class Pipeline {
     const provider = this.deps.findByModel(model);
     if (!provider) throw modelNotFound(`No provider found for ${surface.logLabel} model "${model}"`);
     if (!surface.supports(provider)) {
-      throw invalidRequest(`The model "${model}" does not support ${surface.unsupportedLabel ?? surface.name}`, "unsupported_capability");
+      throw invalidRequest(
+        `The model "${model}" does not support ${surface.unsupportedLabel ?? surface.name}`,
+        "unsupported_capability",
+      );
     }
     return [provider.name];
   }
 
   /** Step 5: one upstream call over the candidates (breaker, limiter, retry, failover). */
-  async attempt<Req, Res, Chunk>(surface: Surface<Req, Res, Chunk>, req: Req, ctx: RequestContext): Promise<{ value: Res; target: string }> {
+  async attempt<Req, Res, Chunk>(
+    surface: Surface<Req, Res, Chunk>,
+    req: Req,
+    ctx: RequestContext,
+  ): Promise<{ value: Res; target: string }> {
     const candidates = this.candidates(surface, req);
     let target = candidates[0] ?? "unknown";
     const onServed = (name: string) => {
       target = name;
     };
-    const opts = surface.candidates === "strategy"
-      ? strategyRunOptions(this.deps.strategy, false, candidates.length, onServed)
-      : { label: `Gateway(${surface.logLabel})`, supports: (p: IProvider) => surface.supports(p), onServed };
+    const opts =
+      surface.candidates === "strategy"
+        ? strategyRunOptions(this.deps.strategy, false, candidates.length, onServed)
+        : { label: `Gateway(${surface.logLabel})`, supports: (p: IProvider) => surface.supports(p), onServed };
     try {
       const value = await this.deps.executor.run(ctx, candidates, (p) => surface.call(p, ctx, req), opts);
       return { value, target };
@@ -265,10 +300,12 @@ export class Pipeline {
       durationMs,
       surface: surface.logLabel,
     };
-    if (usage) entry.tokens = { prompt: usage.promptTokens, completion: usage.completionTokens, total: usage.totalTokens };
+    if (usage)
+      entry.tokens = { prompt: usage.promptTokens, completion: usage.completionTokens, total: usage.totalTokens };
     if (usageEstimated) entry.usageEstimated = true;
     if (outcome.kind === "rejected" || outcome.kind === "short_circuit") {
-      const rejection = outcome.kind === "rejected" && outcome.error instanceof PluginRejectionError ? outcome.error : undefined;
+      const rejection =
+        outcome.kind === "rejected" && outcome.error instanceof PluginRejectionError ? outcome.error : undefined;
       entry.plugin = outcome.plugin;
       entry.outcome = outcome.kind === "rejected" ? "plugin_rejected" : "plugin_short_circuit";
       entry.status = outcome.kind === "rejected" ? (rejection?.status ?? toGatewayError(outcome.error).status) : 200;
@@ -283,7 +320,8 @@ export class Pipeline {
     this.log(entry);
     this.record(outcome, surface.logLabel, target, model, usage);
     const tracer = getTracer();
-    if (error !== undefined && run.span !== undefined) tracer.recordError(run.span as never, error instanceof Error ? error : new Error(String(error)));
+    if (error !== undefined && run.span !== undefined)
+      tracer.recordError(run.span as never, error instanceof Error ? error : new Error(String(error)));
     if (run.span !== undefined) tracer.endSpan(run.span as never);
 
     if (pluginError !== undefined) throw pluginError;
@@ -309,11 +347,22 @@ export class Pipeline {
     if (rates && usage) pc.metadata["_costUsd"] = costOf(rates, usage);
   }
 
-  private record(outcome: FinalizeOutcome<unknown>, surfaceLabel: string, target: string, model: string, usage: Usage | undefined): void {
+  private record(
+    outcome: FinalizeOutcome<unknown>,
+    surfaceLabel: string,
+    target: string,
+    model: string,
+    usage: Usage | undefined,
+  ): void {
     const metrics = getMetrics();
     if (outcome.kind === "rejected" || outcome.kind === "short_circuit") {
-      metrics.recordPluginBlocked(outcome.plugin, outcome.kind === "rejected" ? "plugin_rejected" : "plugin_short_circuit", surfaceLabel);
-      if (outcome.kind === "rejected" && outcome.plugin === "rate-limit") metrics.recordRateLimitRejection(NO_UPSTREAM_PROVIDER);
+      metrics.recordPluginBlocked(
+        outcome.plugin,
+        outcome.kind === "rejected" ? "plugin_rejected" : "plugin_short_circuit",
+        surfaceLabel,
+      );
+      if (outcome.kind === "rejected" && outcome.plugin === "rate-limit")
+        metrics.recordRateLimitRejection(NO_UPSTREAM_PROVIDER);
       return;
     }
     if (!usage) return;
@@ -321,7 +370,6 @@ export class Pipeline {
     const cost = costOf(this.deps.targetConfig(target), usage);
     if (cost > 0) metrics.recordCost(target, model, cost);
   }
-
 }
 
 /** Sum usage helper re-exported for callers that accumulate (MCP loop, streams). */

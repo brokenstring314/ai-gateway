@@ -37,7 +37,8 @@ export const GATEWAY_ROUTE_METHODS: Readonly<Record<string, readonly string[]>> 
 };
 
 /** `METHOD /v1/path`, path optionally ending in `/*` (any sub-path, at least one segment). */
-export const PASSTHROUGH_ROUTE_PATTERN = /^(GET|POST|PUT|PATCH|DELETE|\*) (\/v1(?:\/[A-Za-z0-9._~:@!$&'()+,;=-]+)*)(\/\*)?$/;
+export const PASSTHROUGH_ROUTE_PATTERN =
+  /^(GET|POST|PUT|PATCH|DELETE|\*) (\/v1(?:\/[A-Za-z0-9._~:@!$&'()+,;=-]+)*)(\/\*)?$/;
 
 interface CompiledRoute {
   readonly method: string;
@@ -51,7 +52,10 @@ export type RouteAllowlist = (method: string, path: string) => boolean;
 export function compileRouteAllowlist(routes: readonly string[] = DEFAULT_PASSTHROUGH_ROUTES): RouteAllowlist {
   const compiled: CompiledRoute[] = routes.map((entry) => {
     const m = PASSTHROUGH_ROUTE_PATTERN.exec(entry.trim());
-    if (!m) throw new Error(`invalid passthroughProxy.routes entry: ${JSON.stringify(entry)} (expected "METHOD /v1/path" or "METHOD /v1/prefix/*")`);
+    if (!m)
+      throw new Error(
+        `invalid passthroughProxy.routes entry: ${JSON.stringify(entry)} (expected "METHOD /v1/path" or "METHOD /v1/prefix/*")`,
+      );
     return { method: m[1]!, path: m[2]!, prefix: m[3] !== undefined };
   });
   return (method, path) => {
@@ -60,9 +64,11 @@ export function compileRouteAllowlist(routes: readonly string[] = DEFAULT_PASSTH
     if (/%2f|%5c|\\/i.test(path)) return false;
     const p = path.replace(/\/{2,}/g, "/");
     const verb = method.toUpperCase();
-    return compiled.some((r) =>
-      (r.method === "*" || r.method === verb) &&
-      (r.prefix ? p.startsWith(`${r.path}/`) && p.length > r.path.length + 1 : p === r.path));
+    return compiled.some(
+      (r) =>
+        (r.method === "*" || r.method === verb) &&
+        (r.prefix ? p.startsWith(`${r.path}/`) && p.length > r.path.length + 1 : p === r.path),
+    );
   };
 }
 
@@ -76,7 +82,10 @@ export type PassthroughTokenField = (typeof TOKEN_FIELDS)[number];
  * else `max_output_tokens` for the Responses API (so a cap can be injected
  * when the client omitted it), else none (moderations, audio: no limit).
  */
-export function passthroughTokenField(path: string, body: Readonly<Record<string, unknown>>): PassthroughTokenField | undefined {
+export function passthroughTokenField(
+  path: string,
+  body: Readonly<Record<string, unknown>>,
+): PassthroughTokenField | undefined {
   for (const f of TOKEN_FIELDS) {
     if (typeof body[f] === "number") return f;
   }
@@ -85,7 +94,10 @@ export function passthroughTokenField(path: string, body: Readonly<Record<string
 }
 
 /** The plugin view's `maxTokens` for a proxied body (undefined when absent / not applicable). */
-export function passthroughMaxTokens(body: Readonly<Record<string, unknown>>, field: PassthroughTokenField | undefined): number | undefined {
+export function passthroughMaxTokens(
+  body: Readonly<Record<string, unknown>>,
+  field: PassthroughTokenField | undefined,
+): number | undefined {
   if (field === undefined) return undefined;
   const v = body[field];
   return typeof v === "number" ? v : undefined;
@@ -131,9 +143,8 @@ export async function runPassthroughBefore(
   } catch {
     body = undefined;
   }
-  const obj = body !== null && typeof body === "object" && !Array.isArray(body)
-    ? body as Record<string, unknown>
-    : {};
+  const obj =
+    body !== null && typeof body === "object" && !Array.isArray(body) ? (body as Record<string, unknown>) : {};
   const isJsonObject = body !== null && typeof body === "object" && !Array.isArray(body);
   const tokenField = isJsonObject ? passthroughTokenField(path, obj) : undefined;
   const maxTokens = passthroughMaxTokens(obj, tokenField);
@@ -192,7 +203,8 @@ function extractPassthroughMessages(body: Record<string, unknown>): PassthroughM
   const out: PassthroughMessage[] = [];
   const pushText = (text: unknown, role: unknown = "user") => {
     const t = textOf(text);
-    if (t !== undefined) out.push({ role: (typeof role === "string" ? role : "user") as PassthroughMessage["role"], content: t });
+    if (t !== undefined)
+      out.push({ role: (typeof role === "string" ? role : "user") as PassthroughMessage["role"], content: t });
   };
   const fromItems = (items: unknown) => {
     if (typeof items === "string") return pushText(items);
@@ -215,14 +227,16 @@ function extractPassthroughMessages(body: Record<string, unknown>): PassthroughM
 function textOf(v: unknown): string | undefined {
   if (typeof v === "string") return v;
   if (Array.isArray(v)) {
-    const parts = v.map((p) => {
-      if (typeof p === "string") return p;
-      if (p !== null && typeof p === "object") {
-        const t = (p as Record<string, unknown>)["text"];
-        return typeof t === "string" ? t : "";
-      }
-      return "";
-    }).filter((t) => t !== "");
+    const parts = v
+      .map((p) => {
+        if (typeof p === "string") return p;
+        if (p !== null && typeof p === "object") {
+          const t = (p as Record<string, unknown>)["text"];
+          return typeof t === "string" ? t : "";
+        }
+        return "";
+      })
+      .filter((t) => t !== "");
     return parts.length > 0 ? parts.join("\n") : undefined;
   }
   return undefined;

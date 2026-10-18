@@ -14,7 +14,13 @@
  * core/stream-runner.ts; finalize-once: core/pipeline.ts.
  */
 
-import type { ChatCompletionRequest, ChatCompletionResponse, IProvider, RequestContext, StreamChunk } from "../providers/types.js";
+import type {
+  ChatCompletionRequest,
+  ChatCompletionResponse,
+  IProvider,
+  RequestContext,
+  StreamChunk,
+} from "../providers/types.js";
 import { CircuitOpenError } from "../routing/circuit-breaker.js";
 import { ConcurrencyLimitError } from "../routing/concurrency-limiter.js";
 import type { IStrategy } from "../routing/types.js";
@@ -106,7 +112,12 @@ export async function* runChatStream(
     } else if (acc.chunks === 0) {
       await pipeline.finalize(run, { kind: "error", error: streamError, target });
     } else {
-      await pipeline.finalize(run, { kind: "error", error: streamError, target, partial: { response, usage, usageEstimated } });
+      await pipeline.finalize(run, {
+        kind: "error",
+        error: streamError,
+        target,
+        partial: { response, usage, usageEstimated },
+      });
     }
   };
   let result: Awaited<ReturnType<typeof executeStream<StreamChunk>>>;

@@ -11,7 +11,10 @@ beforeAll(async () => {
   up = startMockUpstream("secret-target-name");
   gw = await startGateway({ config: baseConfig([{ name: "secret-target-name", mock: up }], { requestTimeout: "2s" }) });
 });
-afterAll(async () => { await gw?.stop(); up?.stop(); });
+afterAll(async () => {
+  await gw?.stop();
+  up?.stop();
+});
 beforeEach(() => up.reset());
 
 const messages = [{ role: "user" as const, content: "hi" }];
@@ -26,7 +29,17 @@ async function sdkError(): Promise<InstanceType<typeof OpenAI.APIError>> {
   throw new Error("expected an APIError");
 }
 
-const UPSTREAM_400 = { status: 400, body: { error: { message: "This model's maximum context length is 8192 tokens", type: "invalid_request_error", param: "messages", code: "context_length_exceeded" } } };
+const UPSTREAM_400 = {
+  status: 400,
+  body: {
+    error: {
+      message: "This model's maximum context length is 8192 tokens",
+      type: "invalid_request_error",
+      param: "messages",
+      code: "context_length_exceeded",
+    },
+  },
+};
 
 describe("errors", () => {
   it("upstream 400 keeps its HTTP status", async () => {

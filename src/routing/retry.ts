@@ -59,18 +59,19 @@ export async function retryWithBackoff<T>(
       const delay = fullJitterBackoff(attempt, initialBackoffMs);
       await new Promise<void>((resolve) => {
         const timer = setTimeout(resolve, delay);
-        signal?.addEventListener("abort", () => {
-          clearTimeout(timer);
-          resolve();
-        }, { once: true });
+        signal?.addEventListener(
+          "abort",
+          () => {
+            clearTimeout(timer);
+            resolve();
+          },
+          { once: true },
+        );
       });
 
       if (signal?.aborted) throw new DOMException("Aborted", "AbortError");
     }
   }
 
-  throw new RetryExhaustedError(
-    `retryWithBackoff: all ${attempts} attempts failed`,
-    lastError,
-  );
+  throw new RetryExhaustedError(`retryWithBackoff: all ${attempts} attempts failed`, lastError);
 }

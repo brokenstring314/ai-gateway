@@ -14,10 +14,14 @@ let fetchSpy: ReturnType<typeof spyOn>;
 beforeEach(() => {
   entries = [];
   const logger = initRequestLogger();
-  spyOn(logger, "logRequest").mockImplementation(async (e: RequestLogEntry) => { entries.push(e); });
+  spyOn(logger, "logRequest").mockImplementation(async (e: RequestLogEntry) => {
+    entries.push(e);
+  });
   getMetrics().reset();
-  fetchSpy = spyOn(globalThis, "fetch").mockImplementation((async () =>
-    new Response("{}", { status: 200, headers: { "content-type": "application/json" } })) as unknown as typeof fetch);
+  fetchSpy = spyOn(globalThis, "fetch").mockImplementation(
+    (async () =>
+      new Response("{}", { status: 200, headers: { "content-type": "application/json" } })) as unknown as typeof fetch,
+  );
 });
 afterEach(() => {
   fetchSpy.mockRestore();
@@ -32,10 +36,18 @@ function setup(plugins: unknown[]) {
   return { app: createApp(gw, c), gw, calls };
 }
 const post = (app: ReturnType<typeof createApp>, path: string, body: unknown) =>
-  app.request(path, { method: "POST", headers: { "content-type": "application/json", "X-Request-Id": "req-1" }, body: JSON.stringify(body) });
+  app.request(path, {
+    method: "POST",
+    headers: { "content-type": "application/json", "X-Request-Id": "req-1" },
+    body: JSON.stringify(body),
+  });
 
 const wordFilter = [{ name: "word-filter", config: { blockedWords: ["forbidden"] } }];
-const chat = (stream: boolean) => ({ model: "gpt-4o", stream, messages: [{ role: "user", content: "forbidden words" }] });
+const chat = (stream: boolean) => ({
+  model: "gpt-4o",
+  stream,
+  messages: [{ role: "user", content: "forbidden words" }],
+});
 
 async function expectOneRejection(surface: string, plugin = "word-filter", status = 403) {
   expect(entries.length).toBe(1);
@@ -103,15 +115,35 @@ describe("plugin-blocked requests are logged once", () => {
 
   it("route(): short-circuit served by a plugin is logged once with status 200", async () => {
     const { app, gw, calls } = setup([]);
-    gw.registerPlugin("before_request", { name: "canned", stage: "before_request", execute: async () => ({
-      action: "short_circuit",
-      response: { id: "c", object: "chat.completion", created: 1, model: "gpt-4o", provider: "canned",
-        choices: [{ index: 0, message: { role: "assistant", content: "cached" }, finishReason: "stop" }], usage: { promptTokens: 1, completionTokens: 1, totalTokens: 2 } } as never,
-    }) });
-    expect((await post(app, "/v1/chat/completions", { model: "gpt-4o", messages: [{ role: "user", content: "hi" }] })).status).toBe(200);
+    gw.registerPlugin("before_request", {
+      name: "canned",
+      stage: "before_request",
+      execute: async () => ({
+        action: "short_circuit",
+        response: {
+          id: "c",
+          object: "chat.completion",
+          created: 1,
+          model: "gpt-4o",
+          provider: "canned",
+          choices: [{ index: 0, message: { role: "assistant", content: "cached" }, finishReason: "stop" }],
+          usage: { promptTokens: 1, completionTokens: 1, totalTokens: 2 },
+        } as never,
+      }),
+    });
+    expect(
+      (await post(app, "/v1/chat/completions", { model: "gpt-4o", messages: [{ role: "user", content: "hi" }] }))
+        .status,
+    ).toBe(200);
     expect(calls.chat.length).toBe(0);
     expect(entries.length).toBe(1);
-    expect(entries[0]).toMatchObject({ status: 200, plugin: "canned", provider: "none", outcome: "plugin_short_circuit", surface: "chat" });
+    expect(entries[0]).toMatchObject({
+      status: 200,
+      plugin: "canned",
+      provider: "none",
+      outcome: "plugin_short_circuit",
+      surface: "chat",
+    });
     expect(await getMetrics().format()).toContain(
       'ai_gateway_plugin_blocked_total{plugin="canned",outcome="plugin_short_circuit",surface="chat"} 1',
     );
@@ -119,8 +151,14 @@ describe("plugin-blocked requests are logged once", () => {
 
   it("short-circuit on a stream / embedding without response is logged once as a 403 naming the plugin", async () => {
     const { app, gw } = setup([]);
-    gw.registerPlugin("before_request", { name: "sc", stage: "before_request", execute: async () => ({ action: "short_circuit", response: {} as never }) });
-    expect((await post(app, "/v1/chat/completions", { ...chat(true), messages: [{ role: "user", content: "hi" }] })).status).toBe(403);
+    gw.registerPlugin("before_request", {
+      name: "sc",
+      stage: "before_request",
+      execute: async () => ({ action: "short_circuit", response: {} as never }),
+    });
+    expect(
+      (await post(app, "/v1/chat/completions", { ...chat(true), messages: [{ role: "user", content: "hi" }] })).status,
+    ).toBe(403);
     expect(entries.length).toBe(1);
     expect(entries[0]).toMatchObject({ status: 403, plugin: "sc", provider: "none", surface: "chat_stream" });
     entries = [];

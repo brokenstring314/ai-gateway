@@ -26,7 +26,8 @@ export function startUpstream(handler: (body: any, path: string) => Response | P
 }
 
 export function sse(events: unknown[]): Response {
-  const text = events.map((e) => `data: ${typeof e === "string" ? e : JSON.stringify(e)}\n\n`).join("") + "data: [DONE]\n\n";
+  const text =
+    events.map((e) => `data: ${typeof e === "string" ? e : JSON.stringify(e)}\n\n`).join("") + "data: [DONE]\n\n";
   return new Response(text, { headers: { "Content-Type": "text/event-stream" } });
 }
 
@@ -34,18 +35,38 @@ export function startGateway(upstreamUrl: string, extra: Partial<GatewayConfig> 
   const cfg = {
     auth: { enabled: false },
     strategy: { mode: "single", targets: ["up"] },
-    targets: [{ name: "up", provider: "openai", apiKey: "sk-upstream", baseURL: upstreamUrl, models: ["gpt-4o", "text-embedding-3-small", "dall-e-3"] }],
+    targets: [
+      {
+        name: "up",
+        provider: "openai",
+        apiKey: "sk-upstream",
+        baseURL: upstreamUrl,
+        models: ["gpt-4o", "text-embedding-3-small", "dall-e-3"],
+      },
+    ],
     ...extra,
   } as unknown as GatewayConfig;
   const gw = new Gateway(cfg);
   const app = createApp(gw, cfg);
   const server = Bun.serve({ port: 0, hostname: "127.0.0.1", fetch: app.fetch });
   const client = new OpenAI({ apiKey: "client-key", baseURL: `http://127.0.0.1:${server.port}/v1`, maxRetries: 0 });
-  return { gw, app, client, base: `http://127.0.0.1:${server.port}`, stop: () => { server.stop(true); gw.close(); } };
+  return {
+    gw,
+    app,
+    client,
+    base: `http://127.0.0.1:${server.port}`,
+    stop: () => {
+      server.stop(true);
+      gw.close();
+    },
+  };
 }
 
 export const completion = (message: any, extra: any = {}) => ({
-  id: "chatcmpl-1", object: "chat.completion", created: 1, model: "gpt-4o",
+  id: "chatcmpl-1",
+  object: "chat.completion",
+  created: 1,
+  model: "gpt-4o",
   choices: [{ index: 0, message, finish_reason: "stop", logprobs: null, ...extra }],
   usage: { prompt_tokens: 3, completion_tokens: 2, total_tokens: 5 },
 });

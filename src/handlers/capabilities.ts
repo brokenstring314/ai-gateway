@@ -14,7 +14,9 @@ export function registerCapabilitiesHandler(app: AppType, gateway: Gateway): voi
     for (const name of providerNames) {
       const caps = getCapabilities(name);
       providers[name] = {
-        capabilities: ALL_CAPABILITY_NAMES.filter((cap): cap is ProviderCapability => caps.has(cap as ProviderCapability)),
+        capabilities: ALL_CAPABILITY_NAMES.filter((cap): cap is ProviderCapability =>
+          caps.has(cap as ProviderCapability),
+        ),
       };
     }
 

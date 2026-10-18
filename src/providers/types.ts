@@ -14,10 +14,7 @@ export interface IProvider {
 
 /** Optional streaming interface for providers that support SSE. */
 export interface IStreamProvider extends IProvider {
-  completeStream(
-    ctx: RequestContext,
-    req: ChatCompletionRequest,
-  ): AsyncIterable<StreamChunk>;
+  completeStream(ctx: RequestContext, req: ChatCompletionRequest): AsyncIterable<StreamChunk>;
 }
 
 /** Optional embedding interface. */

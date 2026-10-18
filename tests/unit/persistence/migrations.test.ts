@@ -1,11 +1,6 @@
 import { describe, it, expect, beforeEach, afterEach } from "bun:test";
 import { Database } from "bun:sqlite";
-import {
-  runMigrations,
-  type MigrationStep,
-  MigrationError,
-  DeferredStepError,
-} from "@/persistence/migrations";
+import { runMigrations, type MigrationStep, MigrationError, DeferredStepError } from "@/persistence/migrations";
 
 describe("Migration runner", () => {
   let db: Database;
@@ -25,24 +20,16 @@ describe("Migration runner", () => {
   describe("validateSteps", () => {
     it("rejects empty steps array", async () => {
       await expect(runMigrations(db, [])).rejects.toThrow(MigrationError);
-      await expect(runMigrations(db, [])).rejects.toThrow(
-        "No migration steps provided",
-      );
+      await expect(runMigrations(db, [])).rejects.toThrow("No migration steps provided");
     });
 
     it("rejects step with empty name", async () => {
-      const steps: MigrationStep[] = [
-        { version: 1, name: "  ", sql: "SELECT 1" },
-      ];
-      await expect(runMigrations(db, steps)).rejects.toThrow(
-        "has an empty name",
-      );
+      const steps: MigrationStep[] = [{ version: 1, name: "  ", sql: "SELECT 1" }];
+      await expect(runMigrations(db, steps)).rejects.toThrow("has an empty name");
     });
 
     it("rejects step with no action (no sql/fn/noTx)", async () => {
-      const steps: MigrationStep[] = [
-        { version: 1, name: "no-action" },
-      ];
+      const steps: MigrationStep[] = [{ version: 1, name: "no-action" }];
       await expect(runMigrations(db, steps)).rejects.toThrow("has no action");
     });
 
@@ -55,9 +42,7 @@ describe("Migration runner", () => {
           fn: () => {},
         },
       ];
-      await expect(runMigrations(db, steps)).rejects.toThrow(
-        "has multiple actions",
-      );
+      await expect(runMigrations(db, steps)).rejects.toThrow("has multiple actions");
     });
 
     it("rejects non-ascending versions", async () => {
@@ -65,9 +50,7 @@ describe("Migration runner", () => {
         { version: 2, name: "second", sql: "SELECT 1" },
         { version: 1, name: "first", sql: "SELECT 1" },
       ];
-      await expect(runMigrations(db, steps)).rejects.toThrow(
-        "not strictly ascending",
-      );
+      await expect(runMigrations(db, steps)).rejects.toThrow("not strictly ascending");
     });
 
     it("rejects duplicate versions", async () => {
@@ -75,18 +58,12 @@ describe("Migration runner", () => {
         { version: 1, name: "first", sql: "SELECT 1" },
         { version: 1, name: "duplicate", sql: "SELECT 1" },
       ];
-      await expect(runMigrations(db, steps)).rejects.toThrow(
-        "not strictly ascending",
-      );
+      await expect(runMigrations(db, steps)).rejects.toThrow("not strictly ascending");
     });
 
     it("rejects version < 1", async () => {
-      const steps: MigrationStep[] = [
-        { version: 0, name: "zero", sql: "SELECT 1" },
-      ];
-      await expect(runMigrations(db, steps)).rejects.toThrow(
-        "versions must be >= 1",
-      );
+      const steps: MigrationStep[] = [{ version: 0, name: "zero", sql: "SELECT 1" }];
+      await expect(runMigrations(db, steps)).rejects.toThrow("versions must be >= 1");
     });
   });
 
@@ -112,17 +89,18 @@ describe("Migration runner", () => {
       await runMigrations(db, steps);
 
       // Both tables should exist
-      const tables = db
-        .query("SELECT name FROM sqlite_master WHERE type='table' ORDER BY name")
-        .all() as Array<{ name: string }>;
+      const tables = db.query("SELECT name FROM sqlite_master WHERE type='table' ORDER BY name").all() as Array<{
+        name: string;
+      }>;
       const tableNames = tables.map((r) => r.name);
       expect(tableNames).toContain("users");
       expect(tableNames).toContain("posts");
 
       // Ledger should have both versions
-      const rows = db
-        .query("SELECT version, name FROM schema_migrations ORDER BY version")
-        .all() as Array<{ version: number; name: string }>;
+      const rows = db.query("SELECT version, name FROM schema_migrations ORDER BY version").all() as Array<{
+        version: number;
+        name: string;
+      }>;
       expect(rows).toHaveLength(2);
       expect(rows[0]!.version).toBe(1);
       expect(rows[0]!.name).toBe("create_users");
@@ -157,18 +135,16 @@ describe("Migration runner", () => {
       await runMigrations(db, allSteps);
 
       // Version 1 should not be re-applied
-      const rows = db
-        .query("SELECT version FROM schema_migrations ORDER BY version")
-        .all() as Array<{ version: number }>;
+      const rows = db.query("SELECT version FROM schema_migrations ORDER BY version").all() as Array<{
+        version: number;
+      }>;
       // Only one row for v1 (not duplicated) and one for v2
       const v1Rows = rows.filter((r) => r.version === 1);
       expect(v1Rows).toHaveLength(1);
       expect(rows).toHaveLength(2);
 
       // Posts table should exist
-      const tables = db
-        .query("SELECT name FROM sqlite_master WHERE type='table' AND name='posts'")
-        .all();
+      const tables = db.query("SELECT name FROM sqlite_master WHERE type='table' AND name='posts'").all();
       expect(tables).toHaveLength(1);
     });
   });
@@ -199,9 +175,10 @@ describe("Migration runner", () => {
 
       // Version 1 should be recorded but not re-executed
       // (the table already existed, so the CREATE TABLE would fail if re-run)
-      const rows = db
-        .query("SELECT version, name FROM schema_migrations ORDER BY version")
-        .all() as Array<{ version: number; name: string }>;
+      const rows = db.query("SELECT version, name FROM schema_migrations ORDER BY version").all() as Array<{
+        version: number;
+        name: string;
+      }>;
       expect(rows).toHaveLength(2);
       expect(rows[0]!.version).toBe(1);
       expect(rows[0]!.name).toBe("create_requests");
@@ -209,9 +186,7 @@ describe("Migration runner", () => {
       expect(rows[1]!.name).toBe("add_body_column");
 
       // The body column should have been added by v2
-      const cols = db
-        .query("PRAGMA table_info(requests)")
-        .all() as Array<{ name: string }>;
+      const cols = db.query("PRAGMA table_info(requests)").all() as Array<{ name: string }>;
       const colNames = cols.map((c) => c.name);
       expect(colNames).toContain("body");
     });
@@ -228,9 +203,7 @@ describe("Migration runner", () => {
       await runMigrations(db, steps, { primaryTable: "requests" });
 
       // Table should be created normally
-      const tables = db
-        .query("SELECT name FROM sqlite_master WHERE type='table' AND name='requests'")
-        .all();
+      const tables = db.query("SELECT name FROM sqlite_master WHERE type='table' AND name='requests'").all();
       expect(tables).toHaveLength(1);
     });
   });
@@ -264,9 +237,7 @@ describe("Migration runner", () => {
           sql: "CREATE TABLE users (id INTEGER PRIMARY KEY)",
         },
       ];
-      await expect(runMigrations(db, stepsV1)).rejects.toThrow(
-        "version 2 which this build does not know",
-      );
+      await expect(runMigrations(db, stepsV1)).rejects.toThrow("version 2 which this build does not know");
     });
   });
 
@@ -286,14 +257,13 @@ describe("Migration runner", () => {
 
       await runMigrations(db, steps);
 
-      const tables = db
-        .query("SELECT name FROM sqlite_master WHERE type='table' AND name='items'")
-        .all();
+      const tables = db.query("SELECT name FROM sqlite_master WHERE type='table' AND name='items'").all();
       expect(tables).toHaveLength(1);
 
-      const ledger = db
-        .query("SELECT version, name FROM schema_migrations")
-        .all() as Array<{ version: number; name: string }>;
+      const ledger = db.query("SELECT version, name FROM schema_migrations").all() as Array<{
+        version: number;
+        name: string;
+      }>;
       expect(ledger).toHaveLength(1);
       expect(ledger[0]!.version).toBe(1);
       expect(ledger[0]!.name).toBe("create_items");
@@ -311,27 +281,22 @@ describe("Migration runner", () => {
           version: 1,
           name: "seed_data",
           fn: (dbArg, _tx) => {
-            dbArg.exec(
-              "CREATE TABLE config (key TEXT PRIMARY KEY, value TEXT)",
-            );
-            dbArg.exec(
-              "INSERT INTO config (key, value) VALUES ('version', '1')",
-            );
+            dbArg.exec("CREATE TABLE config (key TEXT PRIMARY KEY, value TEXT)");
+            dbArg.exec("INSERT INTO config (key, value) VALUES ('version', '1')");
           },
         },
       ];
 
       await runMigrations(db, steps);
 
-      const row = db
-        .query("SELECT value FROM config WHERE key = 'version'")
-        .get() as { value: string } | null;
+      const row = db.query("SELECT value FROM config WHERE key = 'version'").get() as { value: string } | null;
       expect(row).not.toBeNull();
       expect(row!.value).toBe("1");
 
-      const ledger = db
-        .query("SELECT version, name FROM schema_migrations")
-        .all() as Array<{ version: number; name: string }>;
+      const ledger = db.query("SELECT version, name FROM schema_migrations").all() as Array<{
+        version: number;
+        name: string;
+      }>;
       expect(ledger).toHaveLength(1);
       expect(ledger[0]!.name).toBe("seed_data");
     });
@@ -358,9 +323,10 @@ describe("Migration runner", () => {
 
       await runMigrations(db, steps);
 
-      const ledger = db
-        .query("SELECT version, name FROM schema_migrations")
-        .all() as Array<{ version: number; name: string }>;
+      const ledger = db.query("SELECT version, name FROM schema_migrations").all() as Array<{
+        version: number;
+        name: string;
+      }>;
       expect(ledger).toHaveLength(1);
       expect(ledger[0]!.name).toBe("vacuum_db");
     });
@@ -395,18 +361,16 @@ describe("Migration runner", () => {
       await runMigrations(db, steps);
 
       // v      // v1 and v3 should be recorded; v2 should not
-      const rows = db
-        .query("SELECT version FROM schema_migrations ORDER BY version")
-        .all() as Array<{ version: number }>;
+      const rows = db.query("SELECT version FROM schema_migrations ORDER BY version").all() as Array<{
+        version: number;
+      }>;
       const versions = rows.map((r) => r.version);
       expect(versions).toContain(1);
       expect(versions).not.toContain(2);
       expect(versions).toContain(3);
 
       // The column from v3 should exist
-      const cols = db
-        .query("PRAGMA table_info(items)")
-        .all() as Array<{ name: string }>;
+      const cols = db.query("PRAGMA table_info(items)").all() as Array<{ name: string }>;
       const colNames = cols.map((c) => c.name);
       expect(colNames).toContain("value");
     });
@@ -435,14 +399,10 @@ describe("Migration runner", () => {
       expect(defaultLedger).toHaveLength(0);
 
       // Custom ledger should exist
-      const customLedger = db
-        .query("SELECT name FROM sqlite_master WHERE type='table' AND name='my_migrations'")
-        .all();
+      const customLedger = db.query("SELECT name FROM sqlite_master WHERE type='table' AND name='my_migrations'").all();
       expect(customLedger).toHaveLength(1);
 
-      const rows = db
-        .query("SELECT version FROM my_migrations")
-        .all() as Array<{ version: number }>;
+      const rows = db.query("SELECT version FROM my_migrations").all() as Array<{ version: number }>;
       expect(rows).toHaveLength(1);
       expect(rows[0]!.version).toBe(1);
     });
@@ -466,9 +426,7 @@ describe("Migration runner", () => {
       await runMigrations(db, steps);
       await runMigrations(db, steps);
 
-      const rows = db
-        .query("SELECT version FROM schema_migrations")
-        .all() as Array<{ version: number }>;
+      const rows = db.query("SELECT version FROM schema_migrations").all() as Array<{ version: number }>;
       expect(rows).toHaveLength(1);
     });
   });

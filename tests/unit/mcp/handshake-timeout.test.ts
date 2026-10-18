@@ -9,7 +9,11 @@ const line = (o: unknown) => JSON.stringify(o) + "\n";
 function spawner(answer: (name: string, method: string) => boolean, killed: string[] = []): McpSpawner {
   return (config) => {
     let ctrl!: ReadableStreamDefaultController<Uint8Array>;
-    const stdout = new ReadableStream<Uint8Array>({ start(c) { ctrl = c; } });
+    const stdout = new ReadableStream<Uint8Array>({
+      start(c) {
+        ctrl = c;
+      },
+    });
     const send = (o: unknown) => ctrl.enqueue(new TextEncoder().encode(line(o)));
     const proc: McpSubprocess = {
       stdin: {
@@ -20,9 +24,17 @@ function spawner(answer: (name: string, method: string) => boolean, killed: stri
             if (msg.id === undefined || !answer(config.name, msg.method)) continue;
             queueMicrotask(() => {
               if (msg.method === "initialize") {
-                send({ jsonrpc: "2.0", id: msg.id, result: { protocolVersion: "2025-03-26", capabilities: {}, serverInfo: { name: "x" } } });
+                send({
+                  jsonrpc: "2.0",
+                  id: msg.id,
+                  result: { protocolVersion: "2025-03-26", capabilities: {}, serverInfo: { name: "x" } },
+                });
               } else if (msg.method === "tools/list") {
-                send({ jsonrpc: "2.0", id: msg.id, result: { tools: [{ name: `${config.name}_tool`, inputSchema: {} }] } });
+                send({
+                  jsonrpc: "2.0",
+                  id: msg.id,
+                  result: { tools: [{ name: `${config.name}_tool`, inputSchema: {} }] },
+                });
               }
             });
           }
@@ -31,7 +43,9 @@ function spawner(answer: (name: string, method: string) => boolean, killed: stri
       stdout,
       kill() {
         killed.push(config.name);
-        try { ctrl.close(); } catch {}
+        try {
+          ctrl.close();
+        } catch {}
       },
     };
     return proc;
@@ -43,9 +57,16 @@ const cfg = (name: string): McpServerConfig => ({ name, command: "fake" }) as Mc
 describe("MCP handshake timeouts", () => {
   it("rejects connect() when the server never answers initialize", async () => {
     const killed: string[] = [];
-    const client = new McpClient(cfg("hung"), { timeoutSeconds: 0.05 }, spawner(() => false, killed));
+    const client = new McpClient(
+      cfg("hung"),
+      { timeoutSeconds: 0.05 },
+      spawner(() => false, killed),
+    );
     const start = Date.now();
-    const err = await client.connect().then(() => null, (e: unknown) => e);
+    const err = await client.connect().then(
+      () => null,
+      (e: unknown) => e,
+    );
     expect(err).toBeInstanceOf(McpToolTimeoutError);
     expect(String((err as Error).message)).toContain("initialize");
     expect(Date.now() - start).toBeLessThan(1000);
@@ -64,7 +85,11 @@ describe("MCP handshake timeouts", () => {
   });
 
   it("still connects normally when the server answers in time", async () => {
-    const client = new McpClient(cfg("ok"), { timeoutSeconds: 0.05 }, spawner(() => true));
+    const client = new McpClient(
+      cfg("ok"),
+      { timeoutSeconds: 0.05 },
+      spawner(() => true),
+    );
     await client.connect();
     expect(client.readiness).toBe("initialized");
     expect(client.listTools().map((t) => t.name)).toEqual(["ok_tool"]);
@@ -80,9 +105,7 @@ describe("MCP handshake timeouts", () => {
         { name: "good", command: "fake", timeoutSeconds: 0.1 },
       ],
     } as never);
-    (gw as unknown as { mcpRegistry: McpRegistry }).mcpRegistry = new McpRegistry(
-      spawner((name) => name !== "hung"),
-    );
+    (gw as unknown as { mcpRegistry: McpRegistry }).mcpRegistry = new McpRegistry(spawner((name) => name !== "hung"));
     const errSpy = spyOn(console, "error").mockImplementation(() => {});
     try {
       const start = Date.now();

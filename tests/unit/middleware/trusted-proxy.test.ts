@@ -1,9 +1,5 @@
 import { describe, it, expect } from "bun:test";
-import {
-  parseTrustedProxies,
-  ipInCidr,
-  resolveClientIp,
-} from "@/middleware/trusted-proxy";
+import { parseTrustedProxies, ipInCidr, resolveClientIp } from "@/middleware/trusted-proxy";
 
 describe("parseTrustedProxies", () => {
   it("defaults to loopback IPv4 and IPv6 when no env is given", () => {
@@ -87,43 +83,25 @@ describe("resolveClientIp", () => {
   const trusted = ["127.0.0.1", "10.0.0.0/8"];
 
   it("returns remoteAddress for an untrusted remote even with spoofed headers", () => {
-    const ip = resolveClientIp(
-      "203.0.113.9",
-      { "x-forwarded-for": "6.6.6.6", "x-real-ip": "7.7.7.7" },
-      trusted,
-    );
+    const ip = resolveClientIp("203.0.113.9", { "x-forwarded-for": "6.6.6.6", "x-real-ip": "7.7.7.7" }, trusted);
     expect(ip).toBe("203.0.113.9");
   });
 
   it("trusts X-Forwarded-For from a trusted proxy and takes the leftmost hop", () => {
-    const ip = resolveClientIp(
-      "10.1.2.3",
-      { "x-forwarded-for": "203.0.113.5, 10.0.0.1, 127.0.0.1" },
-      trusted,
-    );
+    const ip = resolveClientIp("10.1.2.3", { "x-forwarded-for": "203.0.113.5, 10.0.0.1, 127.0.0.1" }, trusted);
     expect(ip).toBe("203.0.113.5");
   });
 
   it("trims whitespace around X-Forwarded-For entries", () => {
-    const ip = resolveClientIp(
-      "127.0.0.1",
-      { "x-forwarded-for": "  203.0.113.7  , 10.0.0.2" },
-      trusted,
-    );
+    const ip = resolveClientIp("127.0.0.1", { "x-forwarded-for": "  203.0.113.7  , 10.0.0.2" }, trusted);
     expect(ip).toBe("203.0.113.7");
   });
 
   it("falls back to X-Real-IP when X-Forwarded-For is absent or empty", () => {
-    expect(
-      resolveClientIp("127.0.0.1", { "x-real-ip": " 198.51.100.4 " }, trusted),
-    ).toBe("198.51.100.4");
-    expect(
-      resolveClientIp(
-        "127.0.0.1",
-        { "x-forwarded-for": "   ", "x-real-ip": "198.51.100.4" },
-        trusted,
-      ),
-    ).toBe("198.51.100.4");
+    expect(resolveClientIp("127.0.0.1", { "x-real-ip": " 198.51.100.4 " }, trusted)).toBe("198.51.100.4");
+    expect(resolveClientIp("127.0.0.1", { "x-forwarded-for": "   ", "x-real-ip": "198.51.100.4" }, trusted)).toBe(
+      "198.51.100.4",
+    );
   });
 
   it("returns remoteAddress when trusted but no forwarded headers are present", () => {
@@ -132,29 +110,19 @@ describe("resolveClientIp", () => {
   });
 
   it("matches header names case-insensitively", () => {
-    expect(
-      resolveClientIp("127.0.0.1", { "X-Forwarded-For": "203.0.113.8" }, trusted),
-    ).toBe("203.0.113.8");
-    expect(
-      resolveClientIp("127.0.0.1", { "X-Real-IP": "198.51.100.8" }, trusted),
-    ).toBe("198.51.100.8");
+    expect(resolveClientIp("127.0.0.1", { "X-Forwarded-For": "203.0.113.8" }, trusted)).toBe("203.0.113.8");
+    expect(resolveClientIp("127.0.0.1", { "X-Real-IP": "198.51.100.8" }, trusted)).toBe("198.51.100.8");
   });
 
   it("handles an IPv6 trusted proxy and IPv6 client via X-Forwarded-For", () => {
-    expect(
-      resolveClientIp("::1", { "x-forwarded-for": "2001:db8::42" }, ["::1", "127.0.0.1"]),
-    ).toBe("2001:db8::42");
-    expect(
-      resolveClientIp("2001:db8::ffff", { "x-forwarded-for": "2001:db8::1" }, [
-        "2001:db8::/64",
-      ]),
-    ).toBe("2001:db8::1");
+    expect(resolveClientIp("::1", { "x-forwarded-for": "2001:db8::42" }, ["::1", "127.0.0.1"])).toBe("2001:db8::42");
+    expect(resolveClientIp("2001:db8::ffff", { "x-forwarded-for": "2001:db8::1" }, ["2001:db8::/64"])).toBe(
+      "2001:db8::1",
+    );
   });
 
   it("does not trust a header value when the proxy itself is untrusted", () => {
-    const ip = resolveClientIp("10.9.9.9", { "x-forwarded-for": "203.0.113.1" }, [
-      "127.0.0.1",
-    ]);
+    const ip = resolveClientIp("10.9.9.9", { "x-forwarded-for": "203.0.113.1" }, ["127.0.0.1"]);
     expect(ip).toBe("10.9.9.9");
   });
 });

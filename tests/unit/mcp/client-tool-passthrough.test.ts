@@ -20,24 +20,42 @@ function registry(calls: string[]): McpToolRegistry {
 
 function toolResponse(...names: string[]): ChatCompletionResponse {
   return {
-    id: "r", object: "chat.completion", created: 0, model: "m", provider: "a",
-    choices: [{
-      index: 0, finishReason: "tool_calls",
-      message: {
-        role: "assistant", content: null,
-        toolCalls: names.map((name, i) => ({ id: `call_${i}`, type: "function" as const, function: { name, arguments: "{}" } })),
+    id: "r",
+    object: "chat.completion",
+    created: 0,
+    model: "m",
+    provider: "a",
+    choices: [
+      {
+        index: 0,
+        finishReason: "tool_calls",
+        message: {
+          role: "assistant",
+          content: null,
+          toolCalls: names.map((name, i) => ({
+            id: `call_${i}`,
+            type: "function" as const,
+            function: { name, arguments: "{}" },
+          })),
+        },
       },
-    }],
+    ],
   } as unknown as ChatCompletionResponse;
 }
 
-function countingStrategy(): { strategy: ChatCompleter & { mode?: string; selectTargets?: () => string[] }; calls: () => number } {
+function countingStrategy(): {
+  strategy: ChatCompleter & { mode?: string; selectTargets?: () => string[] };
+  calls: () => number;
+} {
   let n = 0;
   const strategy = {
     mode: "single",
     execute: async () => {
       n++;
-      return { ...toolResponse(), choices: [{ index: 0, finishReason: "stop", message: { role: "assistant", content: "done" } }] } as ChatCompletionResponse;
+      return {
+        ...toolResponse(),
+        choices: [{ index: 0, finishReason: "stop", message: { role: "assistant", content: "done" } }],
+      } as ChatCompletionResponse;
     },
     executeStream: async function* () {},
     selectTargets: () => ["a"],
@@ -95,7 +113,12 @@ describe("McpExecutor leaves client-owned tool calls alone", () => {
     const toolCalls: string[] = [];
     const executor = new McpExecutor(registry(toolCalls));
     const { strategy, calls } = countingStrategy();
-    const out = await executor.executeAgenticLoop(ctx, executor.injectTools(baseReq), toolResponse("mcp_search"), strategy);
+    const out = await executor.executeAgenticLoop(
+      ctx,
+      executor.injectTools(baseReq),
+      toolResponse("mcp_search"),
+      strategy,
+    );
     expect(out.choices[0]?.message?.content).toBe("done");
     expect(calls()).toBe(1);
     expect(toolCalls).toEqual(["mcp_search"]);

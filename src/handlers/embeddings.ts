@@ -17,7 +17,6 @@ const EmbeddingRequestSchema = z.object({
   user: z.string().optional(),
 });
 
-
 export function registerEmbeddingsHandler(app: AppType, gateway: Gateway): void {
   app.post("/v1/embeddings", async (c) => {
     let body: unknown;

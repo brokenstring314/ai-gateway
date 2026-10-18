@@ -38,12 +38,11 @@ function simpleResolver(target: ProxyTarget = makeTarget()): TargetResolver {
   };
 }
 
-function mountProxy(
-  opts: Parameters<typeof createProxyHandler>[0],
-): { app: Hono; fetchImpl: ReturnType<typeof vi.fn> } {
-  const fetchImpl = vi.fn().mockResolvedValue(
-    new Response(JSON.stringify({ result: "ok" }), { status: 200 }),
-  );
+function mountProxy(opts: Parameters<typeof createProxyHandler>[0]): {
+  app: Hono;
+  fetchImpl: ReturnType<typeof vi.fn>;
+} {
+  const fetchImpl = vi.fn().mockResolvedValue(new Response(JSON.stringify({ result: "ok" }), { status: 200 }));
   const app = new Hono();
   app.all("/v1/*", createProxyHandler({ fetchImpl: fetchImpl as unknown as typeof fetch, ...opts }));
   return { app, fetchImpl };
@@ -80,11 +79,15 @@ describe("stripTrailingV1", () => {
 describe("buildUpstreamUrl", () => {
   it("joins the inbound /v1 path without doubling the segment", () => {
     expect(buildUpstreamUrl("https://api.x.ai/v1", "/v1/responses")).toBe("https://api.x.ai/v1/responses");
-    expect(buildUpstreamUrl("https://api.openai.com/v1", "/v1/chat/completions")).toBe("https://api.openai.com/v1/chat/completions");
+    expect(buildUpstreamUrl("https://api.openai.com/v1", "/v1/chat/completions")).toBe(
+      "https://api.openai.com/v1/chat/completions",
+    );
   });
 
   it("preserves the inbound /v1 prefix for bare-host base URLs", () => {
-    expect(buildUpstreamUrl("https://api.perplexity.ai", "/v1/chat/completions")).toBe("https://api.perplexity.ai/v1/chat/completions");
+    expect(buildUpstreamUrl("https://api.perplexity.ai", "/v1/chat/completions")).toBe(
+      "https://api.perplexity.ai/v1/chat/completions",
+    );
   });
 
   it("joins non-/v1 base paths without double slashes", () => {
@@ -337,11 +340,14 @@ describe("createProxyHandler", () => {
       }),
     );
     const app = new Hono();
-    app.all("/v1/*", createProxyHandler({
-      resolveTarget: simpleResolver(),
-      fetchImpl: fetchImpl as unknown as typeof fetch,
-      allowUnauthenticatedProxy: true,
-    }));
+    app.all(
+      "/v1/*",
+      createProxyHandler({
+        resolveTarget: simpleResolver(),
+        fetchImpl: fetchImpl as unknown as typeof fetch,
+        allowUnauthenticatedProxy: true,
+      }),
+    );
 
     const res = await app.request("/v1/responses", {
       method: "POST",
@@ -373,11 +379,14 @@ describe("createProxyHandler", () => {
       }),
     );
     const app = new Hono();
-    app.all("/v1/*", createProxyHandler({
-      resolveTarget: simpleResolver(),
-      fetchImpl: fetchImpl as unknown as typeof fetch,
-      allowUnauthenticatedProxy: true,
-    }));
+    app.all(
+      "/v1/*",
+      createProxyHandler({
+        resolveTarget: simpleResolver(),
+        fetchImpl: fetchImpl as unknown as typeof fetch,
+        allowUnauthenticatedProxy: true,
+      }),
+    );
 
     const res = await app.request("/v1/files", {
       method: "POST",
@@ -391,15 +400,16 @@ describe("createProxyHandler", () => {
   });
 
   it("returns a stable 502 OpenAI error on upstream transport failure without leaking internals", async () => {
-    const fetchImpl = vi.fn().mockRejectedValue(
-      new Error("ECONNREFUSED http://10.0.0.5:secret-port/internal"),
-    );
+    const fetchImpl = vi.fn().mockRejectedValue(new Error("ECONNREFUSED http://10.0.0.5:secret-port/internal"));
     const app = new Hono();
-    app.all("/v1/*", createProxyHandler({
-      resolveTarget: simpleResolver(),
-      fetchImpl: fetchImpl as unknown as typeof fetch,
-      allowUnauthenticatedProxy: true,
-    }));
+    app.all(
+      "/v1/*",
+      createProxyHandler({
+        resolveTarget: simpleResolver(),
+        fetchImpl: fetchImpl as unknown as typeof fetch,
+        allowUnauthenticatedProxy: true,
+      }),
+    );
 
     const res = await app.request("/v1/responses", {
       method: "POST",

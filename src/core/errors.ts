@@ -91,7 +91,12 @@ export function invalidRequest(message: string, code = "invalid_request", param?
 }
 
 export function modelNotFound(message: string): GatewayError {
-  return new GatewayError("model_not_found", { status: 404, message, type: "invalid_request_error", code: "model_not_found" });
+  return new GatewayError("model_not_found", {
+    status: 404,
+    message,
+    type: "invalid_request_error",
+    code: "model_not_found",
+  });
 }
 
 export function gatewayTimeout(target?: string): GatewayError {

@@ -107,7 +107,9 @@ describe("key revoke and rotate", () => {
     const body = (await res.json()) as TestJson;
     expect(body.totalKeys).toBe(2);
     expect(body.totalUsageCount).toBe(3);
-    const byId = new Map<string, { id: string; name: string; usageCount: number }>(body.keys.map((k: { id: string; name: string; usageCount: number }) => [k.id, k]));
+    const byId = new Map<string, { id: string; name: string; usageCount: number }>(
+      body.keys.map((k: { id: string; name: string; usageCount: number }) => [k.id, k]),
+    );
     expect(byId.get(a.id)?.usageCount).toBe(2);
     expect(byId.get(b.id)?.usageCount).toBe(1);
     expect(byId.get(a.id)?.name).toBe("key-a");

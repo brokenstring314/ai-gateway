@@ -19,7 +19,11 @@ interface FakeServer {
 function fakeServer(mode: Mode): FakeServer {
   let controller!: ReadableStreamDefaultController<Uint8Array>;
   let closed = false;
-  const stdout = new ReadableStream<Uint8Array>({ start(c) { controller = c; } });
+  const stdout = new ReadableStream<Uint8Array>({
+    start(c) {
+      controller = c;
+    },
+  });
   const close = () => {
     if (closed) return;
     closed = true;
@@ -35,7 +39,8 @@ function fakeServer(mode: Mode): FakeServer {
           if (!line.trim()) continue;
           const msg = JSON.parse(line) as { id?: number; method?: string };
           if (typeof msg.id !== "number") continue;
-          if (msg.method === "initialize") respond(msg.id, { protocolVersion: "2025-03-26", capabilities: {}, serverInfo: { name: "f" } });
+          if (msg.method === "initialize")
+            respond(msg.id, { protocolVersion: "2025-03-26", capabilities: {}, serverInfo: { name: "f" } });
           if (msg.method === "tools/list") respond(msg.id, { tools: [{ name: "t1" }] });
         }
       },
@@ -110,7 +115,11 @@ describe("B3-10 MCP crash restart", () => {
 
   it("a required server that keeps failing fails /livez after the threshold", async () => {
     const h = harness(() => "dead");
-    const registry = new McpRegistry(h.spawner, { initialDelayMs: 1, maxDelayMs: 2, livenessFailureThreshold: 3 }, h.log);
+    const registry = new McpRegistry(
+      h.spawner,
+      { initialDelayMs: 1, maxDelayMs: 2, livenessFailureThreshold: 3 },
+      h.log,
+    );
     const app = new Hono() as unknown as AppType;
     registerLivenessHandler(app, { isMcpLive: () => registry.requiredServersLive() } as unknown as Gateway);
     try {
@@ -127,7 +136,11 @@ describe("B3-10 MCP crash restart", () => {
 
   it("an optional server that keeps failing never fails liveness", async () => {
     const h = harness(() => "dead");
-    const registry = new McpRegistry(h.spawner, { initialDelayMs: 1, maxDelayMs: 1, livenessFailureThreshold: 2 }, h.log);
+    const registry = new McpRegistry(
+      h.spawner,
+      { initialDelayMs: 1, maxDelayMs: 1, livenessFailureThreshold: 2 },
+      h.log,
+    );
     try {
       await expect(registry.addServer(cfg("opt"))).rejects.toThrow();
       await waitFor(() => registry.consecutiveFailures("opt") >= 3);

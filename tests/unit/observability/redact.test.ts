@@ -15,9 +15,7 @@ const JWT =
 describe("redactMessage", () => {
   it("redacts email addresses, including multiple occurrences", () => {
     const input = "Contact alice@example.com or bob.smith@test.co.uk for access.";
-    expect(redactMessage(input)).toBe(
-      "Contact [REDACTED_EMAIL] or [REDACTED_EMAIL] for access.",
-    );
+    expect(redactMessage(input)).toBe("Contact [REDACTED_EMAIL] or [REDACTED_EMAIL] for access.");
   });
 
   it("redacts three-part eyJ... JWTs, including multiple tokens", () => {
@@ -28,8 +26,7 @@ describe("redactMessage", () => {
   });
 
   it("redacts sk- prefixed API keys, including multiple keys", () => {
-    const input =
-      "key=sk-proj-abcdef1234567890abcdef1234567890 and sk-0987654321fedcba0987654321fedcba";
+    const input = "key=sk-proj-abcdef1234567890abcdef1234567890 and sk-0987654321fedcba0987654321fedcba";
     expect(redactMessage(input)).toBe("key=[REDACTED_KEY] and [REDACTED_KEY]");
   });
 
@@ -45,9 +42,7 @@ describe("redactMessage", () => {
 
   it("redacts AWS AKIA access key ids, including multiple keys", () => {
     const input = "access key AKIAIOSFODNN7EXAMPLE and backup AKIA1234567890ABCDEF";
-    expect(redactMessage(input)).toBe(
-      "access key [REDACTED_AWS_KEY] and backup [REDACTED_AWS_KEY]",
-    );
+    expect(redactMessage(input)).toBe("access key [REDACTED_AWS_KEY] and backup [REDACTED_AWS_KEY]");
   });
 
   it("redacts all patterns within a single mixed message", () => {

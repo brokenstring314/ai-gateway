@@ -21,7 +21,14 @@ beforeEach(() => {
 afterEach(() => spy.mockRestore());
 
 function counting(stage: "after_request" | "on_error", seen: string[]): IPlugin {
-  return { name: `spy-${stage}`, stage, execute: async () => { seen.push(stage); return { action: "continue" }; } };
+  return {
+    name: `spy-${stage}`,
+    stage,
+    execute: async () => {
+      seen.push(stage);
+      return { action: "continue" };
+    },
+  };
 }
 
 function setup(before?: (ctx: PluginContext) => PluginResult, provider?: IProvider) {
@@ -47,7 +54,9 @@ const chatReq = { model: "gpt-4o", messages: [{ role: "user" as const, content: 
 
 function failing(): IProvider {
   const p = mockProvider(newCalls()) as unknown as Record<string, unknown>;
-  p["complete"] = async () => { throw Object.assign(new Error("upstream down"), { statusCode: 503 }); };
+  p["complete"] = async () => {
+    throw Object.assign(new Error("upstream down"), { statusCode: 503 });
+  };
   p["embed"] = p["complete"];
   return p as unknown as IProvider;
 }
@@ -84,10 +93,17 @@ describe("finalize matrix", () => {
   it("chat short-circuit without usage answers 200 over HTTP (was 500), logged once", async () => {
     const { gw, settled } = setup((c) => ({
       action: "short_circuit",
-      response: { model: c.request.model, choices: [{ index: 0, message: { role: "assistant", content: "cached" }, finishReason: "stop" }] } as never,
+      response: {
+        model: c.request.model,
+        choices: [{ index: 0, message: { role: "assistant", content: "cached" }, finishReason: "stop" }],
+      } as never,
     }));
     const app = createApp(gw, cfg());
-    const r = await app.request("/v1/chat/completions", { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify(chatReq) });
+    const r = await app.request("/v1/chat/completions", {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify(chatReq),
+    });
     expect(r.status).toBe(200);
     const j = (await r.json()) as { choices: { message: { content: string } }[]; usage: { total_tokens: number } };
     expect(j.choices[0]?.message.content).toBe("cached");
@@ -112,7 +128,14 @@ describe("finalize matrix", () => {
     let response: unknown = "unset";
     const gw = new Gateway(cfg());
     gw.registerProvider(mockProvider(newCalls()));
-    gw.registerPlugin("after_request", { name: "a", stage: "after_request", execute: async (c) => { response = c.response; return { action: "continue" }; } });
+    gw.registerPlugin("after_request", {
+      name: "a",
+      stage: "after_request",
+      execute: async (c) => {
+        response = c.response;
+        return { action: "continue" };
+      },
+    });
     await gw.generateImageWithPlugins(ctx(), { model: "gpt-4o", prompt: "cat" });
     expect(response).toBeUndefined();
     expect(entries).toHaveLength(1);
@@ -133,12 +156,18 @@ describe("finalize matrix", () => {
 describe("metrics placement (observability.metrics)", () => {
   const base = cfg();
   it("no metrics block: main port", () => expect(metricsPlacement(base, 3000)).toBe("main"));
-  it("enabled false: off", () => expect(metricsPlacement({ ...base, observability: { metrics: { enabled: false } } } as never, 3000)).toBe("off"));
+  it("enabled false: off", () =>
+    expect(metricsPlacement({ ...base, observability: { metrics: { enabled: false } } } as never, 3000)).toBe("off"));
   it("enabled without port or same port: main", () => {
     expect(metricsPlacement({ ...base, observability: { metrics: { enabled: true } } } as never, 3000)).toBe("main");
-    expect(metricsPlacement({ ...base, observability: { metrics: { enabled: true, port: 3000 } } } as never, 3000)).toBe("main");
+    expect(
+      metricsPlacement({ ...base, observability: { metrics: { enabled: true, port: 3000 } } } as never, 3000),
+    ).toBe("main");
   });
-  it("other port: separate", () => expect(metricsPlacement({ ...base, observability: { metrics: { enabled: true, port: 9090 } } } as never, 3000)).toBe("separate"));
+  it("other port: separate", () =>
+    expect(
+      metricsPlacement({ ...base, observability: { metrics: { enabled: true, port: 9090 } } } as never, 3000),
+    ).toBe("separate"));
   it("disabled: GET /metrics is not served on the app", async () => {
     const c = { ...base, observability: { metrics: { enabled: false } } } as never;
     const app = createApp(new Gateway(c), c);

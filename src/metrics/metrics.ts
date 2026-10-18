@@ -23,13 +23,7 @@
  * injection) or break the Prometheus text format.
  */
 
-import {
-  Registry,
-  Counter,
-  Gauge,
-  Histogram,
-  collectDefaultMetrics,
-} from "prom-client";
+import { Registry, Counter, Gauge, Histogram, collectDefaultMetrics } from "prom-client";
 
 /** Configuration for constructing a `Metrics` instance. */
 export interface MetricsOptions {
@@ -203,19 +197,11 @@ export class Metrics {
 
   /** Observe a request duration in seconds. */
   observeDuration(seconds: number, labels: RequestLabels): void {
-    this.requestDurationSeconds.observe(
-      this.requestLabelValues(labels),
-      nonNegative(seconds),
-    );
+    this.requestDurationSeconds.observe(this.requestLabelValues(labels), nonNegative(seconds));
   }
 
   /** Record input/output token usage for a provider and model. */
-  recordTokens(
-    provider: string,
-    model: string,
-    inputTokens: number,
-    outputTokens: number,
-  ): void {
+  recordTokens(provider: string, model: string, inputTokens: number, outputTokens: number): void {
     const labels = {
       provider: sanitizeLabel(provider),
       model: sanitizeLabel(model),
@@ -246,15 +232,9 @@ export class Metrics {
     const providerLabel = sanitizeLabel(provider);
     const previous = this.breakerStates.get(providerLabel);
     if (previous !== undefined && previous !== normalized) {
-      this.circuitBreakerState.set(
-        { provider: providerLabel, state: previous },
-        0,
-      );
+      this.circuitBreakerState.set({ provider: providerLabel, state: previous }, 0);
     }
-    this.circuitBreakerState.set(
-      { provider: providerLabel, state: normalized },
-      1,
-    );
+    this.circuitBreakerState.set({ provider: providerLabel, state: normalized }, 1);
     this.breakerStates.set(providerLabel, normalized);
   }
 
@@ -279,10 +259,7 @@ export class Metrics {
 
   /** Record the cost (in US dollars) of a completed request. */
   recordCost(provider: string, model: string, costUsd: number): void {
-    this.requestCostUsd.inc(
-      { provider: sanitizeLabel(provider), model: sanitizeLabel(model) },
-      nonNegative(costUsd),
-    );
+    this.requestCostUsd.inc({ provider: sanitizeLabel(provider), model: sanitizeLabel(model) }, nonNegative(costUsd));
   }
 
   /**
@@ -299,10 +276,7 @@ export class Metrics {
     this.breakerStates.clear();
   }
 
-  private requestLabelValues(labels: RequestLabels): Record<
-    "method" | "status" | "provider",
-    string
-  > {
+  private requestLabelValues(labels: RequestLabels): Record<"method" | "status" | "provider", string> {
     return {
       method: sanitizeLabel(labels.method),
       status: sanitizeLabel(labels.status),

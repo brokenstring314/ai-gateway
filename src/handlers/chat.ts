@@ -23,17 +23,28 @@ import {
 
 const ChatMessageSchema: z.ZodType = z.object({
   role: z.enum(["system", "user", "assistant", "tool", "developer"]),
-  content: z.union([z.string(), z.array(z.object({
-    type: z.enum(["text", "image_url"]),
-    text: z.string().optional(),
-    imageUrl: z.object({ url: z.string(), detail: z.enum(["auto", "low", "high"]).optional() }).optional(),
-  }))]).optional(),
+  content: z
+    .union([
+      z.string(),
+      z.array(
+        z.object({
+          type: z.enum(["text", "image_url"]),
+          text: z.string().optional(),
+          imageUrl: z.object({ url: z.string(), detail: z.enum(["auto", "low", "high"]).optional() }).optional(),
+        }),
+      ),
+    ])
+    .optional(),
   name: z.string().optional(),
-  toolCalls: z.array(z.object({
-    id: z.string(),
-    type: z.literal("function"),
-    function: z.object({ name: z.string(), arguments: z.string() }),
-  })).optional(),
+  toolCalls: z
+    .array(
+      z.object({
+        id: z.string(),
+        type: z.literal("function"),
+        function: z.object({ name: z.string(), arguments: z.string() }),
+      }),
+    )
+    .optional(),
   toolCallId: z.string().optional(),
 });
 
@@ -52,30 +63,36 @@ const ChatCompletionRequestSchema = z.object({
   logitBias: z.record(z.string(), z.number()).optional(),
   user: z.string().optional(),
   seed: z.number().int().optional(),
-  tools: z.array(z.object({
-    type: z.literal("function"),
-    function: z.object({
-      name: z.string(),
-      description: z.string().optional(),
-      parameters: z.record(z.string(), z.unknown()).optional(),
-      strict: z.boolean().optional(),
-    }),
-  })).optional(),
-  toolChoice: z.union([
-    z.enum(["none", "auto", "required"]),
-    z.object({ type: z.literal("function"), function: z.object({ name: z.string() }) }),
-  ]).optional(),
-  responseFormat: z.object({
-    type: z.enum(["json_object", "text", "json_schema"]),
-    jsonSchema: z.record(z.string(), z.unknown()).optional(),
-  }).optional(),
+  tools: z
+    .array(
+      z.object({
+        type: z.literal("function"),
+        function: z.object({
+          name: z.string(),
+          description: z.string().optional(),
+          parameters: z.record(z.string(), z.unknown()).optional(),
+          strict: z.boolean().optional(),
+        }),
+      }),
+    )
+    .optional(),
+  toolChoice: z
+    .union([
+      z.enum(["none", "auto", "required"]),
+      z.object({ type: z.literal("function"), function: z.object({ name: z.string() }) }),
+    ])
+    .optional(),
+  responseFormat: z
+    .object({
+      type: z.enum(["json_object", "text", "json_schema"]),
+      jsonSchema: z.record(z.string(), z.unknown()).optional(),
+    })
+    .optional(),
   parallelToolCalls: z.boolean().optional(),
   logprobs: z.boolean().optional(),
   topLogprobs: z.number().int().min(0).max(20).optional(),
   streamOptions: z.object({ includeUsage: z.boolean() }).optional(),
 });
-
-
 
 // ── Handler ──
 
@@ -116,13 +133,17 @@ export function registerChatHandler(app: AppType, gateway: Gateway): void {
       const response = await gateway.route(ctx, req);
       const overheadMs = Date.now() - startTime;
       const { upstreamHeaders } = response;
-      return c.json(toOpenAIWireChatResponse(response), 200, mergeForwardedHeaders(
-        {
-          "X-Gateway-Provider": response.provider,
-          "X-Gateway-Overhead-Ms": String(overheadMs),
-        },
-        upstreamHeaders,
-      ));
+      return c.json(
+        toOpenAIWireChatResponse(response),
+        200,
+        mergeForwardedHeaders(
+          {
+            "X-Gateway-Provider": response.provider,
+            "X-Gateway-Overhead-Ms": String(overheadMs),
+          },
+          upstreamHeaders,
+        ),
+      );
     } catch (err) {
       return respondError(c, err);
     }

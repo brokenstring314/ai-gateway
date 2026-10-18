@@ -14,21 +14,31 @@ import type { GatewayConfig } from "@/config/types";
 function cfg(extra: Record<string, unknown> = {}): GatewayConfig {
   return {
     strategy: { mode: "single", targets: ["t"] },
-    targets: [{ name: "t", provider: "openai", apiKey: "sk-OPERATOR", baseURL: "https://up.example/v1", models: ["gpt-4o"] }],
+    targets: [
+      { name: "t", provider: "openai", apiKey: "sk-OPERATOR", baseURL: "https://up.example/v1", models: ["gpt-4o"] },
+    ],
     ...extra,
   } as unknown as GatewayConfig;
 }
-const okChat = () => new Response(JSON.stringify({
-  id: "c", object: "chat.completion", created: 1, model: "gpt-4o",
-  choices: [{ index: 0, message: { role: "assistant", content: "ok" }, finish_reason: "stop" }],
-  usage: { prompt_tokens: 1, completion_tokens: 1, total_tokens: 2 },
-}), { status: 200, headers: { "content-type": "application/json" } });
+const okChat = () =>
+  new Response(
+    JSON.stringify({
+      id: "c",
+      object: "chat.completion",
+      created: 1,
+      model: "gpt-4o",
+      choices: [{ index: 0, message: { role: "assistant", content: "ok" }, finish_reason: "stop" }],
+      usage: { prompt_tokens: 1, completion_tokens: 1, total_tokens: 2 },
+    }),
+    { status: 200, headers: { "content-type": "application/json" } },
+  );
 
 function chat(app: ReturnType<typeof createApp>, auth?: string) {
   const headers: Record<string, string> = { "content-type": "application/json" };
   if (auth !== undefined) headers["authorization"] = auth;
   return app.request("/v1/chat/completions", {
-    method: "POST", headers,
+    method: "POST",
+    headers,
     body: JSON.stringify({ model: "gpt-4o", messages: [{ role: "user", content: "hi" }] }),
   });
 }
@@ -39,7 +49,10 @@ beforeEach(() => {
   fetchSpy = spyOn(globalThis, "fetch").mockImplementation((async () => okChat()) as unknown as typeof fetch);
   errSpy = spyOn(console, "error").mockImplementation(() => {});
 });
-afterEach(() => { fetchSpy.mockRestore(); errSpy.mockRestore(); });
+afterEach(() => {
+  fetchSpy.mockRestore();
+  errSpy.mockRestore();
+});
 
 describe("createApp without a KeyStore enforces client auth", () => {
   it("auth.enabled + auth.keys: anonymous and wrong key → 401, upstream untouched", async () => {
@@ -89,9 +102,17 @@ describe("createApp without a KeyStore enforces client auth", () => {
   it("pass-through proxy accepts auth.keys without a KeyStore", async () => {
     const c = cfg({ auth: { enabled: true, keys: ["client-key-1"] }, passthroughProxy: { enabled: true } });
     const app = createApp(new Gateway(c), c);
-    const anon = await app.request("/v1/moderations?provider=t", { method: "POST", headers: { "content-type": "application/json" }, body: "{}" });
+    const anon = await app.request("/v1/moderations?provider=t", {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: "{}",
+    });
     expect(anon.status).toBe(401);
-    const ok = await app.request("/v1/moderations?provider=t", { method: "POST", headers: { "content-type": "application/json", authorization: "Bearer client-key-1" }, body: "{}" });
+    const ok = await app.request("/v1/moderations?provider=t", {
+      method: "POST",
+      headers: { "content-type": "application/json", authorization: "Bearer client-key-1" },
+      body: "{}",
+    });
     expect(ok.status).not.toBe(401);
   });
 });

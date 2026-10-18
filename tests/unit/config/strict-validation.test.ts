@@ -11,7 +11,12 @@ import { safeParseConfig } from "@/config/schema";
 import type { GatewayConfig } from "@/config/types";
 import { Gateway } from "@/gateway";
 
-const target = (name: string, extra: Record<string, unknown> = {}) => ({ name, provider: "openai", apiKey: "sk-x", ...extra });
+const target = (name: string, extra: Record<string, unknown> = {}) => ({
+  name,
+  provider: "openai",
+  apiKey: "sk-x",
+  ...extra,
+});
 
 function errors(input: unknown): string {
   const r = safeParseConfig(input);
@@ -21,13 +26,29 @@ function errors(input: unknown): string {
 
 describe("unknown and misspelt keys are errors (B3-11 c)", () => {
   const typos: [string, Record<string, unknown>, RegExp][] = [
-    ["top-level requestTimout", { requestTimout: "5s" }, /unknown key "requestTimout" \(did you mean "requestTimeout"\?\)/],
+    [
+      "top-level requestTimout",
+      { requestTimout: "5s" },
+      /unknown key "requestTimout" \(did you mean "requestTimeout"\?\)/,
+    ],
     ["top-level maxRequestByte", { maxRequestByte: 10 }, /did you mean "maxRequestBytes"/],
     ["top-level adminsecret", { adminsecret: "long-enough-secret" }, /did you mean "adminSecret"/],
     ["auth.key", { auth: { key: ["k"] } }, /^auth: unknown key "key" \(did you mean "keys"\?\)/m],
-    ["target circuitbreaker", { targets: [target("a", { circuitbreaker: {} })] }, /^targets\.0: .*did you mean "circuitBreaker"/m],
-    ["target retries", { targets: [target("a", { retries: {} })] }, /^targets\.0: unknown key "retries" \(did you mean "retry"\?\)/m],
-    ["nested retry key", { targets: [target("a", { retry: { attempt: 2 } })] }, /^targets\.0\.retry: .*did you mean "attempts"/m],
+    [
+      "target circuitbreaker",
+      { targets: [target("a", { circuitbreaker: {} })] },
+      /^targets\.0: .*did you mean "circuitBreaker"/m,
+    ],
+    [
+      "target retries",
+      { targets: [target("a", { retries: {} })] },
+      /^targets\.0: unknown key "retries" \(did you mean "retry"\?\)/m,
+    ],
+    [
+      "nested retry key",
+      { targets: [target("a", { retry: { attempt: 2 } })] },
+      /^targets\.0\.retry: .*did you mean "attempts"/m,
+    ],
     ["server key", { server: { prot: 1 } }, /^server: unknown key "prot" \(did you mean "port"\?\)/m],
   ];
   for (const [label, override, expected] of typos) {
@@ -58,7 +79,11 @@ describe("cross-references (B3-11 a, b, d)", () => {
 
   it("weights and rules must name existing targets", () => {
     const e = errors({
-      strategy: { mode: "conditional", weights: { ghost: 1 }, rules: [{ field: "model", contains: "x", target: "nope" }] },
+      strategy: {
+        mode: "conditional",
+        weights: { ghost: 1 },
+        rules: [{ field: "model", contains: "x", target: "nope" }],
+      },
       targets: [target("a")],
     });
     expect(e).toMatch(/^strategy\.weights\.ghost: .*unknown target "ghost"/m);
@@ -75,12 +100,14 @@ describe("cross-references (B3-11 a, b, d)", () => {
     expect(errors({ strategy: { mode: "single" }, targets: [{ name: "x", provider: "acme", apiKey: "k" }] })).toMatch(
       /^targets\.0\.baseURL: target "x": unknown provider "acme" needs a baseURL/m,
     );
-    expect(errors({ strategy: { mode: "single" }, targets: [{ name: "c", provider: "cloudflare", apiKey: "k" }] })).toMatch(
-      /provider "cloudflare" needs an explicit baseURL/,
-    );
     expect(
-      safeParseConfig({ strategy: { mode: "single" }, targets: [{ name: "x", provider: "acme", apiKey: "k", baseURL: "${ACME_URL}" }] })
-        .success,
+      errors({ strategy: { mode: "single" }, targets: [{ name: "c", provider: "cloudflare", apiKey: "k" }] }),
+    ).toMatch(/provider "cloudflare" needs an explicit baseURL/);
+    expect(
+      safeParseConfig({
+        strategy: { mode: "single" },
+        targets: [{ name: "x", provider: "acme", apiKey: "k", baseURL: "${ACME_URL}" }],
+      }).success,
     ).toBe(true);
   });
 });
@@ -95,12 +122,18 @@ describe("one validator for validate, bootstrap and embedded Gateway", () => {
   it("validate CLI reports every problem with its path and exits 1", () => {
     dir = mkdtempSync(join(tmpdir(), "agw-strict-"));
     const path = join(dir, "c.yaml");
-    writeFileSync(path, "strategy: { mode: fallback, targets: [a, b] }\ntargets: [{ name: a, provider: openai, apiKey: k }]\nretries: 3\n");
+    writeFileSync(
+      path,
+      "strategy: { mode: fallback, targets: [a, b] }\ntargets: [{ name: a, provider: openai, apiKey: k }]\nretries: 3\n",
+    );
     const out: string[] = [];
     const sink = { log: (m: string) => out.push(m), error: (m: string) => out.push(m) };
     expect(validateCommand(path, sink)).toBe(1);
     expect(out.join("\n")).toContain('unknown key "retries"');
-    writeFileSync(path, "strategy: { mode: fallback, targets: [a, b] }\ntargets: [{ name: a, provider: openai, apiKey: k }]\n");
+    writeFileSync(
+      path,
+      "strategy: { mode: fallback, targets: [a, b] }\ntargets: [{ name: a, provider: openai, apiKey: k }]\n",
+    );
     out.length = 0;
     expect(validateCommand(path, sink)).toBe(1);
     expect(out.join("\n")).toMatch(/unknown target "b"[\s\S]*strategy\.targets\[1\]/);
@@ -148,8 +181,16 @@ describe("shipped example configs still validate", () => {
       for (const [, block] of md.matchAll(/```ya?ml\n([\s\S]*?)```/g)) {
         const snippet = parseYaml(block!) as Record<string, unknown> | null;
         if (snippet === null || typeof snippet !== "object" || Array.isArray(snippet)) continue;
-        const s = (snippet["strategy"] ?? {}) as { targets?: string[]; weights?: Record<string, number>; rules?: { target: string }[] };
-        const referenced = new Set([...(s.targets ?? []), ...Object.keys(s.weights ?? {}), ...(s.rules ?? []).map((r) => r.target)]);
+        const s = (snippet["strategy"] ?? {}) as {
+          targets?: string[];
+          weights?: Record<string, number>;
+          rules?: { target: string }[];
+        };
+        const referenced = new Set([
+          ...(s.targets ?? []),
+          ...Object.keys(s.weights ?? {}),
+          ...(s.rules ?? []).map((r) => r.target),
+        ]);
         const full = {
           strategy: { mode: "single" },
           targets: referenced.size > 0 ? [...referenced].map((n) => target(n)) : [target("t")],

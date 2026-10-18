@@ -50,20 +50,13 @@ export interface ConditionalConfig {
   readonly defaultTarget?: string;
 }
 
-export type StrategyConfig =
-  | SingleConfig
-  | FallbackConfig
-  | LoadBalanceConfig
-  | ConditionalConfig;
+export type StrategyConfig = SingleConfig | FallbackConfig | LoadBalanceConfig | ConditionalConfig;
 
 /**
  * Create a routing strategy from its mode and typed config. Strategies only
  * order targets; core/executor.ts runs them (per-target retry lives there).
  */
-export function createStrategy(
-  mode: StrategyMode,
-  config: StrategyConfig,
-): IStrategy {
+export function createStrategy(mode: StrategyMode, config: StrategyConfig): IStrategy {
   switch (mode) {
     case "single":
       return new SingleStrategy(config as SingleConfig);

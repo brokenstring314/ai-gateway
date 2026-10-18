@@ -10,7 +10,10 @@ beforeAll(async () => {
   up = startMockUpstream("a");
   gw = await startGateway({ config: baseConfig([{ name: "a", mock: up }]) });
 });
-afterAll(async () => { await gw?.stop(); up?.stop(); });
+afterAll(async () => {
+  await gw?.stop();
+  up?.stop();
+});
 beforeEach(() => up.reset());
 
 // T3-7 (fixed in 2.6): text_completion shape, snake_case params forwarded.

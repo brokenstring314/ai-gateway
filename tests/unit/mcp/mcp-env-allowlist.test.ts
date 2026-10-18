@@ -20,8 +20,10 @@ describe("S3-3 MCP subprocess env", () => {
     const out = await new Response(proc.stdout as ReadableStream).text();
     expect(out).toContain("ONLY_THIS=1");
     expect(out).toContain("PATH=");
-    expect({ bootstrapLeaked: out.includes("bootstrap-SECRET-123"), providerKeyLeaked: out.includes("sk-OPERATOR-SECRET") })
-      .toEqual({ bootstrapLeaked: false, providerKeyLeaked: false });
+    expect({
+      bootstrapLeaked: out.includes("bootstrap-SECRET-123"),
+      providerKeyLeaked: out.includes("sk-OPERATOR-SECRET"),
+    }).toEqual({ bootstrapLeaked: false, providerKeyLeaked: false });
   });
 
   it("allowlist + config.env; config.env wins", () => {

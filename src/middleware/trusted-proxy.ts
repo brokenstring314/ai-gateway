@@ -55,11 +55,7 @@ export function ipInCidr(ip: string, cidr: string): boolean {
  * X-Forwarded-For wins and its leftmost (trimmed) hop is returned; falling
  * back to X-Real-IP, then the remote address itself.
  */
-export function resolveClientIp(
-  remoteAddress: string,
-  headers: HeaderMap,
-  trustedProxies: readonly string[],
-): string {
+export function resolveClientIp(remoteAddress: string, headers: HeaderMap, trustedProxies: readonly string[]): string {
   const isTrusted = trustedProxies.some((cidr) => ipInCidr(remoteAddress, cidr));
   if (!isTrusted) return remoteAddress;
 
@@ -119,9 +115,7 @@ function parseIpv6(ip: string): ParsedIp | null {
 
   const head = compressionParts[0] === "" ? [] : (compressionParts[0] ?? "").split(":");
   const tail =
-    compressionParts.length === 2 && compressionParts[1] !== ""
-      ? (compressionParts[1] ?? "").split(":")
-      : [];
+    compressionParts.length === 2 && compressionParts[1] !== "" ? (compressionParts[1] ?? "").split(":") : [];
 
   const headValues = parseHexGroups(head);
   const tailValues = parseHexGroups(tail);

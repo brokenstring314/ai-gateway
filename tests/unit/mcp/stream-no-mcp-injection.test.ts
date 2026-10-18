@@ -8,15 +8,26 @@ import { createApp } from "@/app";
 import type { GatewayConfig } from "@/config/types";
 
 const SERVER = join(import.meta.dir, "fixtures", "mcp-echo-server.cjs");
-const mcpServers = [{ name: "echo", command: "node", args: [SERVER], timeoutSeconds: 5, maxCallDepth: 2, required: false }];
+const mcpServers = [
+  { name: "echo", command: "node", args: [SERVER], timeoutSeconds: 5, maxCallDepth: 2, required: false },
+];
 
 let cleanup: (() => void)[] = [];
-afterEach(() => { cleanup.forEach((f) => f()); cleanup = []; });
+afterEach(() => {
+  cleanup.forEach((f) => f());
+  cleanup = [];
+});
 
 function startUpstream() {
   const bodies: Record<string, unknown>[] = [];
   const events = [
-    { id: "c", object: "chat.completion.chunk", created: 1, model: "gpt-4o", choices: [{ index: 0, delta: { role: "assistant", content: "hi" }, finish_reason: "stop" }] },
+    {
+      id: "c",
+      object: "chat.completion.chunk",
+      created: 1,
+      model: "gpt-4o",
+      choices: [{ index: 0, delta: { role: "assistant", content: "hi" }, finish_reason: "stop" }],
+    },
   ];
   const server = Bun.serve({
     port: 0,
@@ -28,9 +39,14 @@ function startUpstream() {
         const text = events.map((e) => `data: ${JSON.stringify(e)}\n\n`).join("") + "data: [DONE]\n\n";
         return new Response(text, { headers: { "Content-Type": "text/event-stream" } });
       }
-      return Response.json({ id: "x", object: "chat.completion", created: 1, model: "gpt-4o",
+      return Response.json({
+        id: "x",
+        object: "chat.completion",
+        created: 1,
+        model: "gpt-4o",
         choices: [{ index: 0, message: { role: "assistant", content: "ok" }, finish_reason: "stop" }],
-        usage: { prompt_tokens: 1, completion_tokens: 1, total_tokens: 2 } });
+        usage: { prompt_tokens: 1, completion_tokens: 1, total_tokens: 2 },
+      });
     },
   });
   return { bodies, url: `http://127.0.0.1:${server.port}/v1`, stop: () => server.stop(true) };
@@ -53,8 +69,11 @@ describe("N10 MCP tools on streaming requests", () => {
     const { gw, app } = gateway(up.url);
     cleanup.push(up.stop, () => gw.close());
     await gw.initMcp();
-    const r = await app.request("/v1/chat/completions", { method: "POST", headers: { "content-type": "application/json" },
-      body: JSON.stringify({ model: "gpt-4o", stream: true, messages: [{ role: "user", content: "x" }] }) });
+    const r = await app.request("/v1/chat/completions", {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ model: "gpt-4o", stream: true, messages: [{ role: "user", content: "x" }] }),
+    });
     expect(r.status).toBe(200);
     expect(await r.text()).toContain("[DONE]");
     expect(up.bodies[0]?.["tools"]).toBeUndefined();
@@ -65,8 +84,11 @@ describe("N10 MCP tools on streaming requests", () => {
     const { gw, app } = gateway(up.url);
     cleanup.push(up.stop, () => gw.close());
     await gw.initMcp();
-    const r = await app.request("/v1/chat/completions", { method: "POST", headers: { "content-type": "application/json" },
-      body: JSON.stringify({ model: "gpt-4o", messages: [{ role: "user", content: "x" }] }) });
+    const r = await app.request("/v1/chat/completions", {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ model: "gpt-4o", messages: [{ role: "user", content: "x" }] }),
+    });
     expect(r.status).toBe(200);
     const tools = up.bodies[0]?.["tools"] as { function: { name: string } }[] | undefined;
     expect(tools?.[0]?.function.name).toBe("echo");

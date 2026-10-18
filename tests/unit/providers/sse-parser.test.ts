@@ -26,10 +26,7 @@ async function collectStreamChunks(input: string, signal?: AbortSignal, terminat
 }
 
 /** Helper: create a ReadableStream that yields bytes in multiple chunks. */
-async function collectFromChunks(
-  chunks: string[],
-  signal?: AbortSignal,
-): Promise<StreamChunk[]> {
+async function collectFromChunks(chunks: string[], signal?: AbortSignal): Promise<StreamChunk[]> {
   chunks = [...chunks, "data: [DONE]\n\n"];
   const encoder = new TextEncoder();
   let closed = false;
@@ -108,7 +105,8 @@ describe("parseSSEStream", () => {
 
   it("handles partial reads across chunks", async () => {
     const part1 = 'data: {"id":"chat-1","object":"chat.com';
-    const part2 = 'pletion.chunk","created":1234,"model":"gpt-4","choices":[{"index":0,"delta":{"content":"Hello"},"finish_reason":null}]}\n\n';
+    const part2 =
+      'pletion.chunk","created":1234,"model":"gpt-4","choices":[{"index":0,"delta":{"content":"Hello"},"finish_reason":null}]}\n\n';
 
     const chunks = await collectFromChunks([part1, part2]);
     expect(chunks).toHaveLength(1);
@@ -116,7 +114,8 @@ describe("parseSSEStream", () => {
   });
 
   it("handles partial lines across chunks", async () => {
-    const part1 = 'data: {"id":"chat-1","object":"chat.completion.chunk","created":1234,"model":"gpt-4","choices":[{"index":0,"delta":{"content":"He';
+    const part1 =
+      'data: {"id":"chat-1","object":"chat.completion.chunk","created":1234,"model":"gpt-4","choices":[{"index":0,"delta":{"content":"He';
     const part2 = 'llo"},"finish_reason":null}]}\n\n';
 
     const chunks = await collectFromChunks([part1, part2]);
@@ -133,9 +132,7 @@ describe("parseSSEStream", () => {
     const prefix = encoder.encode(
       'data: {"id":"chat-1","object":"chat.completion.chunk","created":1234,"model":"gpt-4","choices":[{"index":0,"delta":{"content":"',
     );
-    const suffix = encoder.encode(
-      '"},"finish_reason":"stop"}]}\n\n',
-    );
+    const suffix = encoder.encode('"},"finish_reason":"stop"}]}\n\n');
 
     // Split the 4-byte character between two chunks.
     const chunk1 = new Uint8Array(prefix.length + 2);
@@ -173,7 +170,10 @@ describe("parseSSEStream", () => {
     controller.abort();
     const chunks: unknown[] = [];
     const err = await collectStreamChunks(input, controller.signal).then(
-      (c) => { chunks.push(...c); return undefined; },
+      (c) => {
+        chunks.push(...c);
+        return undefined;
+      },
       (e: unknown) => e,
     );
     expect(chunks).toHaveLength(0);
@@ -210,7 +210,10 @@ describe("parseSSEStream", () => {
       "\n",
     ].join("");
 
-    const err = await collectStreamChunks(input).then(() => null, (e: unknown) => e);
+    const err = await collectStreamChunks(input).then(
+      () => null,
+      (e: unknown) => e,
+    );
     expect(err).toBeInstanceOf(ReadableStreamError);
     expect((err as ReadableStreamError).code).toBe("upstream_invalid_response");
   });
@@ -241,7 +244,10 @@ describe("parseSSEStream", () => {
   });
 
   it("an empty stream (EOF, no events) is an error (T3-5)", async () => {
-    const err = await collectStreamChunks("", undefined, false).then(() => null, (e: unknown) => e);
+    const err = await collectStreamChunks("", undefined, false).then(
+      () => null,
+      (e: unknown) => e,
+    );
     expect((err as ReadableStreamError).code).toBe("upstream_empty_stream");
   });
 });

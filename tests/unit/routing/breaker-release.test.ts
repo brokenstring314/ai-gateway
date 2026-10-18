@@ -57,7 +57,8 @@ describe("CircuitBreaker.release", () => {
 
 describe("breaker outcome helpers", () => {
   it("counts only health-related errors", () => {
-    for (const s of [0, 401, 403, 408, 429, 500, 502, 503, 504]) expect(isBreakerFailure(new ProviderError("a", s, "x"))).toBe(true);
+    for (const s of [0, 401, 403, 408, 429, 500, 502, 503, 504])
+      expect(isBreakerFailure(new ProviderError("a", s, "x"))).toBe(true);
     for (const s of [400, 404, 409, 413, 422]) expect(isBreakerFailure(new ProviderError("a", s, "x"))).toBe(false);
     expect(isBreakerFailure(new Error("socket hang up"))).toBe(true);
   });

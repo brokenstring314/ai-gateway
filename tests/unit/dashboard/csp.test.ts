@@ -30,7 +30,12 @@ describe("dashboard CSP and server-rendered pages", () => {
 
   it("sets the exact CSP on pages and assets", async () => {
     const expected = "default-src 'self'; script-src 'self'; style-src 'self'";
-    for (const path of ["/admin/dashboard", "/admin/dashboard/login", "/admin/static/style.css", "/admin/static/dashboard.js"]) {
+    for (const path of [
+      "/admin/dashboard",
+      "/admin/dashboard/login",
+      "/admin/static/style.css",
+      "/admin/static/dashboard.js",
+    ]) {
       expect((await app.request(path)).headers.get("Content-Security-Policy")).toBe(expected);
     }
   });

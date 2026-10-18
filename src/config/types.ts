@@ -6,15 +6,7 @@ import type { StrategyMode } from "../routing/types.js";
 import type { Stage } from "../plugins/types.js";
 
 /** Plugin type categories, mirroring the Go plugin.PluginType values. */
-export type PluginType =
-  | "guardrail"
-  | "auth"
-  | "ratelimit"
-  | "transform"
-  | "logging"
-  | "metrics"
-  | "cache"
-  | "unknown";
+export type PluginType = "guardrail" | "auth" | "ratelimit" | "transform" | "logging" | "metrics" | "cache" | "unknown";
 
 export interface RetryConfig {
   attempts?: number;

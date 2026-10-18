@@ -14,8 +14,7 @@ describe("LoadBalanceStrategy", () => {
   it("picks a target weighted by weight", () => {
     const a = createMockProvider("a");
     const b = createMockProvider("b");
-    const lookup = (name: string) =>
-      name === "a" ? a : name === "b" ? b : undefined;
+    const lookup = (name: string) => (name === "a" ? a : name === "b" ? b : undefined);
 
     const strategy = boundLoadBalance(lookup, {
       targets: [
@@ -33,8 +32,7 @@ describe("LoadBalanceStrategy", () => {
   it("returns all targets in selectTargets with weight-ordered shuffle", () => {
     const a = createMockProvider("a");
     const b = createMockProvider("b");
-    const lookup = (name: string) =>
-      name === "a" ? a : name === "b" ? b : undefined;
+    const lookup = (name: string) => (name === "a" ? a : name === "b" ? b : undefined);
 
     const strategy = boundLoadBalance(lookup, {
       targets: [
@@ -53,8 +51,7 @@ describe("LoadBalanceStrategy", () => {
   it("executes through the picked provider", async () => {
     const a = createMockProvider("a");
     const b = createMockProvider("b");
-    const lookup = (name: string) =>
-      name === "a" ? a : name === "b" ? b : undefined;
+    const lookup = (name: string) => (name === "a" ? a : name === "b" ? b : undefined);
 
     const strategy = boundLoadBalance(lookup, {
       targets: [
@@ -71,8 +68,7 @@ describe("LoadBalanceStrategy", () => {
   it("streams through the picked provider", async () => {
     const a = createStreamMockProvider("a");
     const b = createStreamMockProvider("b");
-    const lookup = (name: string) =>
-      name === "a" ? a : name === "b" ? b : undefined;
+    const lookup = (name: string) => (name === "a" ? a : name === "b" ? b : undefined);
 
     const strategy = boundLoadBalance(lookup, {
       targets: [

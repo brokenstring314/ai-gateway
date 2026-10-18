@@ -14,13 +14,20 @@ const cb = { failureThreshold: 1, timeoutMs: 60_000 };
 
 describe("/readyz vs open breakers", () => {
   it("fallback serving fine with primary breaker OPEN -> readyz 200, state in body", async () => {
-    const { g } = mk({ strategy: { mode: "fallback", targets: ["primary", "backup"] }, targets: [
-      tgt("primary", { circuitBreaker: cb }), tgt("backup")] }, ["primary", "backup"], { primary: "fail", backup: "ok" });
+    const { g } = mk(
+      {
+        strategy: { mode: "fallback", targets: ["primary", "backup"] },
+        targets: [tgt("primary", { circuitBreaker: cb }), tgt("backup")],
+      },
+      ["primary", "backup"],
+      { primary: "fail", backup: "ok" },
+    );
     const results: string[] = [];
     for (let i = 0; i < 5; i++) results.push(await code(g.route({} as any, req)));
-    const app = new Hono(); registerReadinessHandler(app as any, g);
+    const app = new Hono();
+    registerReadinessHandler(app as any, g);
     const r = await app.request("/readyz");
-    const body = await r.json() as any;
+    const body = (await r.json()) as any;
     expect(results.every((x) => x === "ok:backup")).toBe(true);
     expect(r.status).toBe(200);
     expect(body.circuitBreakers).toEqual({ primary: "OPEN" });
@@ -28,12 +35,19 @@ describe("/readyz vs open breakers", () => {
   });
 
   it("every target OPEN -> still ready (pulling pods cannot fix an upstream), upstreamAvailable=false", async () => {
-    const { g } = mk({ strategy: { mode: "fallback", targets: ["a", "b"] }, targets: [
-      tgt("a", { circuitBreaker: cb }), tgt("b", { circuitBreaker: cb })] }, ["a", "b"], { a: "fail", b: "fail" });
+    const { g } = mk(
+      {
+        strategy: { mode: "fallback", targets: ["a", "b"] },
+        targets: [tgt("a", { circuitBreaker: cb }), tgt("b", { circuitBreaker: cb })],
+      },
+      ["a", "b"],
+      { a: "fail", b: "fail" },
+    );
     await code(g.route({} as any, req));
-    const app = new Hono(); registerReadinessHandler(app as any, g);
+    const app = new Hono();
+    registerReadinessHandler(app as any, g);
     const r = await app.request("/readyz");
-    const body = await r.json() as any;
+    const body = (await r.json()) as any;
     expect(r.status).toBe(200);
     expect(body.upstreamAvailable).toBe(false);
   });

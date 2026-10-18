@@ -87,7 +87,11 @@ export class Gateway {
   }
 
   /** A chat-shaped surface (chat, completions) streamed through the pipeline. */
-  executeStream(surface: ChatShapedSurface, req: ChatCompletionRequest, ctx: RequestContext): AsyncGenerator<StreamChunk> {
+  executeStream(
+    surface: ChatShapedSurface,
+    req: ChatCompletionRequest,
+    ctx: RequestContext,
+  ): AsyncGenerator<StreamChunk> {
     return this.pipeline.executeStream(surface, req, ctx);
   }
 
@@ -107,7 +111,11 @@ export class Gateway {
    * body text when a plugin capped its token limit (S3-6), else undefined.
    * See core/surfaces/passthrough.ts.
    */
-  async runPassthroughBeforePlugins(ctx: RequestContext, bodyText: string | undefined, path = ""): Promise<string | undefined> {
+  async runPassthroughBeforePlugins(
+    ctx: RequestContext,
+    bodyText: string | undefined,
+    path = "",
+  ): Promise<string | undefined> {
     return runPassthroughBefore(this.pipeline, ctx, bodyText, path);
   }
 

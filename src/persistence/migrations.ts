@@ -55,20 +55,14 @@ function validateSteps(steps: MigrationStep[]): void {
     const step = steps[i]!;
 
     if (step.version < 1) {
-      throw new MigrationError(
-        `Step "${step.name}" has version ${step.version}; versions must be >= 1`,
-      );
+      throw new MigrationError(`Step "${step.name}" has version ${step.version}; versions must be >= 1`);
     }
 
     if (step.name.trim() === "") {
-      throw new MigrationError(
-        `Step version ${step.version} has an empty name`,
-      );
+      throw new MigrationError(`Step version ${step.version} has an empty name`);
     }
 
-    const actionCount = [step.sql, step.fn, step.noTx].filter(
-      (v) => v !== undefined,
-    ).length;
+    const actionCount = [step.sql, step.fn, step.noTx].filter((v) => v !== undefined).length;
 
     if (actionCount === 0) {
       throw new MigrationError(
@@ -105,20 +99,16 @@ function ensureLedger(db: Database, ledger: string): void {
 }
 
 function appliedVersions(db: Database, ledger: string): Set<number> {
-  const rows = db
-    .query(`SELECT version FROM ${ledger} ORDER BY version`)
-    .all() as Array<{ version: number }>;
+  const rows = db.query(`SELECT version FROM ${ledger} ORDER BY version`).all() as Array<{ version: number }>;
   return new Set(rows.map((r) => r.version));
 }
 
-function recordStep(
-  db: Database,
-  ledger: string,
-  step: MigrationStep,
-): void {
-  db.prepare(
-    `INSERT INTO ${ledger} (version, name, applied_at) VALUES (?, ?, ?)`,
-  ).run(step.version, step.name, new Date().toISOString());
+function recordStep(db: Database, ledger: string, step: MigrationStep): void {
+  db.prepare(`INSERT INTO ${ledger} (version, name, applied_at) VALUES (?, ?, ?)`).run(
+    step.version,
+    step.name,
+    new Date().toISOString(),
+  );
 }
 
 // ---------------------------------------------------------------------------
@@ -129,9 +119,7 @@ function checkNotAhead(applied: Set<number>, steps: MigrationStep[]): void {
   const knownVersions = new Set(steps.map((s) => s.version));
   for (const v of applied) {
     if (!knownVersions.has(v)) {
-      throw new MigrationError(
-        `Database has applied version ${v} which this build does not know; refusing to run`,
-      );
+      throw new MigrationError(`Database has applied version ${v} which this build does not know; refusing to run`);
     }
   }
 }
@@ -151,9 +139,9 @@ function tryBaselineAdoption(
     return applied;
   }
 
-  const row = db
-    .query(`SELECT name FROM sqlite_master WHERE type='table' AND name=?`)
-    .get(primaryTable) as { name: string } | null;
+  const row = db.query(`SELECT name FROM sqlite_master WHERE type='table' AND name=?`).get(primaryTable) as {
+    name: string;
+  } | null;
 
   if (row !== null) {
     const first = steps[0]!;
@@ -168,11 +156,7 @@ function tryBaselineAdoption(
 // Step application
 // ---------------------------------------------------------------------------
 
-async function applyStep(
-  db: Database,
-  ledger: string,
-  step: MigrationStep,
-): Promise<boolean> {
+async function applyStep(db: Database, ledger: string, step: MigrationStep): Promise<boolean> {
   try {
     if (step.noTx) {
       await step.noTx(db);
@@ -218,11 +202,7 @@ async function applyStep(
  * Apply every step whose version is not yet recorded, in ascending order.
  * Safe to call on every process start.
  */
-export async function runMigrations(
-  db: Database,
-  steps: MigrationStep[],
-  options?: MigrationOptions,
-): Promise<void> {
+export async function runMigrations(db: Database, steps: MigrationStep[], options?: MigrationOptions): Promise<void> {
   const ledger = options?.ledger ?? "schema_migrations";
 
   validateSteps(steps);
@@ -230,13 +210,7 @@ export async function runMigrations(
 
   let applied = appliedVersions(db, ledger);
   checkNotAhead(applied, steps);
-  applied = tryBaselineAdoption(
-    db,
-    ledger,
-    steps,
-    applied,
-    options?.primaryTable,
-  );
+  applied = tryBaselineAdoption(db, ledger, steps, applied, options?.primaryTable);
 
   for (const step of steps) {
     if (applied.has(step.version)) {

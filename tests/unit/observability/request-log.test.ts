@@ -36,7 +36,10 @@ describe("RequestLogger file output", () => {
     // Fire-and-forget, as the gateway does.
     for (let i = 0; i < 50; i++) void logger.logRequest(entry(`r${i}`));
     await logger.close();
-    const ids = readFileSync(path, "utf8").trim().split("\n").map((l) => JSON.parse(l).requestId);
+    const ids = readFileSync(path, "utf8")
+      .trim()
+      .split("\n")
+      .map((l) => JSON.parse(l).requestId);
     expect(ids).toEqual(Array.from({ length: 50 }, (_, i) => `r${i}`));
   });
 

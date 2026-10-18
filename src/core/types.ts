@@ -115,7 +115,11 @@ export type FinalizeOutcome<Res> =
       readonly kind: "error";
       readonly error: unknown;
       readonly target?: string;
-      readonly partial?: { readonly response: ChatCompletionResponse; readonly usage: Usage; readonly usageEstimated?: boolean };
+      readonly partial?: {
+        readonly response: ChatCompletionResponse;
+        readonly usage: Usage;
+        readonly usageEstimated?: boolean;
+      };
     }
   | { readonly kind: "rejected"; readonly error: unknown; readonly plugin: string }
   | { readonly kind: "short_circuit"; readonly value: Res; readonly plugin: string };

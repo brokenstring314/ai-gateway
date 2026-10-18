@@ -12,11 +12,7 @@ import { describe, it, expect, vi, beforeEach } from "bun:test";
 import { Hono } from "hono";
 import type { AppEnv } from "@/app";
 import type { Gateway } from "@/gateway";
-import type {
-  ChatCompletionResponse,
-  RequestContext,
-  StreamChunk,
-} from "@/providers/types";
+import type { ChatCompletionResponse, RequestContext, StreamChunk } from "@/providers/types";
 
 // ---------------------------------------------------------------------------
 // Helpers
@@ -29,9 +25,7 @@ function makeResponse(overrides?: Partial<ChatCompletionResponse>): ChatCompleti
     created: Date.now(),
     model: "gpt-4",
     provider: "test",
-    choices: [
-      { index: 0, message: { role: "assistant", content: "hi" }, finishReason: "stop" },
-    ],
+    choices: [{ index: 0, message: { role: "assistant", content: "hi" }, finishReason: "stop" }],
     usage: { promptTokens: 5, completionTokens: 3, totalTokens: 8 },
     ...overrides,
   };
@@ -47,9 +41,7 @@ function makeChunk(overrides?: Partial<StreamChunk>): StreamChunk {
     object: "chat.completion.chunk",
     created: Date.now(),
     model: "gpt-4",
-    choices: [
-      { index: 0, delta: { role: "assistant", content: "hi" }, finishReason: "stop" },
-    ],
+    choices: [{ index: 0, delta: { role: "assistant", content: "hi" }, finishReason: "stop" }],
     ...overrides,
   };
 }
@@ -88,9 +80,11 @@ describe("Upstream response-header forwarding", () => {
 
   it("forwards x-ratelimit-remaining from the provider response", async () => {
     const mockGateway = createMockGateway({
-      route: vi.fn().mockResolvedValue(makeResponse({
-        upstreamHeaders: { "x-ratelimit-remaining": "42" },
-      })),
+      route: vi.fn().mockResolvedValue(
+        makeResponse({
+          upstreamHeaders: { "x-ratelimit-remaining": "42" },
+        }),
+      ),
     } as unknown as Gateway);
 
     const { registerChatHandler } = await import("@/handlers/chat");
@@ -103,9 +97,11 @@ describe("Upstream response-header forwarding", () => {
 
   it("forwards x-request-id from the provider response", async () => {
     const mockGateway = createMockGateway({
-      route: vi.fn().mockResolvedValue(makeResponse({
-        upstreamHeaders: { "x-request-id": "req_abc123" },
-      })),
+      route: vi.fn().mockResolvedValue(
+        makeResponse({
+          upstreamHeaders: { "x-request-id": "req_abc123" },
+        }),
+      ),
     } as unknown as Gateway);
 
     const { registerChatHandler } = await import("@/handlers/chat");
@@ -117,9 +113,11 @@ describe("Upstream response-header forwarding", () => {
 
   it("forwards retry-after from the provider response", async () => {
     const mockGateway = createMockGateway({
-      route: vi.fn().mockResolvedValue(makeResponse({
-        upstreamHeaders: { "retry-after": "30" },
-      })),
+      route: vi.fn().mockResolvedValue(
+        makeResponse({
+          upstreamHeaders: { "retry-after": "30" },
+        }),
+      ),
     } as unknown as Gateway);
 
     const { registerChatHandler } = await import("@/handlers/chat");
@@ -131,14 +129,16 @@ describe("Upstream response-header forwarding", () => {
 
   it("never forwards hop-by-hop headers", async () => {
     const mockGateway = createMockGateway({
-      route: vi.fn().mockResolvedValue(makeResponse({
-        upstreamHeaders: {
-          "connection": "keep-alive",
-          "transfer-encoding": "chunked",
-          "keep-alive": "timeout=5",
-          "x-ratelimit-remaining": "7",
-        },
-      })),
+      route: vi.fn().mockResolvedValue(
+        makeResponse({
+          upstreamHeaders: {
+            connection: "keep-alive",
+            "transfer-encoding": "chunked",
+            "keep-alive": "timeout=5",
+            "x-ratelimit-remaining": "7",
+          },
+        }),
+      ),
     } as unknown as Gateway);
 
     const { registerChatHandler } = await import("@/handlers/chat");
@@ -153,14 +153,16 @@ describe("Upstream response-header forwarding", () => {
 
   it("does not forward headers outside the fixed whitelist", async () => {
     const mockGateway = createMockGateway({
-      route: vi.fn().mockResolvedValue(makeResponse({
-        upstreamHeaders: {
-          "x-custom-header": "leak-me",
-          "server": "nginx",
-          "x-ratelimit-used": "3",
-          "x-ratelimit-remaining": "11",
-        },
-      })),
+      route: vi.fn().mockResolvedValue(
+        makeResponse({
+          upstreamHeaders: {
+            "x-custom-header": "leak-me",
+            server: "nginx",
+            "x-ratelimit-used": "3",
+            "x-ratelimit-remaining": "11",
+          },
+        }),
+      ),
     } as unknown as Gateway);
 
     const { registerChatHandler } = await import("@/handlers/chat");
@@ -244,9 +246,11 @@ describe("Upstream response-header forwarding", () => {
 
   it("does not leak upstream headers into the JSON response body", async () => {
     const mockGateway = createMockGateway({
-      route: vi.fn().mockResolvedValue(makeResponse({
-        upstreamHeaders: { "x-ratelimit-remaining": "42" },
-      })),
+      route: vi.fn().mockResolvedValue(
+        makeResponse({
+          upstreamHeaders: { "x-ratelimit-remaining": "42" },
+        }),
+      ),
     } as unknown as Gateway);
 
     const { registerChatHandler } = await import("@/handlers/chat");
@@ -260,9 +264,11 @@ describe("Upstream response-header forwarding", () => {
 
   it("keeps existing response body and gateway headers intact when forwarding", async () => {
     const mockGateway = createMockGateway({
-      route: vi.fn().mockResolvedValue(makeResponse({
-        upstreamHeaders: { "x-request-id": "req_1" },
-      })),
+      route: vi.fn().mockResolvedValue(
+        makeResponse({
+          upstreamHeaders: { "x-request-id": "req_1" },
+        }),
+      ),
     } as unknown as Gateway);
 
     const { registerChatHandler } = await import("@/handlers/chat");

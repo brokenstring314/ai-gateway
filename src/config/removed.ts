@@ -93,7 +93,12 @@ export function resolveStrategyMode(mode: string): "single" | "fallback" | "load
   if (hint !== undefined) throw new Error(hint);
   const alias = DEPRECATED_STRATEGY_MODES[canonical];
   if (alias !== undefined) return alias;
-  if (canonical === "single" || canonical === "fallback" || canonical === "loadbalance" || canonical === "conditional") {
+  if (
+    canonical === "single" ||
+    canonical === "fallback" ||
+    canonical === "loadbalance" ||
+    canonical === "conditional"
+  ) {
     return canonical;
   }
   throw new Error(`unknown strategy mode "${mode}"; expected one of single, fallback, loadbalance, conditional`);

@@ -5,7 +5,10 @@ import { Gateway } from "@/gateway";
 import { createApp } from "@/app";
 
 let stops: (() => void)[] = [];
-afterEach(() => { for (const s of stops) s(); stops = []; });
+afterEach(() => {
+  for (const s of stops) s();
+  stops = [];
+});
 
 function upstream(handler: (path: string, body: any, req: Request) => Response | Promise<Response>) {
   const bodies: { path: string; body: any }[] = [];
@@ -24,15 +27,31 @@ function upstream(handler: (path: string, body: any, req: Request) => Response |
 }
 
 function app(baseURL: string) {
-  const cfg: any = { auth: { enabled: false }, strategy: { mode: "single", targets: ["a"] }, targets: [{ name: "a", provider: "openai", apiKey: "k", baseURL, models: ["e", "dall-e-3"] }] };
+  const cfg: any = {
+    auth: { enabled: false },
+    strategy: { mode: "single", targets: ["a"] },
+    targets: [{ name: "a", provider: "openai", apiKey: "k", baseURL, models: ["e", "dall-e-3"] }],
+  };
   return createApp(new Gateway(cfg), cfg);
 }
 const post = (a: ReturnType<typeof app>, path: string, body: unknown, init: RequestInit = {}) =>
-  a.request(path, { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify(body), ...init });
+  a.request(path, {
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify(body),
+    ...init,
+  });
 
 describe("embeddings / images parameters", () => {
   it("encoding_format reaches upstream; a base64 embedding is passed through", async () => {
-    const up = upstream(() => Response.json({ object: "list", model: "e", data: [{ object: "embedding", index: 0, embedding: "AACAPw==" }], usage: { prompt_tokens: 1, total_tokens: 1 } }));
+    const up = upstream(() =>
+      Response.json({
+        object: "list",
+        model: "e",
+        data: [{ object: "embedding", index: 0, embedding: "AACAPw==" }],
+        usage: { prompt_tokens: 1, total_tokens: 1 },
+      }),
+    );
     const r = await post(app(up.url), "/v1/embeddings", { model: "e", input: "x", encoding_format: "base64" });
     expect(r.status).toBe(200);
     expect(up.bodies[0]?.body.encoding_format).toBe("base64");
@@ -42,24 +61,39 @@ describe("embeddings / images parameters", () => {
 
   it("invalid encoding_format is a 400", async () => {
     const up = upstream(() => Response.json({}));
-    expect((await post(app(up.url), "/v1/embeddings", { model: "e", input: "x", encoding_format: "int8" })).status).toBe(400);
+    expect(
+      (await post(app(up.url), "/v1/embeddings", { model: "e", input: "x", encoding_format: "int8" })).status,
+    ).toBe(400);
     expect(up.bodies.length).toBe(0);
   });
 
   it("images quality and style reach upstream", async () => {
     const up = upstream(() => Response.json({ created: 1, data: [{ url: "https://x/y.png" }] }));
-    const r = await post(app(up.url), "/v1/images/generations", { model: "dall-e-3", prompt: "cat", quality: "hd", style: "natural" });
+    const r = await post(app(up.url), "/v1/images/generations", {
+      model: "dall-e-3",
+      prompt: "cat",
+      quality: "hd",
+      style: "natural",
+    });
     expect(r.status).toBe(200);
     expect(up.bodies[0]?.body).toMatchObject({ quality: "hd", style: "natural" });
   });
 
   it("client disconnect aborts the upstream embeddings request", async () => {
     let upstreamAborted = false;
-    const up = upstream((_p, _b, req) => new Promise<Response>((resolve) => {
-      req.signal.addEventListener("abort", () => { upstreamAborted = true; resolve(new Response("gone", { status: 499 })); });
-    }));
+    const up = upstream(
+      (_p, _b, req) =>
+        new Promise<Response>((resolve) => {
+          req.signal.addEventListener("abort", () => {
+            upstreamAborted = true;
+            resolve(new Response("gone", { status: 499 }));
+          });
+        }),
+    );
     const client = new AbortController();
-    const pending = Promise.resolve(post(app(up.url), "/v1/embeddings", { model: "e", input: "x" }, { signal: client.signal })).catch(() => undefined);
+    const pending = Promise.resolve(
+      post(app(up.url), "/v1/embeddings", { model: "e", input: "x" }, { signal: client.signal }),
+    ).catch(() => undefined);
     await Bun.sleep(50);
     client.abort();
     await pending;

@@ -19,7 +19,11 @@ describe("ops", () => {
     gw = await startGateway({
       config: baseConfig(
         [
-          { name: "a", mock: a, extra: { circuitBreaker: { failureThreshold: 1, successThreshold: 1, timeoutMs: 60_000 } } },
+          {
+            name: "a",
+            mock: a,
+            extra: { circuitBreaker: { failureThreshold: 1, successThreshold: 1, timeoutMs: 60_000 } },
+          },
           { name: "b", mock: b },
         ],
         { cors: { enabled: true, origins: ["https://app.example.com"] } },
@@ -30,7 +34,11 @@ describe("ops", () => {
     await gw.client().chat.completions.create({ model: "gpt-4o", messages: [{ role: "user", content: "hi" }] });
     await gw.client().chat.completions.create({ model: "gpt-4o", messages: [{ role: "user", content: "hi" }] });
   });
-  afterAll(async () => { await gw?.stop(); a?.stop(); b?.stop(); });
+  afterAll(async () => {
+    await gw?.stop();
+    a?.stop();
+    b?.stop();
+  });
 
   it("/metrics is public and has request series", async () => {
     const r = await gw.fetch("/metrics", { auth: null });
@@ -55,11 +63,16 @@ describe("ops", () => {
   });
 
   it("CORS preflight allows the openai SDK's x-stainless-* headers (B3-8)", async () => {
-    const requested = "authorization,content-type,x-stainless-arch,x-stainless-lang,x-stainless-os,x-stainless-package-version,x-stainless-retry-count,x-stainless-runtime,x-stainless-runtime-version";
+    const requested =
+      "authorization,content-type,x-stainless-arch,x-stainless-lang,x-stainless-os,x-stainless-package-version,x-stainless-retry-count,x-stainless-runtime,x-stainless-runtime-version";
     const r = await gw.fetch("/v1/chat/completions", {
       method: "OPTIONS",
       auth: null,
-      headers: { Origin: "https://app.example.com", "Access-Control-Request-Method": "POST", "Access-Control-Request-Headers": requested },
+      headers: {
+        Origin: "https://app.example.com",
+        "Access-Control-Request-Method": "POST",
+        "Access-Control-Request-Headers": requested,
+      },
     });
     expect(r.status).toBeLessThan(300);
     const allowed = (r.headers.get("access-control-allow-headers") ?? "").toLowerCase().split(/\s*,\s*/);
@@ -77,10 +90,15 @@ describe("graceful shutdown (one request in flight)", () => {
     // requestTimeout well past the drain grace (SHUTDOWN_GRACE_MS=3000 in the harness).
     g = await startGateway({ config: baseConfig([{ name: "s", mock: up }], { requestTimeout: "20s" }) });
     up.enqueue("hang"); // keeps one request in flight so the drain window stays open
-    void postJson(g, "/v1/chat/completions", { model: "gpt-4o", messages: [{ role: "user", content: "hi" }] }).catch(() => undefined);
+    void postJson(g, "/v1/chat/completions", { model: "gpt-4o", messages: [{ role: "user", content: "hi" }] }).catch(
+      () => undefined,
+    );
     while (up.requests.length === 0) await Bun.sleep(10);
   });
-  afterAll(async () => { await g?.stop("SIGKILL"); up?.stop(); });
+  afterAll(async () => {
+    await g?.stop("SIGKILL");
+    up?.stop();
+  });
 
   it("after SIGTERM the gateway is not ready at once: /readyz 503 or listener closed; new requests refused", async () => {
     sigtermAt = Date.now();
@@ -90,7 +108,10 @@ describe("graceful shutdown (one request in flight)", () => {
     // connection is as good as a 503 for a load balancer.
     const ready = await g.fetch("/readyz", { auth: null }).catch(() => undefined);
     if (ready) expect(ready.status).toBe(503);
-    const fresh = await postJson(g, "/v1/chat/completions", { model: "gpt-4o", messages: [{ role: "user", content: "hi" }] }).catch(() => undefined);
+    const fresh = await postJson(g, "/v1/chat/completions", {
+      model: "gpt-4o",
+      messages: [{ role: "user", content: "hi" }],
+    }).catch(() => undefined);
     if (fresh) expect(fresh.status).toBe(503);
     expect(g.proc.exitCode).toBeNull(); // still draining the in-flight request
   });

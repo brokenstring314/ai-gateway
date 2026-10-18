@@ -75,7 +75,11 @@ export function createOpenAICompatProvider(opts: OpenAiCompatOptions): OpenAICom
   }));
 
   /** POST a JSON body to `${baseURL}${path}` and return the parsed JSON (throws ProviderError). */
-  async function postJSON(ctx: RequestContext, path: string, body: Record<string, unknown>): Promise<{ raw: Record<string, unknown>; response: Response }> {
+  async function postJSON(
+    ctx: RequestContext,
+    path: string,
+    body: Record<string, unknown>,
+  ): Promise<{ raw: Record<string, unknown>; response: Response }> {
     let response: Response;
     try {
       response = await fetch(`${baseURL}${path}`, {
@@ -85,11 +89,7 @@ export function createOpenAICompatProvider(opts: OpenAiCompatOptions): OpenAICom
         signal: ctx.signal ?? null,
       });
     } catch (err) {
-      throw new ProviderError(
-        opts.name,
-        0,
-        `fetch failed: ${err instanceof Error ? err.message : String(err)}`,
-      );
+      throw new ProviderError(opts.name, 0, `fetch failed: ${err instanceof Error ? err.message : String(err)}`);
     }
     if (!response.ok) {
       throw await buildErrorFromResponse(opts.name, response, response.headers.get("Retry-After"));
@@ -133,7 +133,11 @@ export function createOpenAICompatProvider(opts: OpenAiCompatOptions): OpenAICom
     async complete(ctx: RequestContext, req: ChatCompletionRequest): Promise<ChatCompletionResponse> {
       const enforced = enforceUnsupportedParams(capabilityKey, req, compatibilityMode, opts.name);
       if (enforced.action === "rejected") {
-        throw new ProviderError(opts.name, 400, enforced.reason.replace(`${opts.name} does not support`, "Unsupported parameters for this model"));
+        throw new ProviderError(
+          opts.name,
+          400,
+          enforced.reason.replace(`${opts.name} does not support`, "Unsupported parameters for this model"),
+        );
       }
       const request = enforced.request;
 
@@ -154,11 +158,7 @@ export function createOpenAICompatProvider(opts: OpenAiCompatOptions): OpenAICom
       } catch (err) {
         // A client/caller abort is not an upstream failure: rethrow as-is.
         if (isAbortError(err) || ctx.signal?.aborted) throw abortErrorFrom(err);
-        throw new ProviderError(
-          opts.name,
-          0,
-          `fetch failed: ${err instanceof Error ? err.message : String(err)}`,
-        );
+        throw new ProviderError(opts.name, 0, `fetch failed: ${err instanceof Error ? err.message : String(err)}`);
       }
 
       if (!response.ok) {
@@ -184,13 +184,14 @@ export function createOpenAICompatProvider(opts: OpenAiCompatOptions): OpenAICom
       return normalized;
     },
 
-    async *completeStream(
-      ctx: RequestContext,
-      req: ChatCompletionRequest,
-    ): AsyncGenerator<StreamChunk> {
+    async *completeStream(ctx: RequestContext, req: ChatCompletionRequest): AsyncGenerator<StreamChunk> {
       const enforced = enforceUnsupportedParams(capabilityKey, req, compatibilityMode, opts.name);
       if (enforced.action === "rejected") {
-        throw new ProviderError(opts.name, 400, enforced.reason.replace(`${opts.name} does not support`, "Unsupported parameters for this model"));
+        throw new ProviderError(
+          opts.name,
+          400,
+          enforced.reason.replace(`${opts.name} does not support`, "Unsupported parameters for this model"),
+        );
       }
 
       const streamReq = { ...enforced.request, stream: true as const };
@@ -211,11 +212,7 @@ export function createOpenAICompatProvider(opts: OpenAiCompatOptions): OpenAICom
       } catch (err) {
         // A client/caller abort is not an upstream failure: rethrow as-is.
         if (isAbortError(err) || ctx.signal?.aborted) throw abortErrorFrom(err);
-        throw new ProviderError(
-          opts.name,
-          0,
-          `fetch failed: ${err instanceof Error ? err.message : String(err)}`,
-        );
+        throw new ProviderError(opts.name, 0, `fetch failed: ${err instanceof Error ? err.message : String(err)}`);
       }
 
       if (!response.ok) {
@@ -429,7 +426,11 @@ function normalizeEmbeddingResponse(
     data: rawData.map((d, i) => ({
       object: String(d["object"] ?? "embedding"),
       // encoding_format "base64": the embedding is a base64 string, passed through as-is.
-      embedding: Array.isArray(d["embedding"]) ? (d["embedding"] as number[]) : typeof d["embedding"] === "string" ? d["embedding"] : [],
+      embedding: Array.isArray(d["embedding"])
+        ? (d["embedding"] as number[])
+        : typeof d["embedding"] === "string"
+          ? d["embedding"]
+          : [],
       index: typeof d["index"] === "number" ? (d["index"] as number) : i,
     })),
     usage: {

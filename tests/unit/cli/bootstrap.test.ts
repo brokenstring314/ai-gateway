@@ -33,7 +33,12 @@ auth: { enabled: true, keys: ["client-key-123"] }
 describe("bootstrap()", () => {
   it("starts the full server: key store, client auth, readiness; stop() drains and closes", async () => {
     const cfg = writeConfig(VALID);
-    running = await bootstrap(cfg, { port: 0, host: "127.0.0.1", dataDir: join(dir!, "data"), installSignalHandlers: false });
+    running = await bootstrap(cfg, {
+      port: 0,
+      host: "127.0.0.1",
+      dataDir: join(dir!, "data"),
+      installSignalHandlers: false,
+    });
     const base = `http://127.0.0.1:${running.server.port}`;
     expect((await fetch(`${base}/readyz`)).status).toBe(200);
     expect((await fetch(`${base}/v1/models`)).status).toBe(401);
@@ -46,16 +51,19 @@ describe("bootstrap()", () => {
 
   it("throws on an invalid config instead of exiting the process", async () => {
     const cfg = writeConfig("strategy: { mode: least_latency }\ntargets: [{ name: a, provider: openai, apiKey: k }]\n");
-    await expect(bootstrap(cfg, { port: 0, dataDir: join(dir!, "data"), installSignalHandlers: false })).rejects.toThrow(
-      /least_latency was removed in 0.2.0/,
-    );
+    await expect(
+      bootstrap(cfg, { port: 0, dataDir: join(dir!, "data"), installSignalHandlers: false }),
+    ).rejects.toThrow(/least_latency was removed in 0.2.0/);
   });
 });
 
 describe("CLI", () => {
   it("parses serve options", () => {
     expect(parseArgs(["serve", "-c", "x.yaml", "-p", "8080", "-h", "0.0.0.0"])).toEqual({
-      command: "serve", configPath: "x.yaml", port: 8080, host: "0.0.0.0",
+      command: "serve",
+      configPath: "x.yaml",
+      port: 8080,
+      host: "0.0.0.0",
     });
     expect(parseArgs(["serve", "-p", "nope"]).error).toContain("invalid port");
     expect(parseArgs(["serve", "--bogus"]).error).toContain("unknown option");
@@ -74,7 +82,9 @@ describe("CLI", () => {
   });
 
   it("VERSION matches package.json", () => {
-    const pkg = JSON.parse(readFileSync(new URL("../../../package.json", import.meta.url), "utf-8")) as { version: string };
+    const pkg = JSON.parse(readFileSync(new URL("../../../package.json", import.meta.url), "utf-8")) as {
+      version: string;
+    };
     expect(VERSION).toBe(pkg.version);
   });
 });

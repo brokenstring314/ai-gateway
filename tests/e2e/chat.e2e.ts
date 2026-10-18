@@ -10,7 +10,10 @@ beforeAll(async () => {
   up = startMockUpstream("a");
   gw = await startGateway({ config: baseConfig([{ name: "a", mock: up }]) });
 });
-afterAll(async () => { await gw?.stop(); up?.stop(); });
+afterAll(async () => {
+  await gw?.stop();
+  up?.stop();
+});
 beforeEach(() => up.reset());
 
 const messages = [{ role: "user" as const, content: "hi" }];
@@ -27,7 +30,9 @@ describe("chat (openai SDK)", () => {
   });
 
   it("streaming with include_usage: deltas assemble, usage chunk arrives", async () => {
-    const s = await gw.client().chat.completions.create({ model: "gpt-4o", messages, stream: true, stream_options: { include_usage: true } });
+    const s = await gw
+      .client()
+      .chat.completions.create({ model: "gpt-4o", messages, stream: true, stream_options: { include_usage: true } });
     let text = "";
     let usage: unknown;
     let finish: string | null = null;
@@ -46,7 +51,12 @@ describe("chat (openai SDK)", () => {
     const runner = gw.client().chat.completions.stream({
       model: "gpt-4o",
       messages,
-      tools: [{ type: "function", function: { name: "get_weather", parameters: { type: "object", properties: { city: { type: "string" } } } } }],
+      tools: [
+        {
+          type: "function",
+          function: { name: "get_weather", parameters: { type: "object", properties: { city: { type: "string" } } } },
+        },
+      ],
     });
     const final = await runner.finalChatCompletion();
     const call = final.choices[0]!.message.tool_calls?.[0];

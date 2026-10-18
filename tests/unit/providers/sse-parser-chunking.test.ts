@@ -7,11 +7,24 @@ import { ProviderError } from "@/providers/openai-compat";
 
 function streamOf(parts: string[]): ReadableStream<Uint8Array> {
   const enc = new TextEncoder();
-  return new ReadableStream({ start(c) { for (const p of parts) c.enqueue(enc.encode(p)); c.close(); } });
+  return new ReadableStream({
+    start(c) {
+      for (const p of parts) c.enqueue(enc.encode(p));
+      c.close();
+    },
+  });
 }
-const ev = (content: string, finish?: string) => JSON.stringify({ id: "1", choices: [{ index: 0, delta: { content }, ...(finish ? { finish_reason: finish } : {}) }] });
+const ev = (content: string, finish?: string) =>
+  JSON.stringify({
+    id: "1",
+    choices: [{ index: 0, delta: { content }, ...(finish ? { finish_reason: finish } : {}) }],
+  });
 const DONE = "data: [DONE]\n\n";
-async function collect(s: ReadableStream<Uint8Array>) { const out: string[] = []; for await (const c of parseSSEStream(s)) out.push((c.choices[0]?.delta?.content as string | undefined) ?? ""); return out; }
+async function collect(s: ReadableStream<Uint8Array>) {
+  const out: string[] = [];
+  for await (const c of parseSSEStream(s)) out.push((c.choices[0]?.delta?.content as string | undefined) ?? "");
+  return out;
+}
 
 describe("parseSSEStream chunk boundaries", () => {
   it("keeps an event whose blank-line terminator arrives in the next read", async () => {
@@ -19,7 +32,11 @@ describe("parseSSEStream chunk boundaries", () => {
   });
 
   it("keeps multi-line data split across reads", async () => {
-    expect(await collect(streamOf([`data: {"id":"1",\n`, `data: "choices":[{"index":0,"delta":{"content":"M"}}]}\n`, `\n`, DONE]))).toEqual(["M"]);
+    expect(
+      await collect(
+        streamOf([`data: {"id":"1",\n`, `data: "choices":[{"index":0,"delta":{"content":"M"}}]}\n`, `\n`, DONE]),
+      ),
+    ).toEqual(["M"]);
   });
 
   it("flushes the final event at EOF without a trailing blank line", async () => {
@@ -30,7 +47,10 @@ describe("parseSSEStream chunk boundaries", () => {
 
   it("raises ProviderError on a mid-stream error event", async () => {
     const s = streamOf([`data: ${ev("A")}\n\n`, `data: {"error":{"message":"overloaded"}}\n\n`]);
-    const err = await collect(s).then(() => null, (e) => e);
+    const err = await collect(s).then(
+      () => null,
+      (e) => e,
+    );
     expect(err).toBeInstanceOf(ProviderError);
     expect(String(err.message)).toContain("overloaded");
   });
@@ -39,8 +59,12 @@ describe("parseSSEStream chunk boundaries", () => {
     let cancelled = false;
     const enc = new TextEncoder();
     const body = new ReadableStream<Uint8Array>({
-      pull(c) { c.enqueue(enc.encode(`data: ${ev("x")}\n\n`)); },
-      cancel() { cancelled = true; },
+      pull(c) {
+        c.enqueue(enc.encode(`data: ${ev("x")}\n\n`));
+      },
+      cancel() {
+        cancelled = true;
+      },
     });
     for await (const _ of parseSSEStream(body)) break;
     expect(cancelled).toBe(true);

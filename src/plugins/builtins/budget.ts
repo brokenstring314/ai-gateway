@@ -85,7 +85,8 @@ export class BudgetPlugin implements IPlugin {
     const rates = hasCostRates(own) ? own : this.config.estimateRates;
     const req = ctx.request;
     const promptTokens = estimatePromptTokens(req);
-    const completionTokens = req.maxTokens ?? req.maxCompletionTokens ?? this.config.reserveOutputTokens ?? DEFAULT_RESERVE_OUTPUT_TOKENS;
+    const completionTokens =
+      req.maxTokens ?? req.maxCompletionTokens ?? this.config.reserveOutputTokens ?? DEFAULT_RESERVE_OUTPUT_TOKENS;
     return costOf(rates, { promptTokens, completionTokens, totalTokens: promptTokens + completionTokens });
   }
 
@@ -117,7 +118,8 @@ export class BudgetPlugin implements IPlugin {
     const committed = entry.spent + entry.reserved;
     return {
       action: "reject",
-      reason: `Daily budget exceeded: ${round(committed)}/${String(this.config.dailyBudget)}` +
+      reason:
+        `Daily budget exceeded: ${round(committed)}/${String(this.config.dailyBudget)}` +
         (entry.reserved > 0 ? ` (including ${round(entry.reserved)} reserved by requests in flight)` : ""),
       status: 429,
     };

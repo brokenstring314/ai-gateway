@@ -113,7 +113,8 @@ export class McpExecutor {
     response: ChatCompletionResponse,
     next: ChatCompleter,
   ): Promise<ChatCompletionResponse> {
-    const complete = typeof next === "function" ? next : (c: RequestContext, r: ChatCompletionRequest) => next.execute(c, r);
+    const complete =
+      typeof next === "function" ? next : (c: RequestContext, r: ChatCompletionRequest) => next.execute(c, r);
     return (await runMcpLoop(this, ctx, req, response, complete)).response;
   }
 
@@ -131,9 +132,7 @@ export class McpExecutor {
 
   /** Execute a batch of tool calls, returning results for each. */
   async executeToolCalls(toolCalls: readonly ToolCall[]): Promise<McpToolResult[]> {
-    const results = await Promise.all(
-      toolCalls.map(async (call) => this.executeSingleToolCall(call)),
-    );
+    const results = await Promise.all(toolCalls.map(async (call) => this.executeSingleToolCall(call)));
     return results;
   }
 

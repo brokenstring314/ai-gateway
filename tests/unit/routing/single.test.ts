@@ -47,9 +47,7 @@ describe("SingleStrategy", () => {
   it("throws when provider not found", async () => {
     const strategy = boundSingle(() => undefined, { target: "missing" });
 
-    await expect(
-      strategy.execute({ metadata: {} }, createReq()),
-    ).rejects.toThrow("not found");
+    await expect(strategy.execute({ metadata: {} }, createReq())).rejects.toThrow("not found");
   });
 
   it("throws on stream when provider does not support streaming", async () => {

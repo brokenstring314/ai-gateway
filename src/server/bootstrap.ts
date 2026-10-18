@@ -68,10 +68,7 @@ export async function bootstrap(configPath: string, overrides: ServeOverrides = 
   let keyStore: KeyStore;
   let logStore: RequestLogStore;
   try {
-    [keyStore, logStore] = await Promise.all([
-      KeyStore.create(keyDb),
-      RequestLogStore.create(logDb),
-    ]);
+    [keyStore, logStore] = await Promise.all([KeyStore.create(keyDb), RequestLogStore.create(logDb)]);
   } catch (err) {
     keyDb.close();
     logDb.close();
@@ -115,9 +112,7 @@ export async function bootstrap(configPath: string, overrides: ServeOverrides = 
     serviceName: config.observability?.tracing?.serviceName,
     sampleRatio: config.observability?.tracing?.sampleRatio,
     privacyLevel: config.observability?.tracing?.privacyLevel,
-    shutdownGraceMs: parseShutdownGrace(
-      config.observability?.tracing?.shutdownGrace,
-    ),
+    shutdownGraceMs: parseShutdownGrace(config.observability?.tracing?.shutdownGrace),
     headers: config.observability?.tracing?.headers,
   });
   await initOtelTracer({
@@ -186,9 +181,10 @@ export async function bootstrap(configPath: string, overrides: ServeOverrides = 
     metricsServer = Bun.serve({
       port: metricsPort,
       hostname: host,
-      fetch: (req) => (new URL(req.url).pathname === "/metrics" && req.method === "GET"
-        ? metricsResponse()
-        : new Response("Not Found", { status: 404 })),
+      fetch: (req) =>
+        new URL(req.url).pathname === "/metrics" && req.method === "GET"
+          ? metricsResponse()
+          : new Response("Not Found", { status: 404 }),
     });
     console.log(`Metrics listening on http://${host}:${metricsServer.port}/metrics`);
   } else if (metrics === "off") {
@@ -237,8 +233,11 @@ export function clientCredentialWarning(
   const hasConfigKeys = (config.auth?.keys ?? []).some((k) => typeof k === "string" && k !== "");
   const hasAdminSecret = config.adminSecret !== undefined && config.adminSecret !== "";
   if (
-    bootstrapKey !== undefined && bootstrapKey !== "" &&
-    !hasAdminSecret && !hasConfigKeys && !keyStore.hasActiveAdminKey()
+    bootstrapKey !== undefined &&
+    bootstrapKey !== "" &&
+    !hasAdminSecret &&
+    !hasConfigKeys &&
+    !keyStore.hasActiveAdminKey()
   ) {
     return (
       "WARNING: ADMIN_BOOTSTRAP_KEY is active because no admin credential exists yet " +

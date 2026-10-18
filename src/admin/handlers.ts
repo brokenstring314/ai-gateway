@@ -15,11 +15,7 @@ import type { KeyStore } from "../persistence/key-store.js";
 import type { RequestLogStore } from "../persistence/request-log-store.js";
 import { adminAuthMiddleware } from "../middleware/auth.js";
 import type { BootstrapGate } from "../auth/bootstrap.js";
-import {
-  type ConfigState,
-  getConfigHandler,
-  removedConfigWriteHandler,
-} from "./config-handlers.js";
+import { type ConfigState, getConfigHandler, removedConfigWriteHandler } from "./config-handlers.js";
 import {
   type KeyHandlerState,
   SCOPE_ADMIN,
@@ -35,12 +31,7 @@ import {
   getKeysHandler,
   addKeyHandler,
 } from "./key-handlers.js";
-import {
-  type LogHandlerState,
-  getLogsHandler,
-  getLogsStatsHandler,
-  deleteLogsHandler,
-} from "./log-handlers.js";
+import { type LogHandlerState, getLogsHandler, getLogsStatsHandler, deleteLogsHandler } from "./log-handlers.js";
 
 export interface AdminAppOptions {
   keyStore?: KeyStore;
@@ -72,23 +63,39 @@ export function createAdminApp(
   const adminSecret = options?.adminSecret ?? config.adminSecret;
 
   if (keyStore) {
-    app.use("*", adminAuthMiddleware({
-      keyStore,
-      adminSecret,
-      bootstrapKey: options?.bootstrapKey,
-      bootstrapReadOnlyKey: options?.bootstrapReadOnlyKey,
-      configKeys: () => config.auth?.keys,
-      bootstrap: options?.bootstrap,
-    }));
+    app.use(
+      "*",
+      adminAuthMiddleware({
+        keyStore,
+        adminSecret,
+        bootstrapKey: options?.bootstrapKey,
+        bootstrapReadOnlyKey: options?.bootstrapReadOnlyKey,
+        configKeys: () => config.auth?.keys,
+        bootstrap: options?.bootstrap,
+      }),
+    );
   } else {
     app.use("*", async (c, next) => {
       if (!adminSecret) {
-        return c.json({ error: { message: "Admin API disabled: no adminSecret configured", type: "forbidden", code: "admin_disabled" } }, 403);
+        return c.json(
+          {
+            error: {
+              message: "Admin API disabled: no adminSecret configured",
+              type: "forbidden",
+              code: "admin_disabled",
+            },
+          },
+          403,
+        );
       }
-      const headerSecret = c.req.header("X-Admin-Secret")
-        ?? c.req.header("Authorization")?.replace(/^Bearer\s+/i, "");
+      const headerSecret = c.req.header("X-Admin-Secret") ?? c.req.header("Authorization")?.replace(/^Bearer\s+/i, "");
       if (!headerSecret || headerSecret !== adminSecret) {
-        return c.json({ error: { message: "Invalid admin credentials", type: "authentication_error", code: "invalid_admin_secret" } }, 401);
+        return c.json(
+          {
+            error: { message: "Invalid admin credentials", type: "authentication_error", code: "invalid_admin_secret" },
+          },
+          401,
+        );
       }
       c.set("apiKey", headerSecret);
       c.set("keyScopes", ["admin"]);

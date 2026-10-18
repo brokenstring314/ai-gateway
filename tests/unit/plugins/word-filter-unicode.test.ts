@@ -7,7 +7,10 @@ import type { PluginResult } from "@/plugins/types";
 
 async function run(mode: "reject" | "redact", blocklist: string[], content: unknown): Promise<PluginResult> {
   const p = new WordFilterPlugin({ blocklist, mode });
-  const ctx = createPluginContext({ model: "m", messages: [{ role: "user", content }] } as never, { metadata: {} } as never);
+  const ctx = createPluginContext(
+    { model: "m", messages: [{ role: "user", content }] } as never,
+    { metadata: {} } as never,
+  );
   return p.execute(ctx);
 }
 
@@ -44,13 +47,16 @@ describe("S3-7 word-filter Unicode handling", () => {
 
   it("text without a blocked word is left byte-for-byte untouched", async () => {
     const p = new WordFilterPlugin({ blocklist: ["kill"], mode: "redact" });
-    const ctx = createPluginContext({
-      model: "m",
-      messages: [
-        { role: "system", content: "ｆｕｌｌｗｉｄｔｈ stays" },
-        { role: "user", content: "please kill it" },
-      ],
-    } as never, { metadata: {} } as never);
+    const ctx = createPluginContext(
+      {
+        model: "m",
+        messages: [
+          { role: "system", content: "ｆｕｌｌｗｉｄｔｈ stays" },
+          { role: "user", content: "please kill it" },
+        ],
+      } as never,
+      { metadata: {} } as never,
+    );
     const res = await p.execute(ctx);
     const msgs = (res as unknown as { request: { messages: { content: string }[] } }).request.messages;
     expect(msgs[0]?.content).toBe("ｆｕｌｌｗｉｄｔｈ stays");

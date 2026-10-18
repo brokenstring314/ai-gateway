@@ -98,7 +98,9 @@ export function configReferenceIssues(cfg: CheckedConfig): ConfigIssue[] {
 export function assertConfigReferences(cfg: CheckedConfig): void {
   const issues = configReferenceIssues(cfg);
   if (issues.length === 0) return;
-  throw new Error(`Invalid config:\n${issues.map((i) => `  ✖ ${i.message}\n    → at ${formatPath(i.path)}`).join("\n")}`);
+  throw new Error(
+    `Invalid config:\n${issues.map((i) => `  ✖ ${i.message}\n    → at ${formatPath(i.path)}`).join("\n")}`,
+  );
 }
 
 function formatPath(path: (string | number)[]): string {

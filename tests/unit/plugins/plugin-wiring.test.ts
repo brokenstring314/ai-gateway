@@ -10,7 +10,12 @@ import { PluginManager } from "@/plugins/manager";
 import { KeyStore } from "@/persistence/key-store";
 import type { GatewayConfig } from "@/config/types";
 import type {
-  ChatCompletionRequest, ChatCompletionResponse, IProvider, IStreamProvider, RequestContext, StreamChunk,
+  ChatCompletionRequest,
+  ChatCompletionResponse,
+  IProvider,
+  IStreamProvider,
+  RequestContext,
+  StreamChunk,
 } from "@/providers/types";
 
 function cfg(extra: Partial<GatewayConfig> = {}): GatewayConfig {
@@ -27,15 +32,26 @@ function mockProvider(calls: ChatCompletionRequest[]): IProvider & IStreamProvid
     async complete(_c: RequestContext, req: ChatCompletionRequest): Promise<ChatCompletionResponse> {
       calls.push(req);
       return {
-        id: "x", object: "chat.completion", created: 1, model: req.model, provider: "mock",
-        choices: [{ index: 0, message: { role: "assistant", content: `answer#${calls.length}` }, finishReason: "stop" }],
+        id: "x",
+        object: "chat.completion",
+        created: 1,
+        model: req.model,
+        provider: "mock",
+        choices: [
+          { index: 0, message: { role: "assistant", content: `answer#${calls.length}` }, finishReason: "stop" },
+        ],
         usage: { promptTokens: 1, completionTokens: 1, totalTokens: 2 },
       };
     },
     async *completeStream(_c: RequestContext, req: ChatCompletionRequest): AsyncGenerator<StreamChunk> {
       calls.push(req);
-      yield { id: "x", object: "chat.completion.chunk", created: 1, model: req.model,
-        choices: [{ index: 0, delta: { role: "assistant", content: "hi" }, finishReason: null }] } as unknown as StreamChunk;
+      yield {
+        id: "x",
+        object: "chat.completion.chunk",
+        created: 1,
+        model: req.model,
+        choices: [{ index: 0, delta: { role: "assistant", content: "hi" }, finishReason: null }],
+      } as unknown as StreamChunk;
     },
     supportedModels: () => ["gpt-4o"],
     supportsModel: (m: string) => m === "gpt-4o",
@@ -57,7 +73,9 @@ function gatewayWithCache(calls: ChatCompletionRequest[]): Gateway {
 
 function cacheKey(req: Partial<ChatCompletionRequest>, apiKey?: string): unknown {
   const plugin = new CachePlugin({ ttlSeconds: 60 }, "before_request");
-  const ctx = createPluginContext({ ...msg("same-" + "key"), ...req } as ChatCompletionRequest, { metadata: { apiKey } });
+  const ctx = createPluginContext({ ...msg("same-" + "key"), ...req } as ChatCompletionRequest, {
+    metadata: { apiKey },
+  });
   void plugin.execute(ctx);
   return ctx.metadata["_cacheKey"];
 }
@@ -66,7 +84,11 @@ describe("H4: short_circuit result is honoured", () => {
   it("PluginManager sets the short-circuit flag for {action:'short_circuit'}", async () => {
     const pm = new PluginManager();
     const resp = { id: "c" } as ChatCompletionResponse;
-    pm.register("before_request", { name: "sc", stage: "before_request", execute: async () => ({ action: "short_circuit", response: resp }) });
+    pm.register("before_request", {
+      name: "sc",
+      stage: "before_request",
+      execute: async () => ({ action: "short_circuit", response: resp }),
+    });
     const ctx = createPluginContext(msg("a"));
     await pm.runBefore(ctx);
     expect(ctx._shortCircuited).toBe(true);
@@ -98,7 +120,9 @@ describe("H4: short_circuit result is honoured", () => {
     expect(cacheKey({ n: 1 })).not.toBe(cacheKey({ n: 3 }));
     expect(cacheKey({ topP: 0.1 })).not.toBe(cacheKey({ topP: 0.9 }));
     expect(cacheKey({ stop: ["a"] })).not.toBe(cacheKey({ stop: ["b"] }));
-    expect(cacheKey({ responseFormat: { type: "text" } } as never)).not.toBe(cacheKey({ responseFormat: { type: "json_object" } } as never));
+    expect(cacheKey({ responseFormat: { type: "text" } } as never)).not.toBe(
+      cacheKey({ responseFormat: { type: "json_object" } } as never),
+    );
     expect(cacheKey({ toolChoice: "auto" } as never)).not.toBe(cacheKey({ toolChoice: "none" } as never));
     expect(cacheKey({ user: "alice" })).not.toBe(cacheKey({ user: "bob" }));
     expect(cacheKey({ temperature: 0, topP: 1 })).toBe(cacheKey({ topP: 1, temperature: 0 }));
@@ -135,9 +159,12 @@ describe("H5: plugins bucket by authenticated API key", () => {
     gw.registerProvider(mockProvider([]));
     gw.registerPlugin("before_request", new RateLimitPlugin({ maxRequestsPerMinute: 1 }));
     const app = createApp(gw, cfg(), undefined, keyStore);
-    const post = (k: string) => app.request("/v1/chat/completions", {
-      method: "POST", headers: { Authorization: `Bearer ${k}`, "Content-Type": "application/json" }, body: JSON.stringify(msg("a")),
-    });
+    const post = (k: string) =>
+      app.request("/v1/chat/completions", {
+        method: "POST",
+        headers: { Authorization: `Bearer ${k}`, "Content-Type": "application/json" },
+        body: JSON.stringify(msg("a")),
+      });
     expect((await post(keyA)).status).toBe(200);
     expect((await post(keyB)).status).toBe(200);
     expect((await post(keyA)).status).not.toBe(200);
@@ -146,16 +173,23 @@ describe("H5: plugins bucket by authenticated API key", () => {
 
 describe("H3: config.plugins are instantiated", () => {
   it("word-filter from config rejects blocked content", async () => {
-    const c = cfg({ plugins: [{ name: "word-filter", stage: "before_request", config: { blocklist: ["badword"], mode: "reject" } }] });
+    const c = cfg({
+      plugins: [{ name: "word-filter", stage: "before_request", config: { blocklist: ["badword"], mode: "reject" } }],
+    });
     const gw = new Gateway(c);
     gw.registerProvider(mockProvider([]));
     const app = createApp(gw, c);
-    const r = await app.request("/v1/chat/completions", { method: "POST", body: JSON.stringify(msg("a badword here")) });
+    const r = await app.request("/v1/chat/completions", {
+      method: "POST",
+      body: JSON.stringify(msg("a badword here")),
+    });
     expect(r.status).not.toBe(200);
   });
 
   it("cache from config (snake_case name, documented keys) registers both stages and hits", async () => {
-    const regs = buildPluginsFromConfig([{ name: "cache", stage: "before_request", config: { maxAge: 60, maxEntries: 10 } }]);
+    const regs = buildPluginsFromConfig([
+      { name: "cache", stage: "before_request", config: { maxAge: 60, maxEntries: 10 } },
+    ]);
     expect(regs.map((r) => r.stage).sort()).toEqual(["after_request", "before_request"]);
 
     const calls: ChatCompletionRequest[] = [];
@@ -190,9 +224,10 @@ describe("H3: config.plugins are instantiated", () => {
   });
 
   it("rejects invalid builtin config instead of silently ignoring it", () => {
-    expect(() => buildPluginsFromConfig([{ name: "budget", stage: "before_request", config: {} }])).toThrow(/dailyBudget/);
+    expect(() => buildPluginsFromConfig([{ name: "budget", stage: "before_request", config: {} }])).toThrow(
+      /dailyBudget/,
+    );
   });
-
 });
 
 describe("createPluginContext", () => {

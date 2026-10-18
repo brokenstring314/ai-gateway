@@ -4,10 +4,7 @@
 
 import type { IStrategy, StrategyMode } from "./types.js";
 import type { ChatCompletionRequest } from "../providers/types.js";
-import type {
-  ConditionalConfig,
-  ConditionalRule,
-} from "./strategy-factory.js";
+import type { ConditionalConfig, ConditionalRule } from "./strategy-factory.js";
 
 export class ConditionalStrategy implements IStrategy {
   public readonly mode: StrategyMode = "conditional";
@@ -31,9 +28,7 @@ export class ConditionalStrategy implements IStrategy {
   selectTargets(req: ChatCompletionRequest): string[] {
     const matched = this.findMatchingRule(req)?.target;
     if (!matched && !this.defaultTarget) {
-      throw new Error(
-        "ConditionalStrategy: no rule matched and no defaultTarget configured",
-      );
+      throw new Error("ConditionalStrategy: no rule matched and no defaultTarget configured");
     }
     const out: string[] = [];
     if (matched) out.push(matched);
@@ -41,10 +36,7 @@ export class ConditionalStrategy implements IStrategy {
     return out;
   }
 
-
-  private findMatchingRule(
-    req: ChatCompletionRequest,
-  ): ConditionalRule | undefined {
+  private findMatchingRule(req: ChatCompletionRequest): ConditionalRule | undefined {
     for (let i = 0; i < this.rules.length; i++) {
       const rule = this.rules[i]!;
       const fieldValue = getRequestField(req, rule.field);
@@ -77,18 +69,20 @@ function textOf(content: unknown): string | undefined {
   if (typeof content === "string") return content;
   if (Array.isArray(content)) {
     const parts = content
-      .filter((p): p is { type: string; text: string } =>
-        typeof p === "object" && p !== null && (p as { type?: unknown }).type === "text" && typeof (p as { text?: unknown }).text === "string")
+      .filter(
+        (p): p is { type: string; text: string } =>
+          typeof p === "object" &&
+          p !== null &&
+          (p as { type?: unknown }).type === "text" &&
+          typeof (p as { text?: unknown }).text === "string",
+      )
       .map((p) => p.text);
     return parts.length > 0 ? parts.join("\n") : undefined;
   }
   return undefined;
 }
 
-function getRequestField(
-  req: ChatCompletionRequest,
-  field: string,
-): string | undefined {
+function getRequestField(req: ChatCompletionRequest, field: string): string | undefined {
   switch (field) {
     case "model":
       return req.model;

@@ -10,7 +10,10 @@ import { heartbeatIntervalMs, SSE_PING } from "@/handlers/sse-heartbeat";
 import { parseConfig } from "@/config/schema";
 
 let cleanup: (() => void)[] = [];
-afterEach(() => { cleanup.forEach((f) => f()); cleanup = []; });
+afterEach(() => {
+  cleanup.forEach((f) => f());
+  cleanup = [];
+});
 
 const chunk = (content: string, finish: string | null = null) =>
   `data: ${JSON.stringify({ id: "c", object: "chat.completion.chunk", created: 1, model: "gpt-4o", choices: [{ index: 0, delta: { content }, finish_reason: finish }] })}\n\n`;
@@ -22,15 +25,18 @@ function pausingUpstream(pauseMs: number) {
     hostname: "127.0.0.1",
     fetch() {
       const enc = new TextEncoder();
-      return new Response(new ReadableStream({
-        async start(c) {
-          c.enqueue(enc.encode(chunk("a")));
-          await Bun.sleep(pauseMs);
-          c.enqueue(enc.encode(chunk("b", "stop")));
-          c.enqueue(enc.encode("data: [DONE]\n\n"));
-          c.close();
-        },
-      }), { headers: { "Content-Type": "text/event-stream" } });
+      return new Response(
+        new ReadableStream({
+          async start(c) {
+            c.enqueue(enc.encode(chunk("a")));
+            await Bun.sleep(pauseMs);
+            c.enqueue(enc.encode(chunk("b", "stop")));
+            c.enqueue(enc.encode("data: [DONE]\n\n"));
+            c.close();
+          },
+        }),
+        { headers: { "Content-Type": "text/event-stream" } },
+      );
     },
   });
   cleanup.push(() => server.stop(true));
@@ -47,7 +53,10 @@ function gatewayServer(upstream: string, server: Record<string, unknown>) {
   const gw = new Gateway(cfg);
   const app = createApp(gw, cfg);
   const s = Bun.serve({ port: 0, hostname: "127.0.0.1", idleTimeout: resolveIdleTimeout(undefined), fetch: app.fetch });
-  cleanup.push(() => { s.stop(true); gw.close(); });
+  cleanup.push(() => {
+    s.stop(true);
+    gw.close();
+  });
   return `http://127.0.0.1:${s.port}`;
 }
 
@@ -74,10 +83,15 @@ describe("N9 SSE idle timeout / heartbeat", () => {
   for (const path of ["/v1/chat/completions", "/v1/completions"]) {
     it(`${path}: sends ': ping' while upstream is silent and still delivers every chunk`, async () => {
       const base = gatewayServer(pausingUpstream(500), { sseHeartbeatSeconds: 0.1 });
-      const body = path === "/v1/completions"
-        ? { model: "gpt-4o", prompt: "x", stream: true }
-        : { model: "gpt-4o", stream: true, messages: [{ role: "user", content: "x" }] };
-      const r = await fetch(base + path, { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify(body) });
+      const body =
+        path === "/v1/completions"
+          ? { model: "gpt-4o", prompt: "x", stream: true }
+          : { model: "gpt-4o", stream: true, messages: [{ role: "user", content: "x" }] };
+      const r = await fetch(base + path, {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify(body),
+      });
       const text = await r.text();
       expect(r.status).toBe(200);
       expect(text).toContain(SSE_PING);
@@ -88,8 +102,11 @@ describe("N9 SSE idle timeout / heartbeat", () => {
 
   it("no heartbeat when disabled", async () => {
     const base = gatewayServer(pausingUpstream(300), { sseHeartbeatSeconds: 0 });
-    const r = await fetch(base + "/v1/chat/completions", { method: "POST", headers: { "content-type": "application/json" },
-      body: JSON.stringify({ model: "gpt-4o", stream: true, messages: [{ role: "user", content: "x" }] }) });
+    const r = await fetch(base + "/v1/chat/completions", {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ model: "gpt-4o", stream: true, messages: [{ role: "user", content: "x" }] }),
+    });
     const text = await r.text();
     expect(text).not.toContain(SSE_PING);
     expect(text).toContain("[DONE]");
@@ -100,7 +117,12 @@ describe("heartbeat respects backpressure", () => {
   it("does not enqueue pings while the stream queue is full", async () => {
     const { startSseHeartbeat } = await import("@/handlers/sse-heartbeat");
     let enq = 0;
-    const ctrl = { desiredSize: 0, enqueue: () => { enq++; } } as unknown as ReadableStreamDefaultController<Uint8Array>;
+    const ctrl = {
+      desiredSize: 0,
+      enqueue: () => {
+        enq++;
+      },
+    } as unknown as ReadableStreamDefaultController<Uint8Array>;
     const hb = startSseHeartbeat(ctrl, 20);
     await Bun.sleep(120);
     expect(enq).toBe(0);
@@ -113,7 +135,11 @@ describe("heartbeat respects backpressure", () => {
 
 describe("stream timeout config", () => {
   it("accepts server.streamIdleTimeoutSeconds / streamMaxDurationSeconds", () => {
-    const cfg = parseConfig({ strategy: { mode: "single", targets: ["a"] }, targets: [{ name: "a", provider: "openai", apiKey: "k", models: ["m"] }], server: { streamIdleTimeoutSeconds: 30, streamMaxDurationSeconds: 600 } } as never);
+    const cfg = parseConfig({
+      strategy: { mode: "single", targets: ["a"] },
+      targets: [{ name: "a", provider: "openai", apiKey: "k", models: ["m"] }],
+      server: { streamIdleTimeoutSeconds: 30, streamMaxDurationSeconds: 600 },
+    } as never);
     expect(cfg.server?.streamIdleTimeoutSeconds).toBe(30);
     expect(cfg.server?.streamMaxDurationSeconds).toBe(600);
   });

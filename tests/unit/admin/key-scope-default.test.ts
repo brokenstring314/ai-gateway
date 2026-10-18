@@ -18,19 +18,37 @@ const config = {
 
 let fetchSpy: ReturnType<typeof spyOn>;
 beforeEach(() => {
-  fetchSpy = spyOn(globalThis, "fetch").mockImplementation((async () => new Response(JSON.stringify({
-    id: "c", object: "chat.completion", created: 1, model: "gpt-4o",
-    choices: [{ index: 0, message: { role: "assistant", content: "ok" }, finish_reason: "stop" }],
-    usage: { prompt_tokens: 1, completion_tokens: 1, total_tokens: 2 },
-  }), { status: 200, headers: { "content-type": "application/json" } })) as unknown as typeof fetch);
+  fetchSpy = spyOn(globalThis, "fetch").mockImplementation(
+    (async () =>
+      new Response(
+        JSON.stringify({
+          id: "c",
+          object: "chat.completion",
+          created: 1,
+          model: "gpt-4o",
+          choices: [{ index: 0, message: { role: "assistant", content: "ok" }, finish_reason: "stop" }],
+          usage: { prompt_tokens: 1, completion_tokens: 1, total_tokens: 2 },
+        }),
+        { status: 200, headers: { "content-type": "application/json" } },
+      )) as unknown as typeof fetch,
+  );
 });
 afterEach(() => fetchSpy.mockRestore());
 
 async function setup() {
   const ks = await KeyStore.create(new Database(":memory:"));
   const app = createApp(new Gateway(config), config, undefined, ks, { adminSecret: SECRET });
-  const admin = (method: string, path: string, body?: unknown, auth: Record<string, string> = { "x-admin-secret": SECRET }) =>
-    app.request(path, { method, headers: { "content-type": "application/json", ...auth }, body: body === undefined ? undefined : JSON.stringify(body) });
+  const admin = (
+    method: string,
+    path: string,
+    body?: unknown,
+    auth: Record<string, string> = { "x-admin-secret": SECRET },
+  ) =>
+    app.request(path, {
+      method,
+      headers: { "content-type": "application/json", ...auth },
+      body: body === undefined ? undefined : JSON.stringify(body),
+    });
   return { app, ks, admin };
 }
 
@@ -78,7 +96,8 @@ describe("key scopes: least privilege by default, strict validation", () => {
     const appKey = ((await (await admin("POST", "/admin/keys", { name: "mobile-app" })).json()) as { key: string }).key;
     const auth = { authorization: `Bearer ${appKey}` };
     const v1 = await app.request("/v1/chat/completions", {
-      method: "POST", headers: { "content-type": "application/json", ...auth },
+      method: "POST",
+      headers: { "content-type": "application/json", ...auth },
       body: JSON.stringify({ model: "gpt-4o", messages: [{ role: "user", content: "hi" }] }),
     });
     expect(v1.status).toBe(200);
@@ -92,6 +111,8 @@ describe("key scopes: least privilege by default, strict validation", () => {
   it("a read_only key cannot mint keys", async () => {
     const { admin, ks } = await setup();
     const ro = ks.create("ro", ["read_only"]).key;
-    expect((await admin("POST", "/admin/keys", { name: "x", scopes: ["admin"] }, { authorization: `Bearer ${ro}` })).status).toBe(403);
+    expect(
+      (await admin("POST", "/admin/keys", { name: "x", scopes: ["admin"] }, { authorization: `Bearer ${ro}` })).status,
+    ).toBe(403);
   });
 });

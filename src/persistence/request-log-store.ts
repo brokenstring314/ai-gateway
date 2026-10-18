@@ -1,9 +1,5 @@
 import type { Database, SQLQueryBindings } from "bun:sqlite";
-import {
-  runMigrations,
-  type MigrationStep,
-  DeferredStepError,
-} from "@/persistence/migrations";
+import { runMigrations, type MigrationStep, DeferredStepError } from "@/persistence/migrations";
 
 // ---------------------------------------------------------------------------
 // Types
@@ -92,13 +88,9 @@ function buildMigrationSteps(): MigrationStep[] {
       name: "request_logs_created_at_index",
       noTx: (db: Database) => {
         try {
-          db.exec(
-            `CREATE INDEX IF NOT EXISTS ${CREATED_AT_INDEX} ON request_logs (created_at)`,
-          );
+          db.exec(`CREATE INDEX IF NOT EXISTS ${CREATED_AT_INDEX} ON request_logs (created_at)`);
         } catch (err) {
-          throw new DeferredStepError(
-            `build request log index: ${err instanceof Error ? err.message : String(err)}`,
-          );
+          throw new DeferredStepError(`build request log index: ${err instanceof Error ? err.message : String(err)}`);
         }
       },
     },
@@ -195,8 +187,7 @@ export class RequestLogStore {
   // -- Write -----------------------------------------------------------------
 
   write(entry: RequestLogEntry): void {
-    const createdAt =
-      entry.createdAt.getTime() === 0 ? new Date() : entry.createdAt;
+    const createdAt = entry.createdAt.getTime() === 0 ? new Date() : entry.createdAt;
 
     this.db
       .prepare(
@@ -219,18 +210,15 @@ export class RequestLogStore {
   // -- List ------------------------------------------------------------------
 
   list(query: RequestLogQuery): RequestLogListResult {
-    const limit = Math.min(
-      Math.max(query.limit ?? DEFAULT_LIST_LIMIT, 1),
-      MAX_LIST_LIMIT,
-    );
+    const limit = Math.min(Math.max(query.limit ?? DEFAULT_LIST_LIMIT, 1), MAX_LIST_LIMIT);
     const offset = Math.max(query.offset ?? 0, 0);
 
     const { whereSQL, args } = buildWhereClause(query);
 
     // Count total matching rows
-    const countRow = this.db
-      .prepare(`SELECT COUNT(*) AS total FROM request_logs${whereSQL}`)
-      .get(...args) as { total: number } | null;
+    const countRow = this.db.prepare(`SELECT COUNT(*) AS total FROM request_logs${whereSQL}`).get(...args) as {
+      total: number;
+    } | null;
     const total = countRow?.total ?? 0;
 
     // Fetch paginated rows
@@ -273,10 +261,7 @@ export class RequestLogStore {
   stats(query: RequestLogQuery): RequestLogStatsResult {
     const { whereSQL, args } = buildWhereClause(query);
 
-    const statsQuery = STATS_QUERY_TEMPLATE.replaceAll(
-      "{whereClause}",
-      whereSQL,
-    );
+    const statsQuery = STATS_QUERY_TEMPLATE.replaceAll("{whereClause}", whereSQL);
 
     // WHERE clause args repeat 3 times (once per UNION ALL branch)
     const allArgs: SQLQueryBindings[] = [...args, ...args, ...args];

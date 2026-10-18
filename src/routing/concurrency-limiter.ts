@@ -29,9 +29,7 @@ export class ConcurrencyLimiter {
 
   constructor(options: ConcurrencyLimiterOptions) {
     if (options.maxConcurrency < 1) {
-      throw new RangeError(
-        `maxConcurrency must be at least 1, got ${options.maxConcurrency}`,
-      );
+      throw new RangeError(`maxConcurrency must be at least 1, got ${options.maxConcurrency}`);
     }
     this.maxConcurrency = options.maxConcurrency;
     this.queueSize = options.queueSize ?? DEFAULT_QUEUE_SIZE;

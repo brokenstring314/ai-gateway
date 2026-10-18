@@ -16,7 +16,14 @@
  */
 
 import { z } from "zod";
-import type { ChatCompletionRequest, ChatCompletionResponse, Choice, IProvider, IStreamProvider, StreamChunk } from "../../providers/types.js";
+import type {
+  ChatCompletionRequest,
+  ChatCompletionResponse,
+  Choice,
+  IProvider,
+  IStreamProvider,
+  StreamChunk,
+} from "../../providers/types.js";
 import type { Surface } from "../types.js";
 import { REQUEST_EXTRA_KEYS, applyExtras, isJsonObject, pickExtras } from "../../providers/wire-extras.js";
 import { toOpenAIWireUsage } from "../../handlers/openai-wire.js";
@@ -42,7 +49,10 @@ export const CompletionsRequestSchema = z.object({
   n: z.number().int().positive().optional(),
   stream: z.boolean().optional(),
   streamOptions: z.object({ includeUsage: z.boolean() }).optional(),
-  stop: z.union([z.string(), z.array(z.string())]).nullable().optional(),
+  stop: z
+    .union([z.string(), z.array(z.string())])
+    .nullable()
+    .optional(),
   maxTokens: z.number().int().positive().nullable().optional(),
   presencePenalty: z.number().min(-2).max(2).optional(),
   frequencyPenalty: z.number().min(-2).max(2).optional(),
@@ -50,7 +60,10 @@ export const CompletionsRequestSchema = z.object({
   user: z.string().optional(),
   seed: z.number().int().optional(),
   /** Legacy: number of most likely tokens per position (0–5), not a boolean. */
-  logprobs: z.union([z.number().int().min(0).max(5), z.boolean()]).nullable().optional(),
+  logprobs: z
+    .union([z.number().int().min(0).max(5), z.boolean()])
+    .nullable()
+    .optional(),
   topLogprobs: z.number().int().min(0).max(20).optional(),
   echo: z.boolean().optional(),
   suffix: z.string().nullable().optional(),
@@ -87,22 +100,33 @@ const unsupported = (path: string, message: string) => ({ ok: false as const, is
 export function parseCompletionsRequest(body: unknown): ParsedCompletions {
   const parsed = CompletionsRequestSchema.safeParse(isJsonObject(body) ? renameSnake(body) : body);
   if (!parsed.success) {
-    return { ok: false, issues: parsed.error.issues.map((i) => ({ path: i.path.map((p) => (typeof p === "symbol" ? String(p) : p)), message: i.message })) };
+    return {
+      ok: false,
+      issues: parsed.error.issues.map((i) => ({
+        path: i.path.map((p) => (typeof p === "symbol" ? String(p) : p)),
+        message: i.message,
+      })),
+    };
   }
   const r = parsed.data;
 
   let prompt: string;
   if (typeof r.prompt === "string") prompt = r.prompt;
   else if (r.prompt.length === 1) prompt = r.prompt[0]!;
-  else return unsupported("prompt", "batched prompts (an array of more than one prompt) are not supported; send one request per prompt");
+  else
+    return unsupported(
+      "prompt",
+      "batched prompts (an array of more than one prompt) are not supported; send one request per prompt",
+    );
   if (r.echo === true) return unsupported("echo", "echo is not supported");
-  if (r.suffix !== undefined && r.suffix !== null && r.suffix !== "") return unsupported("suffix", "suffix (insertion) is not supported");
+  if (r.suffix !== undefined && r.suffix !== null && r.suffix !== "")
+    return unsupported("suffix", "suffix (insertion) is not supported");
   if (r.bestOf !== undefined && r.bestOf > 1) return unsupported("best_of", "best_of > 1 is not supported");
 
   // Legacy logprobs is an integer (top-N alternatives per token); chat uses
   // logprobs: true + top_logprobs: N.
   const lp = r.logprobs;
-  const wantLogprobs = lp === true || (typeof lp === "number");
+  const wantLogprobs = lp === true || typeof lp === "number";
   const topLogprobs = r.topLogprobs ?? (typeof lp === "number" && lp > 0 ? lp : undefined);
 
   const request: ChatCompletionRequest = {

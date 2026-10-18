@@ -7,7 +7,7 @@
  * real npx services or bun subprocesses are required.
  */
 
-import { describe, expect, it, } from "bun:test";
+import { describe, expect, it } from "bun:test";
 import {
   McpClient,
   McpRegistry,
@@ -26,11 +26,7 @@ import type {
   McpToolCallTarget,
   McpToolRegistry,
 } from "@/mcp";
-import type {
-  ChatCompletionRequest,
-  ChatCompletionResponse,
-  RequestContext,
-} from "@/providers/types";
+import type { ChatCompletionRequest, ChatCompletionResponse, RequestContext } from "@/providers/types";
 import type { ChatCompleter } from "@/mcp/executor";
 
 async function waitFor(check: () => void, timeoutMs = 250): Promise<void> {
@@ -86,9 +82,7 @@ function createMockServer(options: MockServerOptions = {}): MockServer {
   });
 
   function respond(id: number, result: unknown): void {
-    controller.enqueue(
-      new TextEncoder().encode(JSON.stringify({ jsonrpc: "2.0", id, result }) + "\n"),
-    );
+    controller.enqueue(new TextEncoder().encode(JSON.stringify({ jsonrpc: "2.0", id, result }) + "\n"));
   }
 
   function handleLine(line: string): void {
@@ -208,9 +202,7 @@ function responseWithToolCalls(id: string): ChatCompletionResponse {
         message: {
           role: "assistant",
           content: "",
-          toolCalls: [
-            { id: "call-1", type: "function", function: { name: "alpha", arguments: "{}" } },
-          ],
+          toolCalls: [{ id: "call-1", type: "function", function: { name: "alpha", arguments: "{}" } }],
         },
       },
     ],
@@ -237,7 +229,10 @@ function plainResponse(id: string): ChatCompletionResponse {
 }
 
 /** Strategy that returns tool_calls for `rounds` calls, then a plain response. */
-function toolCallingStrategy(rounds = Infinity): { strategy: ChatCompleter & { mode?: string; selectTargets?: () => string[] }; callCount: () => number } {
+function toolCallingStrategy(rounds = Infinity): {
+  strategy: ChatCompleter & { mode?: string; selectTargets?: () => string[] };
+  callCount: () => number;
+} {
   let calls = 0;
   const strategy: ChatCompleter & { mode: string; selectTargets: () => string[] } = {
     mode: "single",
@@ -258,16 +253,17 @@ describe("MCP transport inference", () => {
     const client = new McpClient(stdioConfig("inferred"), undefined, makeSpawner());
     await client.connect();
     expect(client.readiness).toBe("initialized");
-    expect(client.listTools().map((t) => t.name).sort()).toEqual(["alpha", "beta"]);
+    expect(
+      client
+        .listTools()
+        .map((t) => t.name)
+        .sort(),
+    ).toEqual(["alpha", "beta"]);
     client.close();
   });
 
   it("requires a command", async () => {
-    const client = new McpClient(
-      { name: "neither", type: "stdio" },
-      undefined,
-      makeSpawner(),
-    );
+    const client = new McpClient({ name: "neither", type: "stdio" }, undefined, makeSpawner());
     await expect(client.connect()).rejects.toThrow(/requires a command/);
     expect(client.readiness).toBe("unready");
   });
@@ -281,7 +277,9 @@ describe("MCP transport inference", () => {
     ]) {
       const r = safeParseConfig({ ...base, mcpServers: [server] });
       expect(r.success).toBe(false);
-      expect(r.success ? "" : r.error.issues.map((i) => i.message).join("\n")).toContain("http transport is not supported");
+      expect(r.success ? "" : r.error.issues.map((i) => i.message).join("\n")).toContain(
+        "http transport is not supported",
+      );
     }
     const ok = safeParseConfig({ ...base, mcpServers: [{ name: "s", command: "node" }] });
     expect(ok.success).toBe(true);
@@ -301,7 +299,12 @@ describe("MCP allowedTools filtering", () => {
   it("exposes all tools when allowedTools is unset", async () => {
     const client = new McpClient(stdioConfig("all-tools"), undefined, makeSpawner());
     await client.connect();
-    expect(client.listTools().map((t) => t.name).sort()).toEqual(["alpha", "beta"]);
+    expect(
+      client
+        .listTools()
+        .map((t) => t.name)
+        .sort(),
+    ).toEqual(["alpha", "beta"]);
     client.close();
   });
 
@@ -328,9 +331,7 @@ describe("MCP tool-call timeout", () => {
     await expect(client.callTool("alpha", {})).rejects.toBeInstanceOf(McpToolTimeoutError);
     // The connection itself survives the timeout.
     expect(client.readiness).toBe("initialized");
-    await expect(client.callTool("alpha", {})).rejects.toThrow(
-      'MCP tool "alpha" timed out after 50ms',
-    );
+    await expect(client.callTool("alpha", {})).rejects.toThrow('MCP tool "alpha" timed out after 50ms');
 
     client.close();
   });
@@ -350,18 +351,14 @@ describe("MCP readiness", () => {
   });
 
   it("tracks required server readiness across success and failure", async () => {
-    const registry = new McpRegistry(
-      makeSpawner({ good: {}, failing: { exitImmediately: true } }),
-    );
+    const registry = new McpRegistry(makeSpawner({ good: {}, failing: { exitImmediately: true } }));
     expect(registry.requiredServersReady()).toBe(true);
 
     await registry.addServer(stdioConfig("good"), { required: true });
     expect(registry.readiness("good")).toBe("initialized");
     expect(registry.requiredServersReady()).toBe(true);
 
-    await expect(
-      registry.addServer(stdioConfig("failing"), { required: true }),
-    ).rejects.toThrow();
+    await expect(registry.addServer(stdioConfig("failing"), { required: true })).rejects.toThrow();
     expect(registry.readiness("failing")).toBe("unready");
     expect(registry.requiredServersReady()).toBe(false);
 
@@ -369,9 +366,7 @@ describe("MCP readiness", () => {
   });
 
   it("an optional server dying does not fail required readiness", async () => {
-    const registry = new McpRegistry(
-      makeSpawner({ req: {}, opt: { exitAfterList: true } }),
-    );
+    const registry = new McpRegistry(makeSpawner({ req: {}, opt: { exitAfterList: true } }));
     await registry.addServer(stdioConfig("req"), { required: true });
     const optional = await registry.addServer(stdioConfig("opt"));
     expect(registry.requiredServersReady()).toBe(true);
@@ -381,7 +376,12 @@ describe("MCP readiness", () => {
     expect(registry.requiredServersReady()).toBe(true);
     expect(registry.readiness("req")).toBe("initialized");
     // The required server's tools are still advertised.
-    expect(registry.allTools().map((t) => t.name).sort()).toEqual(["alpha", "beta"]);
+    expect(
+      registry
+        .allTools()
+        .map((t) => t.name)
+        .sort(),
+    ).toEqual(["alpha", "beta"]);
     registry.closeAll();
   });
 
@@ -404,8 +404,18 @@ describe("MCP stdio process death", () => {
     const registry = new McpRegistry(makeSpawner({ dying: { exitAfterList: true } }));
     const client = await registry.addServer(stdioConfig("dying"));
     expect(client.readiness).toBe("initialized");
-    expect(client.listTools().map((t) => t.name).sort()).toEqual(["alpha", "beta"]);
-    expect(registry.allTools().map((t) => t.name).sort()).toEqual(["alpha", "beta"]);
+    expect(
+      client
+        .listTools()
+        .map((t) => t.name)
+        .sort(),
+    ).toEqual(["alpha", "beta"]);
+    expect(
+      registry
+        .allTools()
+        .map((t) => t.name)
+        .sort(),
+    ).toEqual(["alpha", "beta"]);
 
     await waitFor(() => expect(client.readiness).toBe("unready"));
 
@@ -451,12 +461,7 @@ describe("McpExecutor call-depth guard", () => {
   it("completes within the limit when the model stops calling tools", async () => {
     const { strategy, callCount } = toolCallingStrategy(3);
     const executor = new McpExecutor(makeToolRegistry(), 5);
-    const result = await executor.executeAgenticLoop(
-      ctx(),
-      makeRequest(),
-      responseWithToolCalls("resp-0"),
-      strategy,
-    );
+    const result = await executor.executeAgenticLoop(ctx(), makeRequest(), responseWithToolCalls("resp-0"), strategy);
     expect(result.choices[0]?.message?.content).toBe("done");
     expect(callCount()).toBe(3);
   });

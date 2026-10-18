@@ -5,25 +5,41 @@ import { startUpstream, startGateway, completion } from "./harness";
 import { getRequestLogger } from "@/observability/request-log";
 
 const SERVER = join(import.meta.dir, "mcp-echo-server.cjs");
-const mcpServers = [{ name: "echo", command: "node", args: [SERVER], timeoutSeconds: 5, maxCallDepth: 2, required: false }];
+const mcpServers = [
+  { name: "echo", command: "node", args: [SERVER], timeoutSeconds: 5, maxCallDepth: 2, required: false },
+];
 
 let cleanup: (() => void)[] = [];
-afterEach(() => { cleanup.forEach((f) => f()); cleanup = []; });
+afterEach(() => {
+  cleanup.forEach((f) => f());
+  cleanup = [];
+});
 
-const toolCallMsg = (id: string) => ({ role: "assistant", content: null, tool_calls: [{ id, type: "function", function: { name: "echo", arguments: "{\"text\":\"a\"}" } }] });
+const toolCallMsg = (id: string) => ({
+  role: "assistant",
+  content: null,
+  tool_calls: [{ id, type: "function", function: { name: "echo", arguments: '{"text":"a"}' } }],
+});
 
 describe("MCP loop", () => {
   it("M2 depth exceeded: OpenAI-shaped error with a meaningful message, and the failure is request-logged", async () => {
-    const up = startUpstream(() => Response.json(completion(toolCallMsg("call_" + Math.random()), { finish_reason: "tool_calls" })));
-    const gw = startGateway(up.url, { mcpServers } as any); cleanup.push(up.stop, gw.stop);
+    const up = startUpstream(() =>
+      Response.json(completion(toolCallMsg("call_" + Math.random()), { finish_reason: "tool_calls" })),
+    );
+    const gw = startGateway(up.url, { mcpServers } as any);
+    cleanup.push(up.stop, gw.stop);
     await gw.gw.initMcp();
     const spy = spyOn(getRequestLogger(), "logRequest");
-    const r = await fetch(`${gw.base}/v1/chat/completions`, { method: "POST", headers: { "content-type": "application/json" },
-      body: JSON.stringify({ model: "gpt-4o", messages: [{ role: "user", content: "loop" }] }) });
+    const r = await fetch(`${gw.base}/v1/chat/completions`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ model: "gpt-4o", messages: [{ role: "user", content: "loop" }] }),
+    });
     const j: any = await r.json();
     // mockRestore() clears mock.calls: read them first.
     const logged = spy.mock.calls.map((c: any[]) => c[0]);
-    spy.mockRestore(); console.log("M2 status", r.status, JSON.stringify(j));
+    spy.mockRestore();
+    console.log("M2 status", r.status, JSON.stringify(j));
     expect(up.bodies.length).toBe(3); // initial + maxCallDepth(2) loop rounds
     expect(logged.some((e: any) => e?.error)).toBe(true);
     expect(r.status).toBe(502);
@@ -33,10 +49,15 @@ describe("MCP loop", () => {
 
   it("M3 usage: the response usage covers every upstream call made by the loop", async () => {
     let n = 0;
-    const up = startUpstream(() => Response.json(n++ === 0
-      ? completion(toolCallMsg("call_1"), { finish_reason: "tool_calls" })
-      : completion({ role: "assistant", content: "done" })));
-    const gw = startGateway(up.url, { mcpServers } as any); cleanup.push(up.stop, gw.stop);
+    const up = startUpstream(() =>
+      Response.json(
+        n++ === 0
+          ? completion(toolCallMsg("call_1"), { finish_reason: "tool_calls" })
+          : completion({ role: "assistant", content: "done" }),
+      ),
+    );
+    const gw = startGateway(up.url, { mcpServers } as any);
+    cleanup.push(up.stop, gw.stop);
     await gw.gw.initMcp();
     const r = await gw.client.chat.completions.create({ model: "gpt-4o", messages: [{ role: "user", content: "x" }] });
     expect(r.choices[0]!.message.content).toBe("done");

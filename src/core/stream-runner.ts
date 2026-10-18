@@ -119,9 +119,8 @@ export function createSseStream<T>(opts: SseStreamOptions<T>): ReadableStream<Ui
     // as neither success nor failure (see gateway guardProvider).
     upstreamAbort.abort(createTimeoutReason(ms));
     releaseIterator();
-    const message = kind === "idle"
-      ? `Upstream stream idle for more than ${ms}ms`
-      : `Stream exceeded maximum duration of ${ms}ms`;
+    const message =
+      kind === "idle" ? `Upstream stream idle for more than ${ms}ms` : `Stream exceeded maximum duration of ${ms}ms`;
     const code = kind === "idle" ? "stream_idle_timeout" : "stream_max_duration";
     try {
       ctrl?.enqueue(encoder.encode(sseData({ error: { message, type: "timeout_error", code } })));
@@ -222,7 +221,11 @@ export interface ExecuteStreamHooks {
 }
 
 /** How a stream that threw ended (plan §1.4). */
-export function streamEndReason(err: unknown, signal: AbortSignal | null | undefined, started: boolean): StreamEndReason {
+export function streamEndReason(
+  err: unknown,
+  signal: AbortSignal | null | undefined,
+  started: boolean,
+): StreamEndReason {
   if (isTruncatedStreamError(err)) return "truncated";
   if (started && isTimeoutAbort(signal)) return "idle_timeout";
   if (isAbortError(err) || (signal?.aborted && !isTimeoutAbort(signal))) return "client_cancel";
@@ -258,7 +261,8 @@ export async function executeStream<C>(
         target = name;
         plan.run.onServed?.(name);
       },
-    })[Symbol.asyncIterator]();
+    })
+    [Symbol.asyncIterator]();
 
   let first: IteratorResult<C>;
   try {

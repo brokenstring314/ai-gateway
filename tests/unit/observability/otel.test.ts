@@ -1,11 +1,5 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "bun:test";
-import {
-  ROOT_CONTEXT,
-  SpanKind,
-  isValidTraceId,
-  trace,
-  type TextMapPropagator,
-} from "@opentelemetry/api";
+import { ROOT_CONTEXT, SpanKind, isValidTraceId, trace, type TextMapPropagator } from "@opentelemetry/api";
 import { CompositePropagator } from "@opentelemetry/core";
 import type { Resource } from "@opentelemetry/resources";
 import {
@@ -242,14 +236,7 @@ describe("initOtel — sampling", () => {
     const N = 2000;
     let sampled = 0;
     for (let i = 0; i < N; i++) {
-      const result = sampler!.shouldSample(
-        ROOT_CONTEXT,
-        randomTraceId(),
-        "root-span",
-        SpanKind.INTERNAL,
-        {},
-        [],
-      );
+      const result = sampler!.shouldSample(ROOT_CONTEXT, randomTraceId(), "root-span", SpanKind.INTERNAL, {}, []);
       if (result.decision === SamplingDecision.RECORD_AND_SAMPLED) {
         sampled++;
       }
@@ -355,9 +342,7 @@ describe("request-id correlation", () => {
   });
 
   it("normalizes uppercase 32-hex request ids to lowercase trace ids", () => {
-    expect(otel.traceIdFromRequestId("0123456789ABCDEF0123456789ABCDEF")).toBe(
-      "0123456789abcdef0123456789abcdef",
-    );
+    expect(otel.traceIdFromRequestId("0123456789ABCDEF0123456789ABCDEF")).toBe("0123456789abcdef0123456789abcdef");
   });
 
   it("exposes the request id set via withRequestId to getCurrentRequestId", () => {
@@ -439,19 +424,13 @@ describe("tracing bridge (otel-tracer)", () => {
   });
 
   it("privacyLevel metadata drops sensitive attribute keys", () => {
-    const filtered = otelTracer.filterSpanAttributes(
-      { apiKey: "sk-123", token: "abc", model: "gpt-4o" },
-      "metadata",
-    );
+    const filtered = otelTracer.filterSpanAttributes({ apiKey: "sk-123", token: "abc", model: "gpt-4o" }, "metadata");
 
     expect(filtered).toEqual({ model: "gpt-4o" });
   });
 
   it("privacyLevel full additionally drops payload-like keys", () => {
-    const filtered = otelTracer.filterSpanAttributes(
-      { apiKey: "sk-123", prompt: "hello", model: "gpt-4o" },
-      "full",
-    );
+    const filtered = otelTracer.filterSpanAttributes({ apiKey: "sk-123", prompt: "hello", model: "gpt-4o" }, "full");
 
     expect(filtered).toEqual({ model: "gpt-4o" });
   });

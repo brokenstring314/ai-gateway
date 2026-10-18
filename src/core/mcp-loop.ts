@@ -35,7 +35,12 @@ export interface McpLoopResult {
 
 export interface McpLoop {
   inject(req: ChatCompletionRequest): ChatCompletionRequest;
-  run(ctx: RequestContext, req: ChatCompletionRequest, first: ChatCompletionResponse, next: NextCompletion): Promise<McpLoopResult>;
+  run(
+    ctx: RequestContext,
+    req: ChatCompletionRequest,
+    first: ChatCompletionResponse,
+    next: NextCompletion,
+  ): Promise<McpLoopResult>;
 }
 
 function toolCallsOf(response: ChatCompletionResponse): readonly ToolCall[] {

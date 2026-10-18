@@ -59,17 +59,35 @@ const DONE = enc.encode("data: [DONE]\n\n");
 export const BIG_STREAM_TOTAL = 2000; // x 64 KiB = 125 MiB if fully pulled
 export const USAGE = { prompt_tokens: 11, completion_tokens: 22, total_tokens: 33 };
 
-function chunk(model: string, delta: Record<string, unknown>, finish: string | null = null, extra: Record<string, unknown> = {}) {
-  return { id: "chatcmpl-mock", object: "chat.completion.chunk", created: 1, model, choices: [{ index: 0, delta, finish_reason: finish, ...extra }] };
+function chunk(
+  model: string,
+  delta: Record<string, unknown>,
+  finish: string | null = null,
+  extra: Record<string, unknown> = {},
+) {
+  return {
+    id: "chatcmpl-mock",
+    object: "chat.completion.chunk",
+    created: 1,
+    model,
+    choices: [{ index: 0, delta, finish_reason: finish, ...extra }],
+  };
 }
 
-function chatCompletion(model: string, message: Record<string, unknown>, finish = "stop", choiceExtra: Record<string, unknown> = {}) {
+function chatCompletion(
+  model: string,
+  message: Record<string, unknown>,
+  finish = "stop",
+  choiceExtra: Record<string, unknown> = {},
+) {
   return {
     id: "chatcmpl-mock",
     object: "chat.completion",
     created: 1,
     model,
-    choices: [{ index: 0, message: { role: "assistant", ...message }, finish_reason: finish, logprobs: null, ...choiceExtra }],
+    choices: [
+      { index: 0, message: { role: "assistant", ...message }, finish_reason: finish, logprobs: null, ...choiceExtra },
+    ],
     usage: USAGE,
   };
 }
@@ -90,30 +108,63 @@ export function startMockUpstream(name = "mock"): MockUpstream {
       const url = new URL(req.url);
       const text = await req.text();
       let body: any = null;
-      try { body = text ? JSON.parse(text) : null; } catch { body = text; }
-      const rec: RecordedRequest = { method: req.method, path: url.pathname, headers: Object.fromEntries(req.headers.entries()), body, aborted: false };
+      try {
+        body = text ? JSON.parse(text) : null;
+      } catch {
+        body = text;
+      }
+      const rec: RecordedRequest = {
+        method: req.method,
+        path: url.pathname,
+        headers: Object.fromEntries(req.headers.entries()),
+        body,
+        aborted: false,
+      };
       requests.push(rec);
-      req.signal.addEventListener("abort", () => { rec.aborted = true; });
+      req.signal.addEventListener("abort", () => {
+        rec.aborted = true;
+      });
       const mode = queue.length > 0 ? queue.shift()! : defaultMode;
       return respond(mode, url.pathname, body, rec, req.signal);
     },
   });
 
-  function respond(mode: Mode, path: string, body: any, rec: RecordedRequest, signal: AbortSignal): Response | Promise<Response> {
+  function respond(
+    mode: Mode,
+    path: string,
+    body: any,
+    rec: RecordedRequest,
+    signal: AbortSignal,
+  ): Response | Promise<Response> {
     const model = typeof body?.model === "string" ? body.model : "gpt-4o";
     const wantsStream = body?.stream === true;
 
     if (typeof mode === "object") {
-      return new Response(mode.body === undefined ? "" : typeof mode.body === "string" ? mode.body : JSON.stringify(mode.body), {
-        status: mode.status,
-        headers: { "content-type": "application/json", ...mode.headers },
-      });
+      return new Response(
+        mode.body === undefined ? "" : typeof mode.body === "string" ? mode.body : JSON.stringify(mode.body),
+        {
+          status: mode.status,
+          headers: { "content-type": "application/json", ...mode.headers },
+        },
+      );
     }
     switch (mode) {
       case "401":
-        return Response.json({ error: { message: `Incorrect API key provided (${name})`, type: "invalid_request_error", code: "invalid_api_key" } }, { status: 401 });
+        return Response.json(
+          {
+            error: {
+              message: `Incorrect API key provided (${name})`,
+              type: "invalid_request_error",
+              code: "invalid_api_key",
+            },
+          },
+          { status: 401 },
+        );
       case "429":
-        return Response.json({ error: { message: "Rate limit reached", type: "rate_limit_error", code: "rate_limit_exceeded" } }, { status: 429, headers: { "Retry-After": "7" } });
+        return Response.json(
+          { error: { message: "Rate limit reached", type: "rate_limit_error", code: "rate_limit_exceeded" } },
+          { status: 429, headers: { "Retry-After": "7" } },
+        );
       case "500":
         return Response.json({ error: { message: "upstream exploded", type: "server_error" } }, { status: 500 });
       case "hang":
@@ -125,9 +176,15 @@ export function startMockUpstream(name = "mock"): MockUpstream {
       case "json_on_stream":
         return Response.json(chatCompletion(model, { content: "real answer" }));
       case "rst":
-        return new Response(new ReadableStream({
-          start(c) { c.enqueue(enc.encode(wantsStream ? "" : "{\"id\":")); c.error(new Error("mock upstream: simulated connection reset")); },
-        }), { status: 200, headers: { "content-type": wantsStream ? "text/event-stream" : "application/json" } });
+        return new Response(
+          new ReadableStream({
+            start(c) {
+              c.enqueue(enc.encode(wantsStream ? "" : '{"id":'));
+              c.error(new Error("mock upstream: simulated connection reset"));
+            },
+          }),
+          { status: 200, headers: { "content-type": wantsStream ? "text/event-stream" : "application/json" } },
+        );
       case "empty_stream":
         return new Response("", { headers: { "content-type": "text/event-stream" } });
     }
@@ -146,31 +203,65 @@ export function startMockUpstream(name = "mock"): MockUpstream {
       return Response.json({ created: 1, data: [{ url: `https://img.example/${name}.png`, revised_prompt: "rp" }] });
     }
     if (path.endsWith("/completions") && !path.endsWith("/chat/completions")) {
-      return Response.json({ id: "cmpl-mock", object: "text_completion", created: 1, model, choices: [{ index: 0, text: `legacy from ${name}`, finish_reason: "stop", logprobs: null }], usage: USAGE });
+      return Response.json({
+        id: "cmpl-mock",
+        object: "text_completion",
+        created: 1,
+        model,
+        choices: [{ index: 0, text: `legacy from ${name}`, finish_reason: "stop", logprobs: null }],
+        usage: USAGE,
+      });
     }
 
     const stream = wantsStream || mode === "stream";
     if (!stream) {
       if (mode === "tools") {
-        return Response.json(chatCompletion(model, { content: null, tool_calls: [{ id: "call_1", type: "function", function: { name: "get_weather", arguments: "{\"city\":\"SF\"}" } }] }, "tool_calls"));
+        return Response.json(
+          chatCompletion(
+            model,
+            {
+              content: null,
+              tool_calls: [
+                { id: "call_1", type: "function", function: { name: "get_weather", arguments: '{"city":"SF"}' } },
+              ],
+            },
+            "tool_calls",
+          ),
+        );
       }
       if (mode === "reasoning") {
-        return Response.json(chatCompletion(model, { content: "ok", reasoning_content: "think" }, "stop", { logprobs: LOGPROBS }));
+        return Response.json(
+          chatCompletion(model, { content: "ok", reasoning_content: "think" }, "stop", { logprobs: LOGPROBS }),
+        );
       }
-      return Response.json(chatCompletion(model, { content: `hello from ${name}` }), { headers: { "x-request-id": "upstream-req-1" } });
+      return Response.json(chatCompletion(model, { content: `hello from ${name}` }), {
+        headers: { "x-request-id": "upstream-req-1" },
+      });
     }
 
     // ── Streaming ──
     if (mode === "big_stream") {
       const pad = "x".repeat(64 * 1024);
-      return new Response(new ReadableStream<Uint8Array>({
-        pull(c) {
-          if (bigStreamProduced >= BIG_STREAM_TOTAL) { c.enqueue(DONE); c.close(); return; }
-          bigStreamProduced++;
-          c.enqueue(data(chunk(model, { content: pad })));
-        },
-        cancel() { rec.aborted = true; },
-      }, { highWaterMark: 0 }), { headers: { "content-type": "text/event-stream" } });
+      return new Response(
+        new ReadableStream<Uint8Array>(
+          {
+            pull(c) {
+              if (bigStreamProduced >= BIG_STREAM_TOTAL) {
+                c.enqueue(DONE);
+                c.close();
+                return;
+              }
+              bigStreamProduced++;
+              c.enqueue(data(chunk(model, { content: pad })));
+            },
+            cancel() {
+              rec.aborted = true;
+            },
+          },
+          { highWaterMark: 0 },
+        ),
+        { headers: { "content-type": "text/event-stream" } },
+      );
     }
 
     const events: Uint8Array[] = [];
@@ -178,9 +269,17 @@ export function startMockUpstream(name = "mock"): MockUpstream {
     switch (mode) {
       case "tools":
         events.push(
-          data(chunk(model, { role: "assistant", content: null, tool_calls: [{ index: 0, id: "call_1", type: "function", function: { name: "get_weather", arguments: "" } }] })),
-          data(chunk(model, { tool_calls: [{ index: 0, function: { arguments: "{\"city\":" } }] })),
-          data(chunk(model, { tool_calls: [{ index: 0, function: { arguments: "\"SF\"}" } }] })),
+          data(
+            chunk(model, {
+              role: "assistant",
+              content: null,
+              tool_calls: [
+                { index: 0, id: "call_1", type: "function", function: { name: "get_weather", arguments: "" } },
+              ],
+            }),
+          ),
+          data(chunk(model, { tool_calls: [{ index: 0, function: { arguments: '{"city":' } }] })),
+          data(chunk(model, { tool_calls: [{ index: 0, function: { arguments: '"SF"}' } }] })),
           data(chunk(model, {}, "tool_calls")),
           DONE,
         );
@@ -199,39 +298,88 @@ export function startMockUpstream(name = "mock"): MockUpstream {
         break;
       case "done_then_garbage":
         events.push(data(chunk(model, { role: "assistant", content: "ok" }, "stop")), DONE);
-        after = async (c) => { await sleep(1500); c.enqueue(data(chunk(model, { content: "GARBAGE-AFTER-DONE" }))); };
+        after = async (c) => {
+          await sleep(1500);
+          c.enqueue(data(chunk(model, { content: "GARBAGE-AFTER-DONE" })));
+        };
         break;
       case "truncated":
-        events.push(data(chunk(model, { role: "assistant", content: "The answer is" })), data(chunk(model, { content: " 4" })));
+        events.push(
+          data(chunk(model, { role: "assistant", content: "The answer is" })),
+          data(chunk(model, { content: " 4" })),
+        );
         break;
       default: {
-        events.push(data(chunk(model, { role: "assistant", content: "Hel" })), data(chunk(model, { content: "lo" })), data(chunk(model, {}, "stop")));
+        events.push(
+          data(chunk(model, { role: "assistant", content: "Hel" })),
+          data(chunk(model, { content: "lo" })),
+          data(chunk(model, {}, "stop")),
+        );
         if (mode === "stream_usage" || body?.stream_options?.include_usage === true) {
-          events.push(data({ id: "chatcmpl-mock", object: "chat.completion.chunk", created: 1, model, choices: [], usage: USAGE }));
+          events.push(
+            data({
+              id: "chatcmpl-mock",
+              object: "chat.completion.chunk",
+              created: 1,
+              model,
+              choices: [],
+              usage: USAGE,
+            }),
+          );
         }
         events.push(DONE);
       }
     }
-    return new Response(new ReadableStream<Uint8Array>({
-      async start(c) {
-        for (const e of events) c.enqueue(e);
-        if (after) {
-          try { await after(c); } catch { /* client gone */ }
-        }
-        try { c.close(); } catch { /* already cancelled */ }
-      },
-      cancel() { rec.aborted = true; },
-    }), { headers: { "content-type": "text/event-stream" } });
+    return new Response(
+      new ReadableStream<Uint8Array>({
+        async start(c) {
+          for (const e of events) c.enqueue(e);
+          if (after) {
+            try {
+              await after(c);
+            } catch {
+              /* client gone */
+            }
+          }
+          try {
+            c.close();
+          } catch {
+            /* already cancelled */
+          }
+        },
+        cancel() {
+          rec.aborted = true;
+        },
+      }),
+      { headers: { "content-type": "text/event-stream" } },
+    );
   }
 
   return {
-    get url() { return `http://127.0.0.1:${server.port}/v1`; },
-    get port() { return server.port as number; },
+    get url() {
+      return `http://127.0.0.1:${server.port}/v1`;
+    },
+    get port() {
+      return server.port as number;
+    },
     requests,
-    get bigStreamProduced() { return bigStreamProduced; },
-    enqueue(...modes) { queue.push(...modes); },
-    setDefault(mode) { defaultMode = mode; },
-    reset() { queue.length = 0; requests.length = 0; defaultMode = "ok"; bigStreamProduced = 0; },
-    stop() { server.stop(true); },
+    get bigStreamProduced() {
+      return bigStreamProduced;
+    },
+    enqueue(...modes) {
+      queue.push(...modes);
+    },
+    setDefault(mode) {
+      defaultMode = mode;
+    },
+    reset() {
+      queue.length = 0;
+      requests.length = 0;
+      defaultMode = "ok";
+      bigStreamProduced = 0;
+    },
+    stop() {
+      server.stop(true);
+    },
   };
 }

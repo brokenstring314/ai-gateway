@@ -11,7 +11,15 @@ const RO = "readonly-bootstrap-key-xyz";
 function makeConfig(extra: Partial<GatewayConfig> = {}): GatewayConfig {
   return {
     strategy: { mode: "single", targets: ["mock"] },
-    targets: [{ name: "mock", provider: "openai", apiKey: "sk-target-secret", baseURL: "https://upstream.example/v1", models: ["gpt-4o"] }],
+    targets: [
+      {
+        name: "mock",
+        provider: "openai",
+        apiKey: "sk-target-secret",
+        baseURL: "https://upstream.example/v1",
+        models: ["gpt-4o"],
+      },
+    ],
     adminSecret: "test-admin-secret-1234",
     ...extra,
   };
@@ -20,9 +28,7 @@ function makeConfig(extra: Partial<GatewayConfig> = {}): GatewayConfig {
 async function makeApp(opts: { bootstrapReadOnlyKey?: string } = {}) {
   // Bootstrap keys are only live while no real admin credential exists, so
   // the bootstrap cases run without adminSecret.
-  const config = opts.bootstrapReadOnlyKey !== undefined
-    ? makeConfig({ adminSecret: undefined })
-    : makeConfig();
+  const config = opts.bootstrapReadOnlyKey !== undefined ? makeConfig({ adminSecret: undefined }) : makeConfig();
   const keyStore = await KeyStore.create(new Database(":memory:"));
   const logStore = await RequestLogStore.create(new Database(":memory:"));
   const app = createApp(new Gateway(config), config, undefined, keyStore, {
@@ -48,7 +54,15 @@ describe("admin scope enforcement", () => {
     expect((await app.request("/admin/keys/usage", { headers: h })).status).toBe(200);
     expect((await app.request("/admin/config", { headers: h })).status).toBe(200);
     expect((await app.request("/admin/logs", { method: "DELETE", headers: h })).status).toBe(403);
-    expect((await app.request("/admin/keys", { method: "POST", headers: { ...h, "Content-Type": "application/json" }, body: JSON.stringify({ name: "x" }) })).status).toBe(403);
+    expect(
+      (
+        await app.request("/admin/keys", {
+          method: "POST",
+          headers: { ...h, "Content-Type": "application/json" },
+          body: JSON.stringify({ name: "x" }),
+        })
+      ).status,
+    ).toBe(403);
   });
 });
 
@@ -68,7 +82,8 @@ describe("config write API removed (0.2.0)", () => {
       const res = await app.request(path, {
         method,
         headers: h,
-        body: method === "GET" ? undefined : JSON.stringify({ ...makeConfig(), adminSecret: "attacker-controlled-secret" }),
+        body:
+          method === "GET" ? undefined : JSON.stringify({ ...makeConfig(), adminSecret: "attacker-controlled-secret" }),
       });
       expect(res.status).toBe(410);
       const body = (await res.json()) as { error: { code: string; message: string } };
