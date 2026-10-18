@@ -16,9 +16,7 @@ export interface CorsOptions {
 }
 
 export function corsMiddleware(origins?: string[], options: CorsOptions = {}): MiddlewareHandler {
-  const origin = origins && origins.length > 0
-    ? origins.join(",")
-    : "*";
+  const origin = origins && origins.length > 0 ? origins.join(",") : "*";
 
   return honoCors({
     origin,

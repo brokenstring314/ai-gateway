@@ -1,11 +1,6 @@
 import { describe, expect, it } from "bun:test";
 import type { TracingPolicy } from "@/observability/otel-policy";
-import {
-  applyPrivacy,
-  parseShutdownGrace,
-  policyHeaders,
-  shouldSample,
-} from "@/observability/otel-policy";
+import { applyPrivacy, parseShutdownGrace, policyHeaders, shouldSample } from "@/observability/otel-policy";
 
 describe("shouldSample", () => {
   it("never samples at ratio 0", () => {
@@ -57,9 +52,9 @@ describe("shouldSample", () => {
 
 describe("applyPrivacy", () => {
   it("redacts secrets at the metadata level", () => {
-    expect(
-      applyPrivacy("contact alice@example.com with sk-proj-abcdef1234567890", "metadata"),
-    ).toBe("contact [REDACTED_EMAIL] with [REDACTED_KEY]");
+    expect(applyPrivacy("contact alice@example.com with sk-proj-abcdef1234567890", "metadata")).toBe(
+      "contact [REDACTED_EMAIL] with [REDACTED_KEY]",
+    );
   });
 
   it("leaves the message unchanged at the full level", () => {

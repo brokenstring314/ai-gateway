@@ -11,13 +11,15 @@ import type { IProvider, ChatCompletionRequest, ChatCompletionResponse, RequestC
 function makeConfig(): GatewayConfig {
   return {
     strategy: { mode: "single", targets: ["mock"] },
-    targets: [{
-      name: "mock",
-      provider: "openai",
-      apiKey: "sk-target",
-      baseURL: "https://upstream.example/v1",
-      models: ["gpt-4o"],
-    }],
+    targets: [
+      {
+        name: "mock",
+        provider: "openai",
+        apiKey: "sk-target",
+        baseURL: "https://upstream.example/v1",
+        models: ["gpt-4o"],
+      },
+    ],
     adminSecret: "test-admin-secret-1234",
     server: { port: 3199, host: "127.0.0.1" },
     passthroughProxy: { enabled: true, routes: ["POST /v1/files"] },
@@ -196,8 +198,18 @@ describe("Wave 3 wiring (integration)", () => {
 
   it("shutdown manager drains and closes registered components", async () => {
     const closed: string[] = [];
-    shutdown.register({ name: "component-a", close: () => { closed.push("a"); } });
-    shutdown.register({ name: "component-b", close: () => { closed.push("b"); } });
+    shutdown.register({
+      name: "component-a",
+      close: () => {
+        closed.push("a");
+      },
+    });
+    shutdown.register({
+      name: "component-b",
+      close: () => {
+        closed.push("b");
+      },
+    });
     await shutdown.shutdown("test");
     expect(closed).toEqual(["a", "b"]);
     expect(shutdown.isShuttingDown).toBe(true);

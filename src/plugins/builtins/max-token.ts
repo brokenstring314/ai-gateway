@@ -28,10 +28,7 @@ export class MaxTokenPlugin implements IPlugin {
       );
     }
 
-    if (
-      req.maxCompletionTokens !== undefined &&
-      req.maxCompletionTokens > this.config.maxTokens
-    ) {
+    if (req.maxCompletionTokens !== undefined && req.maxCompletionTokens > this.config.maxTokens) {
       newMaxCompletionTokens = this.config.maxTokens;
       modified = true;
       console.log(

@@ -1,9 +1,5 @@
 import { hashKey } from "../auth/key-hash.js";
-import type {
-  ChatCompletionRequest,
-  ChatCompletionResponse,
-  RequestContext,
-} from "../providers/types.js";
+import type { ChatCompletionRequest, ChatCompletionResponse, RequestContext } from "../providers/types.js";
 import type { PluginContext } from "./types.js";
 
 export interface InternalPluginContext extends PluginContext {
@@ -39,10 +35,7 @@ export function apiKeyId(apiKey: string): string {
   return "key_" + hashKey(apiKey).slice(0, 32);
 }
 
-export function createPluginContext(
-  request: ChatCompletionRequest,
-  reqCtx?: RequestContext,
-): InternalPluginContext {
+export function createPluginContext(request: ChatCompletionRequest, reqCtx?: RequestContext): InternalPluginContext {
   const metadata: Record<string, unknown> = {};
   // Callers may pass a bare context without metadata; tolerate it.
   const apiKey = (reqCtx?.metadata as Record<string, unknown> | undefined)?.["apiKey"];

@@ -40,9 +40,7 @@ export interface ProxyTarget {
 }
 
 /** Resolves a proxy target by provider name or by body model. */
-export type TargetResolver = (
-  selector: { provider: string } | { model: string },
-) => ProxyTarget | undefined;
+export type TargetResolver = (selector: { provider: string } | { model: string }) => ProxyTarget | undefined;
 
 export type ProviderResolution =
   | { ok: true; provider: string; target: ProxyTarget }
@@ -121,11 +119,7 @@ export function stripTrailingV1(baseURL: string): string {
  * Join a (stripped) target base URL with the inbound /v1/* path and search
  * string, avoiding double slashes at the seam.
  */
-export function buildUpstreamUrl(
-  baseURL: string,
-  inboundPath: string,
-  search = "",
-): string {
+export function buildUpstreamUrl(baseURL: string, inboundPath: string, search = ""): string {
   const u = new URL(stripTrailingV1(baseURL));
   const basePath = u.pathname.replace(/\/+$/, "");
   u.pathname = basePath + (inboundPath.startsWith("/") ? inboundPath : `/${inboundPath}`);
@@ -140,10 +134,7 @@ export function buildUpstreamUrl(
  * baseURL and builds the default auth convention (Authorization: Bearer
  * <apiKey>); an empty apiKey produces no auth headers (e.g. Ollama).
  */
-export function resolveProxyTarget(
-  target: TargetConfig,
-  opts?: ResolveProxyTargetOptions,
-): ProxyTarget {
+export function resolveProxyTarget(target: TargetConfig, opts?: ResolveProxyTargetOptions): ProxyTarget {
   const authHeaders =
     opts?.authHeaders !== undefined
       ? opts.authHeaders(target)
@@ -211,10 +202,7 @@ export function extractTopLevelModel(body: string): string | undefined {
   const skipScalar = (): void => {
     while (i < n) {
       const ch = body[i]!;
-      if (
-        ch === "," || ch === "}" || ch === "]" ||
-        ch === " " || ch === "\n" || ch === "\r" || ch === "\t"
-      ) {
+      if (ch === "," || ch === "}" || ch === "]" || ch === " " || ch === "\n" || ch === "\r" || ch === "\t") {
         return;
       }
       i++;
@@ -315,8 +303,7 @@ export function resolveProvider(
     return { ok: false, reason: "unknown_provider", provider: headerName };
   }
 
-  const model =
-    bodyText !== undefined && bodyText !== "" ? extractTopLevelModel(bodyText) : undefined;
+  const model = bodyText !== undefined && bodyText !== "" ? extractTopLevelModel(bodyText) : undefined;
   if (model !== undefined && model !== "") {
     const target = resolver({ model });
     if (target !== undefined) return { ok: true, provider: target.provider, target };
@@ -363,10 +350,7 @@ const HOP_BY_HOP_RESPONSE_HEADERS = [
  * hop-by-hop headers, then apply the target's auth headers. The gateway's own
  * Authorization (client API key) and X-Admin-Secret never reach the upstream.
  */
-export function buildForwardHeaders(
-  incoming: Headers,
-  target: ProxyTarget,
-): Headers {
+export function buildForwardHeaders(incoming: Headers, target: ProxyTarget): Headers {
   const out = new Headers();
   for (const [name, value] of incoming) {
     if (INTERNAL_REQUEST_HEADERS.has(name.toLowerCase())) continue;
@@ -385,9 +369,7 @@ export function buildForwardHeaders(
  * requires auth — even when allowUnauthenticatedProxy is explicitly set
  * (mirrors the Go bootstrap guard that refuses the combination at startup).
  */
-export function isProxyAuthAllowed(
-  opts: Pick<ProxyAuthOptions, "environment" | "allowUnauthenticatedProxy">,
-): boolean {
+export function isProxyAuthAllowed(opts: Pick<ProxyAuthOptions, "environment" | "allowUnauthenticatedProxy">): boolean {
   if (opts.environment === "production") return false;
   return opts.allowUnauthenticatedProxy === true;
 }
@@ -396,9 +378,7 @@ export function isProxyAuthAllowed(
  * Build a Bearer-token validator that compares candidates with
  * timingSafeEqual — never plaintext === early exits.
  */
-export function createProxyKeyValidator(
-  keys: readonly string[],
-): (token: string) => boolean {
+export function createProxyKeyValidator(keys: readonly string[]): (token: string) => boolean {
   return (token: string): boolean => {
     if (token === "") return false;
     for (const candidate of keys) {
@@ -417,10 +397,7 @@ function extractBearerToken(header: string): string | undefined {
  * Evaluate proxy-route auth for a request. Fails closed: when auth is
  * required but no keyStore or validateKey is configured, nothing passes.
  */
-export function evaluateProxyAuth(
-  c: Context,
-  opts: ProxyAuthOptions,
-): ProxyAuthResult {
+export function evaluateProxyAuth(c: Context, opts: ProxyAuthOptions): ProxyAuthResult {
   if (isProxyAuthAllowed(opts)) return { status: "allowed" };
 
   const header = c.req.header("Authorization");
@@ -430,9 +407,7 @@ export function evaluateProxyAuth(
   if (token === undefined) return { status: "invalid_authorization" };
 
   if (opts.keyStore !== undefined) {
-    return opts.keyStore.validateKey(token) !== null
-      ? { status: "ok" }
-      : { status: "invalid_api_key" };
+    return opts.keyStore.validateKey(token) !== null ? { status: "ok" } : { status: "invalid_api_key" };
   }
   if (opts.validateKey !== undefined) {
     return opts.validateKey(token) ? { status: "ok" } : { status: "invalid_api_key" };
@@ -464,9 +439,7 @@ export function createProxyHandler(options: ProxyHandlerOptions): Handler<ProxyE
 
   return async (c) => {
     const authenticatedApiKey = (c.get as unknown as (key: string) => unknown)("apiKey");
-    const auth = authenticatedApiKey === undefined
-      ? evaluateProxyAuth(c, options)
-      : { status: "ok" as const };
+    const auth = authenticatedApiKey === undefined ? evaluateProxyAuth(c, options) : { status: "ok" as const };
     if (auth.status !== "allowed" && auth.status !== "ok") {
       return authFailureResponse(auth.status);
     }
@@ -489,8 +462,7 @@ export function createProxyHandler(options: ProxyHandlerOptions): Handler<ProxyE
     // extract a top-level "model" when no X-Provider header was given.
     const raw = await c.req.arrayBuffer();
     let bodyBuffer: ArrayBuffer | Uint8Array | undefined = raw.byteLength > 0 ? raw : undefined;
-    const bodyText =
-      bodyBuffer !== undefined ? new TextDecoder().decode(bodyBuffer) : undefined;
+    const bodyText = bodyBuffer !== undefined ? new TextDecoder().decode(bodyBuffer) : undefined;
 
     if (options.beforeForward) {
       const result = await options.beforeForward(c as unknown as Context, bodyText);
@@ -498,11 +470,7 @@ export function createProxyHandler(options: ProxyHandlerOptions): Handler<ProxyE
       if (result !== undefined) bodyBuffer = new TextEncoder().encode(result.bodyText);
     }
 
-    const resolution = resolveProvider(
-      c.req.header("X-Provider"),
-      bodyText,
-      options.resolveTarget,
-    );
+    const resolution = resolveProvider(c.req.header("X-Provider"), bodyText, options.resolveTarget);
     if (!resolution.ok) {
       return providerErrorResponse(resolution);
     }
@@ -526,14 +494,10 @@ export function createProxyHandler(options: ProxyHandlerOptions): Handler<ProxyE
     // (reason TimeoutError) and on the client disconnecting (the incoming
     // request's own signal), whichever comes first.
     const abortController = (c.get as unknown as (key: string) => unknown)("abortController");
-    const timeoutSignal =
-      abortController instanceof AbortController ? abortController.signal : undefined;
+    const timeoutSignal = abortController instanceof AbortController ? abortController.signal : undefined;
     const clientSignal = c.req.raw.signal as AbortSignal | undefined;
-    const sources = [timeoutSignal, clientSignal].filter(
-      (s): s is AbortSignal => s !== undefined,
-    );
-    const signal =
-      sources.length > 1 ? AbortSignal.any(sources) : sources[0];
+    const sources = [timeoutSignal, clientSignal].filter((s): s is AbortSignal => s !== undefined);
+    const signal = sources.length > 1 ? AbortSignal.any(sources) : sources[0];
 
     let upstream: Response;
     try {
@@ -575,21 +539,14 @@ export function createProxyHandler(options: ProxyHandlerOptions): Handler<ProxyE
 
 // ── Error responses ──
 
-function openAIErrorResponse(
-  status: number,
-  message: string,
-  type: string,
-  code: string,
-): Response {
+function openAIErrorResponse(status: number, message: string, type: string, code: string): Response {
   return new Response(JSON.stringify({ error: { message, type, code } }), {
     status,
     headers: { "Content-Type": "application/json" },
   });
 }
 
-function providerErrorResponse(
-  resolution: ProviderResolution & { ok: false },
-): Response {
+function providerErrorResponse(resolution: ProviderResolution & { ok: false }): Response {
   if (resolution.reason === "unknown_provider") {
     return openAIErrorResponse(
       400,
@@ -619,7 +576,12 @@ function authFailureResponse(status: ProxyAuthResult["status"]): Response {
     return openAIErrorResponse(401, "Missing Authorization header", "authentication_error", "missing_authorization");
   }
   if (status === "invalid_authorization") {
-    return openAIErrorResponse(401, "Invalid Authorization header format; expected Bearer <token>", "authentication_error", "invalid_authorization");
+    return openAIErrorResponse(
+      401,
+      "Invalid Authorization header format; expected Bearer <token>",
+      "authentication_error",
+      "invalid_authorization",
+    );
   }
   return openAIErrorResponse(401, "Invalid API key", "authentication_error", "invalid_api_key");
 }

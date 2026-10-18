@@ -38,9 +38,7 @@ export type ProviderCapability = (typeof ProviderCapability)[keyof typeof Provid
  * The full set of capabilities — default capability set for a fully-featured
  * OpenAI-compatible provider.
  */
-const ALL_CAPABILITIES: ReadonlySet<ProviderCapability> = new Set(
-  Object.values(ProviderCapability),
-);
+const ALL_CAPABILITIES: ReadonlySet<ProviderCapability> = new Set(Object.values(ProviderCapability));
 
 /**
  * Per-provider capability overrides.
@@ -56,7 +54,13 @@ const PROVIDER_CAPABILITY_MAP: Readonly<Record<string, ReadonlySet<ProviderCapab
   groq: without(ALL_CAPABILITIES, ProviderCapability.Logprobs, ProviderCapability.TopLogprobs, ProviderCapability.Seed),
 
   // Mistral: no logprobs, no seed, no stream_options.
-  mistral: without(ALL_CAPABILITIES, ProviderCapability.Logprobs, ProviderCapability.TopLogprobs, ProviderCapability.Seed, ProviderCapability.StreamOptions),
+  mistral: without(
+    ALL_CAPABILITIES,
+    ProviderCapability.Logprobs,
+    ProviderCapability.TopLogprobs,
+    ProviderCapability.Seed,
+    ProviderCapability.StreamOptions,
+  ),
 
   // Ollama: subset for local models.
   ollama: new Set([
@@ -78,13 +82,28 @@ const PROVIDER_CAPABILITY_MAP: Readonly<Record<string, ReadonlySet<ProviderCapab
   ]),
 
   // Cerebras: no logprobs, no seed.
-  cerebras: without(ALL_CAPABILITIES, ProviderCapability.Logprobs, ProviderCapability.TopLogprobs, ProviderCapability.Seed),
+  cerebras: without(
+    ALL_CAPABILITIES,
+    ProviderCapability.Logprobs,
+    ProviderCapability.TopLogprobs,
+    ProviderCapability.Seed,
+  ),
 
   // AI21: no logprobs, no stream_options.
-  ai21: without(ALL_CAPABILITIES, ProviderCapability.Logprobs, ProviderCapability.TopLogprobs, ProviderCapability.StreamOptions),
+  ai21: without(
+    ALL_CAPABILITIES,
+    ProviderCapability.Logprobs,
+    ProviderCapability.TopLogprobs,
+    ProviderCapability.StreamOptions,
+  ),
 
   // Novita: no seed, no logprobs.
-  novita: without(ALL_CAPABILITIES, ProviderCapability.Logprobs, ProviderCapability.TopLogprobs, ProviderCapability.Seed),
+  novita: without(
+    ALL_CAPABILITIES,
+    ProviderCapability.Logprobs,
+    ProviderCapability.TopLogprobs,
+    ProviderCapability.Seed,
+  ),
 
   // Cloudflare: basic subset.
   cloudflare: new Set([
@@ -110,7 +129,10 @@ const PROVIDER_CAPABILITY_MAP: Readonly<Record<string, ReadonlySet<ProviderCapab
 };
 
 /** Create a set excluding specific items. */
-function without(base: ReadonlySet<ProviderCapability>, ...remove: ProviderCapability[]): ReadonlySet<ProviderCapability> {
+function without(
+  base: ReadonlySet<ProviderCapability>,
+  ...remove: ProviderCapability[]
+): ReadonlySet<ProviderCapability> {
   const result = new Set(base);
   for (const item of remove) result.delete(item);
   return result;
@@ -203,7 +225,10 @@ export function enforceUnsupportedParams(
   }
 
   // Wire (snake_case) parameter names, as the client sent them.
-  const labels = [...unsupportedFields.map((f) => FIELD_TO_CAPABILITY[f as string] ?? String(f)), ...unsupportedFeatures];
+  const labels = [
+    ...unsupportedFields.map((f) => FIELD_TO_CAPABILITY[f as string] ?? String(f)),
+    ...unsupportedFeatures,
+  ];
   if (labels.length === 0) {
     return { action: "ok", request };
   }

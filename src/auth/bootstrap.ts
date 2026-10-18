@@ -64,12 +64,12 @@ export function createBootstrapGate(opts: BootstrapGateOptions): BootstrapGate {
       if (reason !== undefined) {
         log(
           `[auth] ADMIN_BOOTSTRAP_KEY / ADMIN_BOOTSTRAP_READ_ONLY_KEY disabled: ${reason}. ` +
-          "Bootstrap keys are refused; remove them from the environment.",
+            "Bootstrap keys are refused; remove them from the environment.",
         );
       } else if (lastReason !== null) {
         log(
           "[auth] ADMIN_BOOTSTRAP_KEY / ADMIN_BOOTSTRAP_READ_ONLY_KEY re-enabled: no admin credential exists " +
-          "(no admin key in the store, no adminSecret, no auth.keys).",
+            "(no admin key in the store, no adminSecret, no auth.keys).",
         );
       }
       lastReason = reason;

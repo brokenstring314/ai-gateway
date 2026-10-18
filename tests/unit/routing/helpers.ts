@@ -15,9 +15,7 @@ import type {
 export function createReq(overrides: Partial<ChatCompletionRequest> = {}): ChatCompletionRequest {
   return {
     model: "gpt-4",
-    messages: [
-      { role: "user", content: "Hello, world!" } as ChatMessage,
-    ],
+    messages: [{ role: "user", content: "Hello, world!" } as ChatMessage],
     ...overrides,
   };
 }
@@ -28,10 +26,7 @@ export function createReq(overrides: Partial<ChatCompletionRequest> = {}): ChatC
 export function createMockProvider(name: string): IProvider {
   return {
     name,
-    complete: async (
-      _ctx: RequestContext,
-      req: ChatCompletionRequest,
-    ): Promise<ChatCompletionResponse> => ({
+    complete: async (_ctx: RequestContext, req: ChatCompletionRequest): Promise<ChatCompletionResponse> => ({
       id: `resp-${name}`,
       object: "chat.completion",
       created: Math.floor(Date.now() / 1000),
@@ -62,10 +57,7 @@ export function createMockProvider(name: string): IProvider {
 export function createStreamMockProvider(name: string): IProvider & IStreamProvider {
   return {
     ...createMockProvider(name),
-    completeStream: async function* (
-      _ctx: RequestContext,
-      req: ChatCompletionRequest,
-    ): AsyncIterable<StreamChunk> {
+    completeStream: async function* (_ctx: RequestContext, req: ChatCompletionRequest): AsyncIterable<StreamChunk> {
       yield {
         id: `chunk-${name}-1`,
         object: "chat.completion.chunk",
@@ -86,10 +78,7 @@ export function createStreamMockProvider(name: string): IProvider & IStreamProvi
 /**
  * Provider whose complete() throws the given error (for fallback tests).
  */
-export function createFailingProvider(
-  name: string,
-  error: Error,
-): IProvider {
+export function createFailingProvider(name: string, error: Error): IProvider {
   return {
     ...createMockProvider(name),
     complete: async (): Promise<ChatCompletionResponse> => {
@@ -134,9 +123,15 @@ type WithRetry<C> = C & { retryConfigs?: ReadonlyMap<string, RetryConfig> };
 
 export const boundSingle = (lookup: ProviderLookup, config: ConstructorParameters<typeof SingleStrategy>[0]) =>
   bindStrategy(new SingleStrategy(config), lookup);
-export const boundFallback = (lookup: ProviderLookup, config: WithRetry<ConstructorParameters<typeof FallbackStrategy>[0]>) =>
-  bindStrategy(new FallbackStrategy(config), lookup, config.retryConfigs);
-export const boundLoadBalance = (lookup: ProviderLookup, config: WithRetry<ConstructorParameters<typeof LoadBalanceStrategy>[0]>) =>
-  bindStrategy(new LoadBalanceStrategy(config), lookup, config.retryConfigs);
-export const boundConditional = (lookup: ProviderLookup, config: WithRetry<ConstructorParameters<typeof ConditionalStrategy>[0]>) =>
-  bindStrategy(new ConditionalStrategy(config), lookup, config.retryConfigs);
+export const boundFallback = (
+  lookup: ProviderLookup,
+  config: WithRetry<ConstructorParameters<typeof FallbackStrategy>[0]>,
+) => bindStrategy(new FallbackStrategy(config), lookup, config.retryConfigs);
+export const boundLoadBalance = (
+  lookup: ProviderLookup,
+  config: WithRetry<ConstructorParameters<typeof LoadBalanceStrategy>[0]>,
+) => bindStrategy(new LoadBalanceStrategy(config), lookup, config.retryConfigs);
+export const boundConditional = (
+  lookup: ProviderLookup,
+  config: WithRetry<ConstructorParameters<typeof ConditionalStrategy>[0]>,
+) => bindStrategy(new ConditionalStrategy(config), lookup, config.retryConfigs);

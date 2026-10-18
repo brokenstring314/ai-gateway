@@ -110,7 +110,11 @@ function unwrap(schema: ZodType): ZodType {
 
 /** Env string → the leaf's type (string fields such as apiKey stay strings). */
 function coerce(value: string, leafType: string): unknown {
-  if (leafType === "array") return value.split(",").map((v) => v.trim()).filter((v) => v !== "");
+  if (leafType === "array")
+    return value
+      .split(",")
+      .map((v) => v.trim())
+      .filter((v) => v !== "");
   if (leafType === "string") return value;
   return tryParse(value);
 }

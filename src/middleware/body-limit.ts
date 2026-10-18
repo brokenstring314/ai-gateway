@@ -41,10 +41,7 @@ function badContentLength(c: Context) {
 }
 
 /** Read at most `limit` bytes; returns null as soon as the stream exceeds it. */
-async function readBounded(
-  stream: ReadableStream<Uint8Array>,
-  limit: number,
-): Promise<Uint8Array | null> {
+async function readBounded(stream: ReadableStream<Uint8Array>, limit: number): Promise<Uint8Array | null> {
   const reader = stream.getReader();
   const chunks: Uint8Array[] = [];
   let total = 0;

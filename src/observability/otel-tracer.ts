@@ -95,11 +95,7 @@ export class OtelTracer {
    * Start a new span. When OpenTelemetry is active the span is created on the
    * registered SDK; otherwise a lightweight local span is produced.
    */
-  startSpan(
-    name: string,
-    attrs?: Record<string, string | number | boolean>,
-    options?: StartSpanOptions,
-  ): Span {
+  startSpan(name: string, attrs?: Record<string, string | number | boolean>, options?: StartSpanOptions): Span {
     const requestId = options?.requestId ?? getCurrentRequestId();
     if (this.hasInjectedTracer || isOtelEnabled()) {
       return this.startOtelSpan(name, attrs, requestId);

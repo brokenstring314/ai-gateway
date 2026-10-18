@@ -9,17 +9,29 @@ import { RetryExhaustedError } from "@/routing/retry";
 import { createTimeoutReason } from "@/core/outcome";
 
 const upstream = (status: number, body?: Record<string, unknown>, retryAfter?: string) => {
-  const e = new ProviderError("secret-t", status, String(body?.["message"] ?? `HTTP ${status}`), { origin: "upstream", upstream: body });
+  const e = new ProviderError("secret-t", status, String(body?.["message"] ?? `HTTP ${status}`), {
+    origin: "upstream",
+    upstream: body,
+  });
   if (retryAfter) e.retryAfter = retryAfter;
   return e;
 };
 
 describe("toGatewayError (plan §1.3)", () => {
   it("upstream 4xx keeps status and OpenAI code/type/param/message; target only in header", () => {
-    const e = toGatewayError(upstream(400, { message: "too long", type: "invalid_request_error", code: "context_length_exceeded", param: "messages" }));
+    const e = toGatewayError(
+      upstream(400, {
+        message: "too long",
+        type: "invalid_request_error",
+        code: "context_length_exceeded",
+        param: "messages",
+      }),
+    );
     expect(e.kind).toBe("upstream_client");
     expect(e.status).toBe(400);
-    expect(errorBody(e)).toEqual({ error: { message: "too long", type: "invalid_request_error", code: "context_length_exceeded", param: "messages" } });
+    expect(errorBody(e)).toEqual({
+      error: { message: "too long", type: "invalid_request_error", code: "context_length_exceeded", param: "messages" },
+    });
     expect(JSON.stringify(errorBody(e))).not.toContain("secret-t");
     expect(errorHeaders(e)["X-Gateway-Target"]).toBe("secret-t");
   });
@@ -43,7 +55,9 @@ describe("toGatewayError (plan §1.3)", () => {
   it("network error and invalid body -> 502 with fixed messages (no URL)", () => {
     const net = toGatewayError(new ProviderError("t", 0, "fetch failed: ECONNRESET http://10.0.0.1:8080/v1"));
     expect([net.status, net.code, net.message]).toEqual([502, "upstream_unavailable", "Upstream service unavailable"]);
-    const bad = toGatewayError(new ProviderError("t", 502, "invalid JSON in upstream response", { origin: "invalid_body" }));
+    const bad = toGatewayError(
+      new ProviderError("t", 502, "invalid JSON in upstream response", { origin: "invalid_body" }),
+    );
     expect([bad.status, bad.code]).toEqual([502, "upstream_invalid_response"]);
   });
 

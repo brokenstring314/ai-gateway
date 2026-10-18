@@ -8,7 +8,15 @@ import type { GatewayConfig } from "@/config/types";
 function makeConfig(extra: Partial<GatewayConfig> = {}): GatewayConfig {
   return {
     strategy: { mode: "single", targets: ["mock"] },
-    targets: [{ name: "mock", provider: "openai", apiKey: "sk-target-secret", baseURL: "https://upstream.example/v1", models: ["gpt-4o"] }],
+    targets: [
+      {
+        name: "mock",
+        provider: "openai",
+        apiKey: "sk-target-secret",
+        baseURL: "https://upstream.example/v1",
+        models: ["gpt-4o"],
+      },
+    ],
     adminSecret: "test-admin-secret-1234",
     ...extra,
   };
@@ -50,7 +58,11 @@ describe("config.auth.keys and auth.enabled", () => {
     const { app } = await makeApp(makeConfig({ auth: { enabled: false } }));
     expect((await app.request("/v1/models")).status).toBe(200);
     expect((await app.request("/admin/config")).status).toBe(401);
-    const proxied = await app.request("/v1/unknown-endpoint", { method: "POST", headers: { "X-Provider": "nope" }, body: "{}" });
+    const proxied = await app.request("/v1/unknown-endpoint", {
+      method: "POST",
+      headers: { "X-Provider": "nope" },
+      body: "{}",
+    });
     expect(proxied.status).not.toBe(401);
   });
 

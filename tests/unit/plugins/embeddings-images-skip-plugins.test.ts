@@ -19,7 +19,8 @@ describe("P-2 plugins skipped on embeddings/images", () => {
   it("rate-limit (1 rpm) applies to /v1/images/generations", async () => {
     const { app } = setup([{ name: "rate-limit", config: { keyRpm: 1 } }]);
     const s: number[] = [];
-    for (let i = 0; i < 3; i++) s.push((await post(app, "/v1/images/generations", { model: "gpt-4o", prompt: "cat" })).status);
+    for (let i = 0; i < 3; i++)
+      s.push((await post(app, "/v1/images/generations", { model: "gpt-4o", prompt: "cat" })).status);
     expect(s.filter((x) => x === 200).length).toBe(1); // actual: 3
   });
   it("rate-limit (1 rpm) applies to /v1/embeddings", async () => {
@@ -52,14 +53,28 @@ describe("P-2 plugins skipped on embeddings/images", () => {
   });
   it("short-circuit skips upstream: supplied embedding response returned, otherwise rejected", async () => {
     const { gw, calls } = setup([]);
-    const canned = { object: "list", model: "gpt-4o", provider: "plugin", data: [{ object: "embedding", index: 0, embedding: [9] }], usage: { promptTokens: 0, totalTokens: 0 } };
-    gw.registerPlugin("before_request", { name: "sc", stage: "before_request", execute: async (ctx) => {
-      if (ctx.request.messages[0]?.content === "canned") ctx.metadata["_embeddingResponse"] = canned;
-      return { action: "short_circuit", response: {} as never };
-    } });
+    const canned = {
+      object: "list",
+      model: "gpt-4o",
+      provider: "plugin",
+      data: [{ object: "embedding", index: 0, embedding: [9] }],
+      usage: { promptTokens: 0, totalTokens: 0 },
+    };
+    gw.registerPlugin("before_request", {
+      name: "sc",
+      stage: "before_request",
+      execute: async (ctx) => {
+        if (ctx.request.messages[0]?.content === "canned") ctx.metadata["_embeddingResponse"] = canned;
+        return { action: "short_circuit", response: {} as never };
+      },
+    });
     expect(await gw.embedWithPlugins({ metadata: {} }, { model: "gpt-4o", input: "canned" })).toBe(canned as never);
-    await expect(gw.embedWithPlugins({ metadata: {} }, { model: "gpt-4o", input: "other" })).rejects.toThrow(/short-circuited/);
-    await expect(gw.generateImageWithPlugins({ metadata: {} }, { model: "gpt-4o", prompt: "x" })).rejects.toThrow(/short-circuited/);
+    await expect(gw.embedWithPlugins({ metadata: {} }, { model: "gpt-4o", input: "other" })).rejects.toThrow(
+      /short-circuited/,
+    );
+    await expect(gw.generateImageWithPlugins({ metadata: {} }, { model: "gpt-4o", prompt: "x" })).rejects.toThrow(
+      /short-circuited/,
+    );
     expect(calls.embed.length).toBe(0);
     expect(calls.image.length).toBe(0);
   });

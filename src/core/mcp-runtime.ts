@@ -46,7 +46,9 @@ export async function connectMcpServers(config: GatewayConfig, registry: McpRegi
           required: runtime.required,
         });
       } catch (err) {
-        console.error(`[gateway] MCP server "${serverConfig.name}" failed to connect: ${err instanceof Error ? err.message : String(err)}`);
+        console.error(
+          `[gateway] MCP server "${serverConfig.name}" failed to connect: ${err instanceof Error ? err.message : String(err)}`,
+        );
       }
     }),
   );

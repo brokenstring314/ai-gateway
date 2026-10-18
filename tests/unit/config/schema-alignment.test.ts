@@ -36,9 +36,7 @@ describe("config defaults", () => {
   });
 
   it("parses aliases and adminSecret", () => {
-    const config = parseConfig(
-      baseConfig({ aliases: { fast: "gpt-4o" }, adminSecret: "a-very-long-admin-secret" }),
-    );
+    const config = parseConfig(baseConfig({ aliases: { fast: "gpt-4o" }, adminSecret: "a-very-long-admin-secret" }));
     expect(config.aliases).toEqual({ fast: "gpt-4o" });
     expect(config.adminSecret).toBe("a-very-long-admin-secret");
   });
@@ -55,9 +53,7 @@ describe("duration validation", () => {
   });
 
   it("accepts a valid shutdownGrace and rejects an invalid one", () => {
-    expect(
-      safeParseConfig(baseConfig({ observability: { tracing: { shutdownGrace: "500ms" } } })).success,
-    ).toBe(true);
+    expect(safeParseConfig(baseConfig({ observability: { tracing: { shutdownGrace: "500ms" } } })).success).toBe(true);
     expectParseFailure(baseConfig({ observability: { tracing: { shutdownGrace: "later" } } }));
   });
 });
@@ -219,16 +215,12 @@ describe("plugin config", () => {
     );
     expect(withType.plugins?.[0]!.type).toBe("guardrail");
 
-    const withoutType = parseConfig(
-      baseConfig({ plugins: [{ name: "word-filter", stage: "before_request" }] }),
-    );
+    const withoutType = parseConfig(baseConfig({ plugins: [{ name: "word-filter", stage: "before_request" }] }));
     expect(withoutType.plugins?.[0]!.type).toBe("unknown");
   });
 
   it("rejects an unknown plugin type", () => {
-    expectParseFailure(
-      baseConfig({ plugins: [{ name: "x", stage: "before_request", type: "not-a-type" }] }),
-    );
+    expectParseFailure(baseConfig({ plugins: [{ name: "x", stage: "before_request", type: "not-a-type" }] }));
   });
 });
 
@@ -300,15 +292,28 @@ describe("strategy modes and fields (0.2.0)", () => {
   }
 
   it("abtest / ab-test is a deprecated alias of loadbalance", () => {
-    expect(parseConfig(baseConfig({ strategy: { mode: "abtest", targets: ["primary"] } })).strategy.mode).toBe("loadbalance");
-    expect(parseConfig(baseConfig({ strategy: { mode: "ab-test", targets: ["primary"] } })).strategy.mode).toBe("loadbalance");
+    expect(parseConfig(baseConfig({ strategy: { mode: "abtest", targets: ["primary"] } })).strategy.mode).toBe(
+      "loadbalance",
+    );
+    expect(parseConfig(baseConfig({ strategy: { mode: "ab-test", targets: ["primary"] } })).strategy.mode).toBe(
+      "loadbalance",
+    );
   });
 
   it("rejects an unknown strategy mode", () => {
     expect(parseErrors(baseConfig({ strategy: { mode: "magic" } }))).toContain('unknown strategy mode "magic"');
   });
 
-  for (const key of ["conditions", "content_conditions", "contentConditions", "keywords", "ab_variants", "abVariants", "unpriced_strategy", "unpricedStrategy"]) {
+  for (const key of [
+    "conditions",
+    "content_conditions",
+    "contentConditions",
+    "keywords",
+    "ab_variants",
+    "abVariants",
+    "unpriced_strategy",
+    "unpricedStrategy",
+  ]) {
     it(`removed strategy key ${key} fails with a migration hint`, () => {
       const msg = parseErrors(baseConfig({ strategy: { mode: "fallback", targets: ["primary"], [key]: [] } }));
       expect(msg).toContain(`strategy.${key}`);
@@ -317,24 +322,46 @@ describe("strategy modes and fields (0.2.0)", () => {
   }
 
   it("conditional rules: field prompt + contains or pattern; exactly one; regex validated", () => {
-    const ok = parseConfig(baseConfig({
-      strategy: { mode: "conditional", targets: ["primary"], rules: [
-        { field: "prompt", contains: "code", target: "primary" },
-        { field: "model", pattern: "^gpt-", target: "primary" },
-      ] },
-    }));
+    const ok = parseConfig(
+      baseConfig({
+        strategy: {
+          mode: "conditional",
+          targets: ["primary"],
+          rules: [
+            { field: "prompt", contains: "code", target: "primary" },
+            { field: "model", pattern: "^gpt-", target: "primary" },
+          ],
+        },
+      }),
+    );
     expect(ok.strategy.rules?.length).toBe(2);
-    expect(parseErrors(baseConfig({ strategy: { mode: "conditional", rules: [{ field: "prompt", target: "primary" }] } })))
-      .toContain("exactly one");
-    expect(parseErrors(baseConfig({ strategy: { mode: "conditional", rules: [{ field: "prompt", pattern: "x", contains: "y", target: "primary" }] } })))
-      .toContain("exactly one");
-    expect(parseErrors(baseConfig({ strategy: { mode: "conditional", rules: [{ field: "model", pattern: "[bad", target: "primary" }] } })))
-      .toContain("invalid regex");
+    expect(
+      parseErrors(baseConfig({ strategy: { mode: "conditional", rules: [{ field: "prompt", target: "primary" }] } })),
+    ).toContain("exactly one");
+    expect(
+      parseErrors(
+        baseConfig({
+          strategy: {
+            mode: "conditional",
+            rules: [{ field: "prompt", pattern: "x", contains: "y", target: "primary" }],
+          },
+        }),
+      ),
+    ).toContain("exactly one");
+    expect(
+      parseErrors(
+        baseConfig({
+          strategy: { mode: "conditional", rules: [{ field: "model", pattern: "[bad", target: "primary" }] },
+        }),
+      ),
+    ).toContain("invalid regex");
   });
 
   it("loadbalance weights: negative rejected, 0 allowed, all-0 rejected (C3-9)", () => {
     expectParseFailure(baseConfig({ strategy: { mode: "loadbalance", weights: { primary: -1 } } }));
-    expect(parseErrors(baseConfig({ strategy: { mode: "loadbalance", weights: { primary: 0 } } }))).toContain("every target has weight 0");
+    expect(parseErrors(baseConfig({ strategy: { mode: "loadbalance", weights: { primary: 0 } } }))).toContain(
+      "every target has weight 0",
+    );
   });
 });
 

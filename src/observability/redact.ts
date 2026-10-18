@@ -49,15 +49,7 @@ export function redactMessage(message: string, level: PrivacyLevel = "metadata")
   return out;
 }
 
-const SENSITIVE_KEY_PARTS = [
-  "authorization",
-  "api_key",
-  "apikey",
-  "password",
-  "secret",
-  "token",
-  "key",
-] as const;
+const SENSITIVE_KEY_PARTS = ["authorization", "api_key", "apikey", "password", "secret", "token", "key"] as const;
 
 function isSensitiveKey(key: string): boolean {
   const lower = key.toLowerCase();

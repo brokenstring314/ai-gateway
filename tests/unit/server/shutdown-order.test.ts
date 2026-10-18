@@ -12,7 +12,12 @@ describe("shutdown order", () => {
     const order: string[] = [];
     const manager = new ShutdownManager({ shutdownGraceMs: 500 });
     manager.setStopAccepting(() => order.push(`stop-accepting(draining=${manager.inFlight.draining})`));
-    manager.register({ name: "db", close: () => { order.push("close-db"); } });
+    manager.register({
+      name: "db",
+      close: () => {
+        order.push("close-db");
+      },
+    });
     manager.inFlight.increment();
     setTimeout(() => {
       order.push("request-done");
@@ -26,8 +31,15 @@ describe("shutdown order", () => {
     const logs: string[] = [];
     const manager = new ShutdownManager({ logger: (m) => logs.push(m) });
     let closed = false;
-    manager.setStopAccepting(() => { throw new Error("boom"); });
-    manager.register({ name: "x", close: () => { closed = true; } });
+    manager.setStopAccepting(() => {
+      throw new Error("boom");
+    });
+    manager.register({
+      name: "x",
+      close: () => {
+        closed = true;
+      },
+    });
     await manager.shutdown();
     expect(closed).toBe(true);
     expect(logs.some((m) => m.includes("failed to stop accepting"))).toBe(true);
@@ -42,7 +54,9 @@ describe("shutdown order", () => {
     const manager = new ShutdownManager({ shutdownGraceMs: 2000 });
     const app = createApp(new Gateway(config), config, undefined, undefined, { inFlightTracker: manager.inFlight });
     let release!: () => void;
-    const gate = new Promise<void>((r) => { release = r; });
+    const gate = new Promise<void>((r) => {
+      release = r;
+    });
     app.get("/slow", async (c) => {
       await gate;
       return c.text("done");
@@ -57,7 +71,10 @@ describe("shutdown order", () => {
       const shutdown = manager.shutdown("test");
       await new Promise((r) => setTimeout(r, 50));
       // Listener closed: a fresh connection is refused (not admitted).
-      const fresh = await fetch(`${base}/livez`, { headers: { Connection: "close" } }).then((r) => r.status, () => "refused");
+      const fresh = await fetch(`${base}/livez`, { headers: { Connection: "close" } }).then(
+        (r) => r.status,
+        () => "refused",
+      );
       expect(fresh).toBe("refused");
       release();
       const res = await inflight;
@@ -77,7 +94,12 @@ describe("shutdown with a hung request", () => {
     const manager = new ShutdownManager({ shutdownGraceMs: 50 });
     manager.setStopAccepting(() => order.push("stop(false)"));
     manager.setForceClose(() => order.push("stop(true)"));
-    manager.register({ name: "c", close: () => { order.push("close"); } });
+    manager.register({
+      name: "c",
+      close: () => {
+        order.push("close");
+      },
+    });
     manager.inFlight.increment(); // never finishes
     await manager.shutdown("test");
     expect(order).toEqual(["stop(false)", "stop(true)", "close"]);
@@ -86,7 +108,9 @@ describe("shutdown with a hung request", () => {
   it("no force-close when the drain finishes in time", async () => {
     const manager = new ShutdownManager({ shutdownGraceMs: 500 });
     let forced = false;
-    manager.setForceClose(() => { forced = true; });
+    manager.setForceClose(() => {
+      forced = true;
+    });
     await manager.shutdown("test");
     expect(forced).toBe(false);
   });
@@ -95,7 +119,10 @@ describe("shutdown with a hung request", () => {
     const manager = new ShutdownManager({ shutdownGraceMs: 50 });
     manager.inFlight.increment();
     const exited = new Promise<number>((resolve) => {
-      const uninstall = manager.installSignalHandlers((code) => { uninstall(); resolve(code); });
+      const uninstall = manager.installSignalHandlers((code) => {
+        uninstall();
+        resolve(code);
+      });
     });
     process.emit("SIGTERM");
     expect(await exited).toBe(0);

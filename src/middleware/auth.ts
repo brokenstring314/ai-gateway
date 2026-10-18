@@ -45,13 +45,15 @@ export interface AuthMiddlewareOptions {
 export function authMiddleware(opts: AuthMiddlewareOptions): MiddlewareHandler {
   const { keyStore } = opts;
   const skipPaths = new Set(opts.skipPaths ?? DEFAULT_SKIP_PATHS);
-  const bootstrap = opts.bootstrap ?? createBootstrapGate({
-    bootstrapKey: opts.bootstrapKey,
-    bootstrapReadOnlyKey: opts.bootstrapReadOnlyKey,
-    keyStore,
-    adminSecret: () => opts.adminSecret,
-    configKeys: opts.configKeys,
-  });
+  const bootstrap =
+    opts.bootstrap ??
+    createBootstrapGate({
+      bootstrapKey: opts.bootstrapKey,
+      bootstrapReadOnlyKey: opts.bootstrapReadOnlyKey,
+      keyStore,
+      adminSecret: () => opts.adminSecret,
+      configKeys: opts.configKeys,
+    });
 
   return async function auth(c, next) {
     const path = new URL(c.req.url).pathname;
@@ -147,13 +149,15 @@ export interface AdminAuthMiddlewareOptions {
 
 export function adminAuthMiddleware(opts: AdminAuthMiddlewareOptions): MiddlewareHandler {
   const { keyStore } = opts;
-  const bootstrap = opts.bootstrap ?? createBootstrapGate({
-    bootstrapKey: opts.bootstrapKey,
-    bootstrapReadOnlyKey: opts.bootstrapReadOnlyKey,
-    keyStore,
-    adminSecret: () => opts.adminSecret,
-    configKeys: opts.configKeys,
-  });
+  const bootstrap =
+    opts.bootstrap ??
+    createBootstrapGate({
+      bootstrapKey: opts.bootstrapKey,
+      bootstrapReadOnlyKey: opts.bootstrapReadOnlyKey,
+      keyStore,
+      adminSecret: () => opts.adminSecret,
+      configKeys: opts.configKeys,
+    });
 
   return async function adminAuth(c, next) {
     const headerSecret = c.req.header("X-Admin-Secret");
@@ -183,10 +187,7 @@ export function adminAuthMiddleware(opts: AdminAuthMiddlewareOptions): Middlewar
       );
     }
 
-    if (
-      opts.adminSecret !== undefined &&
-      timingSafeEqual(token, opts.adminSecret)
-    ) {
+    if (opts.adminSecret !== undefined && timingSafeEqual(token, opts.adminSecret)) {
       c.set("apiKey", token);
       c.set("keyScopes", [SCOPE_ADMIN]);
       await next();
@@ -204,10 +205,7 @@ export function adminAuthMiddleware(opts: AdminAuthMiddlewareOptions): Middlewar
     const apiKey = keyStore.validateKey(token);
     // read_only keys are admitted here; mutating admin routes enforce
     // requireScope("admin") themselves.
-    if (
-      apiKey !== null &&
-      (apiKey.scopes.includes(SCOPE_ADMIN) || apiKey.scopes.includes(SCOPE_READ_ONLY))
-    ) {
+    if (apiKey !== null && (apiKey.scopes.includes(SCOPE_ADMIN) || apiKey.scopes.includes(SCOPE_READ_ONLY))) {
       c.set("apiKey", token);
       c.set("keyScopes", apiKey.scopes);
       await next();

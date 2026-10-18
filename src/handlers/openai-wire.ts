@@ -24,12 +24,7 @@ import type {
   StreamChunk,
   Usage,
 } from "../providers/types.js";
-import {
-  REQUEST_EXTRA_KEYS,
-  REQUEST_MESSAGE_EXTRA_KEYS,
-  applyExtras,
-  pickExtras,
-} from "../providers/wire-extras.js";
+import { REQUEST_EXTRA_KEYS, REQUEST_MESSAGE_EXTRA_KEYS, applyExtras, pickExtras } from "../providers/wire-extras.js";
 
 type Json = Record<string, unknown>;
 
@@ -195,12 +190,17 @@ export function toOpenAIWireChatResponse(res: ChatCompletionResponse): Json {
     object: res.object || "chat.completion",
     created: res.created,
     model: res.model,
-    choices: res.choices.map((c) => applyExtras({
-      index: c.index,
-      message: toWireMessage(c.message),
-      logprobs: c.logprobs ?? null,
-      finish_reason: wireFinishReason(c.finishReason),
-    }, c.extra)),
+    choices: res.choices.map((c) =>
+      applyExtras(
+        {
+          index: c.index,
+          message: toWireMessage(c.message),
+          logprobs: c.logprobs ?? null,
+          finish_reason: wireFinishReason(c.finishReason),
+        },
+        c.extra,
+      ),
+    ),
     usage: toOpenAIWireUsage(res.usage),
   };
   applyExtras(out, res.extra);
@@ -236,12 +236,15 @@ export function createOpenAIWireStreamSerializer(): (chunk: StreamChunk) => Json
           if (toolCalls) delta["tool_calls"] = toolCalls;
           applyExtras(delta, src.extra);
         }
-        return applyExtras({
-          index: c.index,
-          delta,
-          logprobs: c.logprobs ?? null,
-          finish_reason: wireFinishReason(c.finishReason),
-        }, c.extra);
+        return applyExtras(
+          {
+            index: c.index,
+            delta,
+            logprobs: c.logprobs ?? null,
+            finish_reason: wireFinishReason(c.finishReason),
+          },
+          c.extra,
+        );
       }),
     };
     if (chunk.usage) out["usage"] = toOpenAIWireUsage(chunk.usage);

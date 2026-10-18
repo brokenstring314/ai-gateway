@@ -26,12 +26,23 @@ afterAll(() => upstream.stop(true));
 async function appFor(raw: unknown) {
   const config = parseConfig(raw) as GatewayConfig; // same path as loadConfigFromPath / persisted config
   const keyStore = await KeyStore.create(new Database(":memory:"));
-  return { config, app: createApp(new Gateway(config), config, undefined, keyStore, { adminSecret: config.adminSecret }) };
+  return {
+    config,
+    app: createApp(new Gateway(config), config, undefined, keyStore, { adminSecret: config.adminSecret }),
+  };
 }
 
 const base = {
   strategy: { mode: "single", targets: ["up"] },
-  targets: [{ name: "up", provider: "openai", apiKey: "sk-operator-upstream-secret", baseURL: `http://127.0.0.1:${upstream.port}/v1`, models: ["gpt-4o"] }],
+  targets: [
+    {
+      name: "up",
+      provider: "openai",
+      apiKey: "sk-operator-upstream-secret",
+      baseURL: `http://127.0.0.1:${upstream.port}/v1`,
+      models: ["gpt-4o"],
+    },
+  ],
 };
 
 describe("SEC2-1 auth.keys without enabled keeps auth on", () => {

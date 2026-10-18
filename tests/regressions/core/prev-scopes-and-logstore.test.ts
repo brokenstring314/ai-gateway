@@ -11,9 +11,17 @@ describe("round-2: initRequestLogger never called", () => {
   it("(b) request log store stays empty after a successful request", async () => {
     const up = startUpstream(() => Response.json(completion({ role: "assistant", content: "hi" })));
     const ls = await RequestLogStore.create(new Database(":memory:"));
-    const cfg: any = { auth: { enabled: false }, strategy: { mode: "single", targets: ["a"] }, targets: [{ name: "a", provider: "openai", apiKey: "k", baseURL: up.url }] };
+    const cfg: any = {
+      auth: { enabled: false },
+      strategy: { mode: "single", targets: ["a"] },
+      targets: [{ name: "a", provider: "openai", apiKey: "k", baseURL: up.url }],
+    };
     const app = createApp(new Gateway(cfg), cfg, undefined, undefined, { logStore: ls });
-    const r = await app.request("/v1/chat/completions", { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ model: "m", messages: [{ role: "user", content: "x" }] }) });
+    const r = await app.request("/v1/chat/completions", {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ model: "m", messages: [{ role: "user", content: "x" }] }),
+    });
     up.stop();
     const rows = (ls as any).db ? (ls as any).db.query("SELECT count(*) AS n FROM request_logs").get() : null;
     console.log("chat status", r.status, "rows", rows);

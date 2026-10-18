@@ -1,11 +1,5 @@
 import { beforeEach, describe, expect, it } from "bun:test";
-import {
-  EnvRefError,
-  expandAnyMap,
-  expandEnvRefs,
-  expandStringMap,
-  templateForm,
-} from "../../../src/config/envref.js";
+import { EnvRefError, expandAnyMap, expandEnvRefs, expandStringMap, templateForm } from "../../../src/config/envref.js";
 
 describe("expandEnvRefs", () => {
   it("resolves a single ${VAR} reference", () => {
@@ -137,9 +131,7 @@ describe("expandStringMap", () => {
 
   it("throws EnvRefError for undefined variable in any value", () => {
     delete process.env["_ENVREF_TEST_UNDEFINED"];
-    expect(() =>
-      expandStringMap({ ok: "${_ENVREF_TEST_A}", bad: "${_ENVREF_TEST_UNDEFINED}" }),
-    ).toThrow(EnvRefError);
+    expect(() => expandStringMap({ ok: "${_ENVREF_TEST_A}", bad: "${_ENVREF_TEST_UNDEFINED}" })).toThrow(EnvRefError);
   });
 });
 

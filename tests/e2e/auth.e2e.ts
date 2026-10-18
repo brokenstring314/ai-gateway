@@ -17,10 +17,16 @@ beforeAll(async () => {
     startGateway({ config: baseConfig([{ name: "a", mock: up }]), entry: "cli" }),
   ]);
 });
-afterAll(async () => { await Promise.all([gw?.stop(), cli?.stop()]); up?.stop(); });
+afterAll(async () => {
+  await Promise.all([gw?.stop(), cli?.stop()]);
+  up?.stop();
+});
 
 describe("auth", () => {
-  for (const [name, get] of [["src/index.ts serve", () => gw], ["ai-gateway serve (cli)", () => cli]] as const) {
+  for (const [name, get] of [
+    ["src/index.ts serve", () => gw],
+    ["ai-gateway serve (cli)", () => cli],
+  ] as const) {
     it(`${name}: anonymous request -> 401, upstream never called`, async () => {
       const before = up.requests.length;
       const r = await postJson(get(), "/v1/chat/completions", chat, { auth: null });
@@ -29,7 +35,10 @@ describe("auth", () => {
     });
 
     it(`${name}: wrong key -> 401 via the SDK`, async () => {
-      const err = await get().client({ apiKey: "sk-wrong" }).chat.completions.create(chat).catch((e: unknown) => e);
+      const err = await get()
+        .client({ apiKey: "sk-wrong" })
+        .chat.completions.create(chat)
+        .catch((e: unknown) => e);
       expect(err).toBeInstanceOf(OpenAI.AuthenticationError);
     });
 

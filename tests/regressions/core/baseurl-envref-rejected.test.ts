@@ -7,7 +7,10 @@ import { safeParseConfig } from "@/config/schema";
 
 describe("baseURL ${VAR}", () => {
   const ok = (u: string) => {
-    const r = safeParseConfig({ strategy: { mode: "single" }, targets: [{ name: "a", provider: "openai", apiKey: "${K}", baseURL: u }] });
+    const r = safeParseConfig({
+      strategy: { mode: "single" },
+      targets: [{ name: "a", provider: "openai", apiKey: "${K}", baseURL: u }],
+    });
     if (!r.success) console.log(u, "->", r.error.issues[0]!.message);
     expect(r.success).toBe(true);
   };
@@ -16,5 +19,6 @@ describe("baseURL ${VAR}", () => {
     it(`accepts baseURL ${u}`, () => ok(u));
   }
   // Already accepted (ref inside the hostname parses as a URL); must keep working.
-  it("accepts baseURL https://${AZ_RESOURCE}.openai.azure.com/v1", () => ok("https://${AZ_RESOURCE}.openai.azure.com/v1"));
+  it("accepts baseURL https://${AZ_RESOURCE}.openai.azure.com/v1", () =>
+    ok("https://${AZ_RESOURCE}.openai.azure.com/v1"));
 });

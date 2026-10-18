@@ -91,13 +91,10 @@ describe("scrubConfig", () => {
     });
     config.targets[0]!.retry = { attempts: 3, onStatusCodes: [429] };
     const scrubbed = scrubConfig(config);
-    expect(scrubbed.plugins).toEqual([
-      { name: "rate-limit", stage: "before_request", config: { rps: 10 } },
-    ]);
+    expect(scrubbed.plugins).toEqual([{ name: "rate-limit", stage: "before_request", config: { rps: 10 } }]);
     expect(scrubbed.aliases).toEqual({ gpt4: "primary" });
     expect(scrubbed.targets[0]!.retry).toEqual({ attempts: 3, onStatusCodes: [429] });
   });
-
 });
 
 describe("scrubConfig — extended secret coverage", () => {
@@ -106,7 +103,13 @@ describe("scrubConfig — extended secret coverage", () => {
     observability: {
       tracing: { enabled: false, headers: { Authorization: "Bearer otlp-SECRET", "x-honeycomb-team": "hc-SECRET" } },
     },
-    plugins: [{ name: "webhook", stage: "before_request", config: { url: "https://hook.example", nested: { apiToken: "plug-SECRET", Cookie: "c-SECRET" }, rps: 5 } }],
+    plugins: [
+      {
+        name: "webhook",
+        stage: "before_request",
+        config: { url: "https://hook.example", nested: { apiToken: "plug-SECRET", Cookie: "c-SECRET" }, rps: 5 },
+      },
+    ],
     mcpServers: [{ name: "m", command: "mcp", env: { API_KEY: "mcp-env-SECRET" } }],
   });
 
@@ -141,22 +144,53 @@ describe("S3-5 scrub gaps (3.3)", () => {
         adminSecret: "admin-secret-0123456789",
         strategy: { mode: "single", targets: ["g"] },
         targets: [
-          { name: "g", provider: "openai", apiKey: "k", baseURL: "https://u:LEAK_USERINFO@llm.internal/v1?key=LEAK_QUERY_KEY&x=1", models: ["gpt-4o"] },
-          { name: "t", provider: "openai", apiKey: "${PFX}LEAK_LITERAL_KEY${SFX}", baseURL: "https://up.example/v1", models: ["m2"] },
+          {
+            name: "g",
+            provider: "openai",
+            apiKey: "k",
+            baseURL: "https://u:LEAK_USERINFO@llm.internal/v1?key=LEAK_QUERY_KEY&x=1",
+            models: ["gpt-4o"],
+          },
+          {
+            name: "t",
+            provider: "openai",
+            apiKey: "${PFX}LEAK_LITERAL_KEY${SFX}",
+            baseURL: "https://up.example/v1",
+            models: ["m2"],
+          },
         ],
         mcpServers: [
-          { name: "db", command: "npx", args: ["@mcp/postgres", "postgres://app:LEAK_DB_PASS@db:5432/x", "--api-key", "LEAK_ARG_KEY"] },
+          {
+            name: "db",
+            command: "npx",
+            args: ["@mcp/postgres", "postgres://app:LEAK_DB_PASS@db:5432/x", "--api-key", "LEAK_ARG_KEY"],
+          },
         ],
         observability: { tracing: { enabled: false, otlpEndpoint: "https://otel:LEAK_OTLP@collector:4318" } },
-        plugins: [{ name: "x", stage: "before_request", enabled: false, config: { webhook: "https://hook.example/p?token=LEAK_PLUGIN_URL" } }],
+        plugins: [
+          {
+            name: "x",
+            stage: "before_request",
+            enabled: false,
+            config: { webhook: "https://hook.example/p?token=LEAK_PLUGIN_URL" },
+          },
+        ],
       } as unknown as GatewayConfig;
       const ro = ks.create("viewer", ["read_only"]).key;
       const app = createApp(new Gateway(config), config, undefined, ks, { adminSecret: "admin-secret-0123456789" });
       const r = await app.request("/admin/config", { headers: { authorization: `Bearer ${ro}` } });
       expect(r.status).toBe(200);
       const text = await r.text();
-      const leaked = ["LEAK_USERINFO", "LEAK_QUERY_KEY", "LEAK_LITERAL_KEY", "LEAK_DB_PASS", "LEAK_ARG_KEY", "LEAK_OTLP", "LEAK_PLUGIN_URL", "admin-secret-0123456789"]
-        .filter((s) => text.includes(s));
+      const leaked = [
+        "LEAK_USERINFO",
+        "LEAK_QUERY_KEY",
+        "LEAK_LITERAL_KEY",
+        "LEAK_DB_PASS",
+        "LEAK_ARG_KEY",
+        "LEAK_OTLP",
+        "LEAK_PLUGIN_URL",
+        "admin-secret-0123456789",
+      ].filter((s) => text.includes(s));
       expect(leaked).toEqual([]);
       // Non-secret parts survive.
       expect(text).toContain("llm.internal/v1");
@@ -169,13 +203,15 @@ describe("S3-5 scrub gaps (3.3)", () => {
   });
 
   it("only an exact single ${VAR} counts as a template", () => {
-    const s = scrubConfig(makeConfig({
-      targets: [
-        { name: "a", provider: "openai", apiKey: "${OPENAI_KEY}" },
-        { name: "b", provider: "openai", apiKey: "${A}sk-literal${B}" },
-        { name: "c", provider: "openai", apiKey: "${A} x" },
-      ],
-    }));
+    const s = scrubConfig(
+      makeConfig({
+        targets: [
+          { name: "a", provider: "openai", apiKey: "${OPENAI_KEY}" },
+          { name: "b", provider: "openai", apiKey: "${A}sk-literal${B}" },
+          { name: "c", provider: "openai", apiKey: "${A} x" },
+        ],
+      }),
+    );
     expect(s.targets.map((t) => t.apiKey)).toEqual(["${OPENAI_KEY}", "***", "***"]);
   });
 

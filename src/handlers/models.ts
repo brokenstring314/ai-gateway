@@ -17,9 +17,12 @@ export function registerModelsHandler(app: AppType, gateway: Gateway): void {
       owned_by: m.ownedBy,
     }));
 
-    return c.json({
-      object: "list",
-      data,
-    }, 200);
+    return c.json(
+      {
+        object: "list",
+        data,
+      },
+      200,
+    );
   });
 }

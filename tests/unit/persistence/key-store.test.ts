@@ -21,9 +21,9 @@ describe("KeyStore", () => {
   // -------------------------------------------------------------------------
 
   it("fresh DB → migrations run → table exists", () => {
-    const tables = db
-      .query("SELECT name FROM sqlite_master WHERE type='table' AND name='api_keys'")
-      .all() as Array<{ name: string }>;
+    const tables = db.query("SELECT name FROM sqlite_master WHERE type='table' AND name='api_keys'").all() as Array<{
+      name: string;
+    }>;
     expect(tables).toHaveLength(1);
     expect(tables[0]!.name).toBe("api_keys");
 
@@ -47,15 +47,17 @@ describe("KeyStore", () => {
   it("create key → key hash stored, not plaintext", () => {
     const apiKey = store.create("test-key", ["admin"]);
     // Verify hash is stored
-    const row = db
-      .query("SELECT key_hash, key_display FROM api_keys WHERE id = ?")
-      .get(apiKey.id) as { key_hash: string; key_display: string } | null;
+    const row = db.query("SELECT key_hash, key_display FROM api_keys WHERE id = ?").get(apiKey.id) as {
+      key_hash: string;
+      key_display: string;
+    } | null;
     expect(row).not.toBeNull();
     expect(row!.key_hash).toBe(hashKey(apiKey.key));
     // Plaintext key should NOT appear in the DB
-    const allRows = db
-      .query("SELECT key_hash, key_display FROM api_keys")
-      .all() as Array<{ key_hash: string; key_display: string }>;
+    const allRows = db.query("SELECT key_hash, key_display FROM api_keys").all() as Array<{
+      key_hash: string;
+      key_display: string;
+    }>;
     for (const r of allRows) {
       expect(r.key_hash).not.toBe(apiKey.key);
       expect(r.key_display).not.toBe(apiKey.key);
@@ -305,6 +307,10 @@ describe("KeyStore", () => {
     tmpDb2.close();
 
     const unlinkSync = require("fs").unlinkSync;
-    try { unlinkSync(tmpPath); } catch { /* ignore */ }
+    try {
+      unlinkSync(tmpPath);
+    } catch {
+      /* ignore */
+    }
   });
 });

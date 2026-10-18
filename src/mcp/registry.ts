@@ -11,12 +11,7 @@
  */
 
 import type { McpServerConfig } from "../config/types.js";
-import type {
-  McpServerOptions,
-  McpServerReadiness,
-  McpTool,
-  McpToolRegistry,
-} from "./types.js";
+import type { McpServerOptions, McpServerReadiness, McpTool, McpToolRegistry } from "./types.js";
 import { McpClient, defaultSpawner } from "./client.js";
 import type { McpSpawner } from "./client.js";
 
@@ -89,7 +84,10 @@ export class McpRegistry implements McpToolRegistry {
     this.supervision.set(config.name, sup);
     client.setDisconnectListener((reason) => {
       if (sup.stopped || sup.attempting) return;
-      this.log("warn", `[mcp] server "${config.name}" disconnected (${reason}); its tools are unavailable until it reconnects`);
+      this.log(
+        "warn",
+        `[mcp] server "${config.name}" disconnected (${reason}); its tools are unavailable until it reconnects`,
+      );
       this.scheduleReconnect(config.name, client, sup);
     });
 
@@ -141,7 +139,10 @@ export class McpRegistry implements McpToolRegistry {
       this.log("warn", `[mcp] server "${name}" reconnect attempt ${sup.failures} failed: ${msg}`);
       const threshold = this.policy.livenessFailureThreshold;
       if (this.requiredServers.has(name) && threshold > 0 && sup.failures === threshold) {
-        this.log("error", `[mcp] required server "${name}" failed ${threshold} consecutive reconnect attempts; /livez now reports failure`);
+        this.log(
+          "error",
+          `[mcp] required server "${name}" failed ${threshold} consecutive reconnect attempts; /livez now reports failure`,
+        );
       }
       this.scheduleReconnect(name, client, sup);
     }

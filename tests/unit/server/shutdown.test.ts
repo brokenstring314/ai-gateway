@@ -17,9 +17,18 @@ describe("ShutdownManager", () => {
 
   it("closes multiple components in registration order", async () => {
     const order: string[] = [];
-    const a = makeComponent("a", vi.fn(() => order.push("a")));
-    const b = makeComponent("b", vi.fn(() => order.push("b")));
-    const c = makeComponent("c", vi.fn(() => order.push("c")));
+    const a = makeComponent(
+      "a",
+      vi.fn(() => order.push("a")),
+    );
+    const b = makeComponent(
+      "b",
+      vi.fn(() => order.push("b")),
+    );
+    const c = makeComponent(
+      "c",
+      vi.fn(() => order.push("c")),
+    );
     const manager = new ShutdownManager();
     manager.register(a);
     manager.register(b);
@@ -37,7 +46,10 @@ describe("ShutdownManager", () => {
         order.push("a");
       }),
     );
-    const b = makeComponent("b", vi.fn(() => order.push("b")));
+    const b = makeComponent(
+      "b",
+      vi.fn(() => order.push("b")),
+    );
     const manager = new ShutdownManager();
     manager.register(a);
     manager.register(b);
@@ -70,9 +82,12 @@ describe("ShutdownManager", () => {
   });
 
   it("continues closing components when one throws", async () => {
-    const failing = makeComponent("failing", vi.fn(() => {
-      throw new Error("boom");
-    }));
+    const failing = makeComponent(
+      "failing",
+      vi.fn(() => {
+        throw new Error("boom");
+      }),
+    );
     const ok = makeComponent("ok");
     const manager = new ShutdownManager();
     manager.register(failing);
@@ -132,7 +147,11 @@ describe("ShutdownManager", () => {
     const exits: number[] = [];
     const cleanup = manager.installSignalHandlers((code) => exits.push(code));
     process.emit("SIGINT");
-    for (let i = 0; i < 20 && (component.close as unknown as { mock: { calls: unknown[] } }).mock.calls.length === 0; i++) {
+    for (
+      let i = 0;
+      i < 20 && (component.close as unknown as { mock: { calls: unknown[] } }).mock.calls.length === 0;
+      i++
+    ) {
       await new Promise((resolve) => setTimeout(resolve, 5));
     }
     expect(component.close).toHaveBeenCalledTimes(1);

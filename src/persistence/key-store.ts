@@ -10,17 +10,8 @@
  */
 
 import type { Database, Statement } from "bun:sqlite";
-import {
-  hashKey,
-  displayKey,
-  generateAPIKey,
-  generateID,
-  timingSafeEqual,
-} from "@/auth/key-hash";
-import {
-  runMigrations,
-  type MigrationStep,
-} from "@/persistence/migrations";
+import { hashKey, displayKey, generateAPIKey, generateID, timingSafeEqual } from "@/auth/key-hash";
+import { runMigrations, type MigrationStep } from "@/persistence/migrations";
 
 // ---------------------------------------------------------------------------
 // Types
@@ -127,14 +118,10 @@ CREATE TABLE IF NOT EXISTS api_keys (
       fn: (db) => {
         // Verify key_hash and key_display columns exist (they do, from v1).
         // This is a no-op parity step with the Go migration.
-        const cols = db
-          .query("PRAGMA table_info(api_keys)")
-          .all() as Array<{ name: string }>;
+        const cols = db.query("PRAGMA table_info(api_keys)").all() as Array<{ name: string }>;
         const names = new Set(cols.map((c) => c.name));
         if (!names.has("key_hash") || !names.has("key_display")) {
-          throw new Error(
-            "api_keys table missing key_hash or key_display columns",
-          );
+          throw new Error("api_keys table missing key_hash or key_display columns");
         }
       },
     },
@@ -143,13 +130,9 @@ CREATE TABLE IF NOT EXISTS api_keys (
       name: "api_keys_scrub",
       noTx: (db) => {
         db.exec("VACUUM");
-        const row = db
-          .query("PRAGMA wal_checkpoint(TRUNCATE)")
-          .get() as [number, number, number] | null;
+        const row = db.query("PRAGMA wal_checkpoint(TRUNCATE)").get() as [number, number, number] | null;
         if (row !== null && row[0] !== 0 && row[1] > 0) {
-          console.warn(
-            `api_keys_scrub: wal_checkpoint busy, ${row[1]} frames left unmerged`,
-          );
+          console.warn(`api_keys_scrub: wal_checkpoint busy, ${row[1]} frames left unmerged`);
         }
       },
     },
@@ -228,25 +211,15 @@ export class KeyStore {
 
   private initStatements(): void {
     this.stmtGetByID = this.db.prepare<KeyRow, [string]>(`${KEY_ROW_SELECT} WHERE id = ?`);
-    this.stmtGetByHash = this.db.prepare<KeyRow, [string]>(
-      `${KEY_ROW_SELECT} WHERE key_hash = ?`,
-    );
-    this.stmtRevoke = this.db.prepare(
-      "UPDATE api_keys SET revoked_at = ?, active = ? WHERE id = ?",
-    );
-    this.stmtUpdate = this.db.prepare(
-      "UPDATE api_keys SET name = ?, scopes = ? WHERE id = ?",
-    );
-    this.stmtSetExpiry = this.db.prepare(
-      "UPDATE api_keys SET expires_at = ? WHERE id = ?",
-    );
+    this.stmtGetByHash = this.db.prepare<KeyRow, [string]>(`${KEY_ROW_SELECT} WHERE key_hash = ?`);
+    this.stmtRevoke = this.db.prepare("UPDATE api_keys SET revoked_at = ?, active = ? WHERE id = ?");
+    this.stmtUpdate = this.db.prepare("UPDATE api_keys SET name = ?, scopes = ? WHERE id = ?");
+    this.stmtSetExpiry = this.db.prepare("UPDATE api_keys SET expires_at = ? WHERE id = ?");
     this.stmtDelete = this.db.prepare("DELETE FROM api_keys WHERE id = ?");
     this.stmtUsage = this.db.prepare(
       "UPDATE api_keys SET usage_count = usage_count + 1, last_used_at = ? WHERE id = ?",
     );
-    this.stmtRotate = this.db.prepare(
-      "UPDATE api_keys SET key_hash = ?, key_display = ?, rotated_at = ? WHERE id = ?",
-    );
+    this.stmtRotate = this.db.prepare("UPDATE api_keys SET key_hash = ?, key_display = ?, rotated_at = ? WHERE id = ?");
   }
 
   // -------------------------------------------------------------------------
@@ -305,9 +278,7 @@ export class KeyStore {
 
   /** Returns true if no API keys exist. Stops at the first row. */
   isEmpty(): boolean {
-    const row = this.db
-      .query("SELECT 1 FROM api_keys LIMIT 1")
-      .get() as { "1": number } | null;
+    const row = this.db.query("SELECT 1 FROM api_keys LIMIT 1").get() as { "1": number } | null;
     return row === null;
   }
 
@@ -445,10 +416,7 @@ export class KeyStore {
 
   /** Set or clear (null) the expiration. Throws KeyNotFoundError if absent. */
   setExpiration(id: string, expiresAt: Date | null): void {
-    const result = this.stmtSetExpiry.run(
-      expiresAt ? expiresAt.toISOString() : null,
-      id,
-    );
+    const result = this.stmtSetExpiry.run(expiresAt ? expiresAt.toISOString() : null, id);
     if (result.changes === 0) {
       throw new KeyNotFoundError(id);
     }
@@ -478,12 +446,7 @@ export class KeyStore {
     const newKey = generateAPIKey();
     const now = new Date();
 
-    const result = this.stmtRotate.run(
-      hashKey(newKey),
-      displayKey(newKey),
-      now.toISOString(),
-      id,
-    );
+    const result = this.stmtRotate.run(hashKey(newKey), displayKey(newKey), now.toISOString(), id);
     if (result.changes === 0) {
       throw new KeyNotFoundError(id);
     }

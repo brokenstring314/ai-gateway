@@ -35,9 +35,7 @@ function makeResponse(overrides?: Partial<ChatCompletionResponse>): ChatCompleti
     created: Date.now(),
     model: "gpt-4",
     provider: "test-provider",
-    choices: [
-      { index: 0, message: { role: "assistant", content: "hi" }, finishReason: "stop" },
-    ],
+    choices: [{ index: 0, message: { role: "assistant", content: "hi" }, finishReason: "stop" }],
     usage: { promptTokens: 5, completionTokens: 3, totalTokens: 8 },
     ...overrides,
   };
@@ -142,9 +140,11 @@ describe("Gateway", () => {
 
   describe("model alias resolution", () => {
     it("resolves model alias in route()", async () => {
-      const aliasedGateway = new Gateway(makeConfig({
-        aliases: { "my-model": "gpt-4" },
-      }));
+      const aliasedGateway = new Gateway(
+        makeConfig({
+          aliases: { "my-model": "gpt-4" },
+        }),
+      );
       aliasedGateway.registerProvider(mockProvider);
 
       const resp = await aliasedGateway.route({ metadata: {} }, makeRequest({ model: "my-model" }));
@@ -179,13 +179,15 @@ describe("Gateway", () => {
     it("circuit breaker configured via target config", () => {
       const cbGateway = new Gateway({
         strategy: { mode: "single", targets: ["cb-provider"] },
-        targets: [{
-          name: "cb-provider",
-          provider: "openai",
-          apiKey: "sk-test",
-          baseURL: "http://localhost:1234/v1",
-          circuitBreaker: { failureThreshold: 2, timeoutMs: 5000 },
-        }],
+        targets: [
+          {
+            name: "cb-provider",
+            provider: "openai",
+            apiKey: "sk-test",
+            baseURL: "http://localhost:1234/v1",
+            circuitBreaker: { failureThreshold: 2, timeoutMs: 5000 },
+          },
+        ],
       });
 
       const cb = cbGateway.getCircuitBreakerRegistry().get("cb-provider");
@@ -216,10 +218,7 @@ describe("Gateway", () => {
       };
       embedGateway.registerPlugin("before_request", plugin);
 
-      await embedGateway.embedWithPlugins(
-        { metadata: {} },
-        { model: "gpt-4", input: "hello" },
-      );
+      await embedGateway.embedWithPlugins({ metadata: {} }, { model: "gpt-4", input: "hello" });
       expect(plugin.execute).toHaveBeenCalledTimes(1);
     });
   });
@@ -244,10 +243,7 @@ describe("Gateway", () => {
       };
       imageGateway.registerPlugin("before_request", plugin);
 
-      await imageGateway.generateImageWithPlugins(
-        { metadata: {} },
-        { model: "gpt-4", prompt: "a cat" },
-      );
+      await imageGateway.generateImageWithPlugins({ metadata: {} }, { model: "gpt-4", prompt: "a cat" });
       expect(plugin.execute).toHaveBeenCalledTimes(1);
     });
   });

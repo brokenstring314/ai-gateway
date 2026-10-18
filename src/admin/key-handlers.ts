@@ -16,12 +16,7 @@
 
 import type { Context, MiddlewareHandler } from "hono";
 import type { ConfigState } from "./config-handlers.js";
-import {
-  KeyNotFoundError,
-  VALID_SCOPES,
-  type APIKey,
-  type KeyStore,
-} from "@/persistence/key-store";
+import { KeyNotFoundError, VALID_SCOPES, type APIKey, type KeyStore } from "@/persistence/key-store";
 
 export { SCOPE_ADMIN, SCOPE_READ_ONLY, SCOPE_INFERENCE } from "@/persistence/key-store";
 
@@ -178,11 +173,7 @@ export function updateKeyHandler(state: KeyHandlerState) {
     try {
       const id = c.req.param("id");
       if (id === undefined) return notFound(c);
-      const updated = state.keyStore.update(
-        id,
-        typeof body?.name === "string" ? body.name : "",
-        scopes,
-      );
+      const updated = state.keyStore.update(id, typeof body?.name === "string" ? body.name : "", scopes);
       return c.json(serializeKey(updated));
     } catch (err) {
       if (err instanceof KeyNotFoundError) return notFound(c);
@@ -344,10 +335,7 @@ function parseScopes(raw: unknown): string[] | null {
 }
 
 function invalidScopes(c: Context) {
-  return invalidRequest(
-    c,
-    `'scopes' must be an array of: ${VALID_SCOPES.map((s) => `"${s}"`).join(", ")}`,
-  );
+  return invalidRequest(c, `'scopes' must be an array of: ${VALID_SCOPES.map((s) => `"${s}"`).join(", ")}`);
 }
 
 function invalidRequest(c: Context, message: string) {

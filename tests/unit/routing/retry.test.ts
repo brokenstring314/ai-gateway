@@ -16,9 +16,7 @@ describe("retryWithBackoff", () => {
   });
 
   it("retries on 500 error and succeeds on second attempt", async () => {
-    const fn = vi.fn()
-      .mockRejectedValueOnce(createStatusError(500))
-      .mockResolvedValue("ok");
+    const fn = vi.fn().mockRejectedValueOnce(createStatusError(500)).mockResolvedValue("ok");
     const result = await retryWithBackoff(fn, { attempts: 3, initialBackoffMs: 1 });
     expect(result).toBe("ok");
     expect(fn).toHaveBeenCalledTimes(2);
@@ -26,29 +24,24 @@ describe("retryWithBackoff", () => {
 
   it("does NOT retry on 400 error", async () => {
     const fn = vi.fn().mockRejectedValue(createStatusError(400));
-    await expect(retryWithBackoff(fn, { attempts: 3, initialBackoffMs: 1 }))
-      .rejects.toThrow("error");
+    await expect(retryWithBackoff(fn, { attempts: 3, initialBackoffMs: 1 })).rejects.toThrow("error");
     expect(fn).toHaveBeenCalledTimes(1);
   });
 
   it("does NOT retry on 401 error", async () => {
     const fn = vi.fn().mockRejectedValue(createStatusError(401));
-    await expect(retryWithBackoff(fn, { attempts: 3, initialBackoffMs: 1 }))
-      .rejects.toThrow("error");
+    await expect(retryWithBackoff(fn, { attempts: 3, initialBackoffMs: 1 })).rejects.toThrow("error");
     expect(fn).toHaveBeenCalledTimes(1);
   });
 
   it("does NOT retry on 403 error", async () => {
     const fn = vi.fn().mockRejectedValue(createStatusError(403));
-    await expect(retryWithBackoff(fn, { attempts: 3, initialBackoffMs: 1 }))
-      .rejects.toThrow("error");
+    await expect(retryWithBackoff(fn, { attempts: 3, initialBackoffMs: 1 })).rejects.toThrow("error");
     expect(fn).toHaveBeenCalledTimes(1);
   });
 
   it("DOES retry on 429", async () => {
-    const fn = vi.fn()
-      .mockRejectedValueOnce(createStatusError(429))
-      .mockResolvedValue("ok");
+    const fn = vi.fn().mockRejectedValueOnce(createStatusError(429)).mockResolvedValue("ok");
     const result = await retryWithBackoff(fn, { attempts: 3, initialBackoffMs: 1 });
     expect(result).toBe("ok");
     expect(fn).toHaveBeenCalledTimes(2);
@@ -56,8 +49,7 @@ describe("retryWithBackoff", () => {
 
   it("exhausts all attempts and throws RetryExhaustedError", async () => {
     const fn = vi.fn().mockRejectedValue(createStatusError(500));
-    await expect(retryWithBackoff(fn, { attempts: 2, initialBackoffMs: 1 }))
-      .rejects.toThrow(RetryExhaustedError);
+    await expect(retryWithBackoff(fn, { attempts: 2, initialBackoffMs: 1 })).rejects.toThrow(RetryExhaustedError);
     expect(fn).toHaveBeenCalledTimes(2);
   });
 
@@ -65,8 +57,7 @@ describe("retryWithBackoff", () => {
     const controller = new AbortController();
     controller.abort();
     const fn = vi.fn().mockResolvedValue("ok");
-    await expect(retryWithBackoff(fn, { attempts: 3, initialBackoffMs: 1 }, controller.signal))
-      .rejects.toThrow();
+    await expect(retryWithBackoff(fn, { attempts: 3, initialBackoffMs: 1 }, controller.signal)).rejects.toThrow();
     expect(fn).not.toHaveBeenCalled();
   });
 
@@ -78,7 +69,8 @@ describe("retryWithBackoff", () => {
       return originalSetTimeout(fn, 0) as ReturnType<typeof setTimeout>;
     }) as unknown as typeof setTimeout);
 
-    const fn = vi.fn()
+    const fn = vi
+      .fn()
       .mockRejectedValueOnce(createStatusError(500))
       .mockRejectedValueOnce(createStatusError(500))
       .mockResolvedValue("ok");
@@ -93,9 +85,7 @@ describe("retryWithBackoff", () => {
   });
 
   it("retries on generic errors (non-status errors)", async () => {
-    const fn = vi.fn()
-      .mockRejectedValueOnce(new Error("network failure"))
-      .mockResolvedValue("ok");
+    const fn = vi.fn().mockRejectedValueOnce(new Error("network failure")).mockResolvedValue("ok");
     const result = await retryWithBackoff(fn, { attempts: 3, initialBackoffMs: 1 });
     expect(result).toBe("ok");
     expect(fn).toHaveBeenCalledTimes(2);

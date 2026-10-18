@@ -18,7 +18,9 @@ const BOOT_RO = "boot-ro-key-0123456789";
 function cfg(extra: Partial<GatewayConfig> = {}): GatewayConfig {
   return {
     strategy: { mode: "single", targets: ["mock"] },
-    targets: [{ name: "mock", provider: "openai", apiKey: "sk-x", baseURL: "https://upstream.example/v1", models: ["gpt-4o"] }],
+    targets: [
+      { name: "mock", provider: "openai", apiKey: "sk-x", baseURL: "https://upstream.example/v1", models: ["gpt-4o"] },
+    ],
     ...extra,
   };
 }

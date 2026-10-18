@@ -17,12 +17,7 @@ export { MaxTokenPlugin, type MaxTokenConfig } from "./max-token.js";
 export { BudgetPlugin, type BudgetConfig } from "./budget.js";
 export { buildPluginsFromConfig, type PluginRegistration } from "./from-config.js";
 
-export type BuiltinPluginName =
-  | "rate-limit"
-  | "cache"
-  | "word-filter"
-  | "max-token"
-  | "budget";
+export type BuiltinPluginName = "rate-limit" | "cache" | "word-filter" | "max-token" | "budget";
 
 export type BuiltinPluginConfig = {
   "rate-limit": RateLimitConfig;
@@ -32,10 +27,7 @@ export type BuiltinPluginConfig = {
   budget: BudgetConfig;
 };
 
-const builtinConstructors: Record<
-  BuiltinPluginName,
-  (config: BuiltinPluginConfig[BuiltinPluginName]) => IPlugin
-> = {
+const builtinConstructors: Record<BuiltinPluginName, (config: BuiltinPluginConfig[BuiltinPluginName]) => IPlugin> = {
   "rate-limit": (c) => new RateLimitPlugin(c as RateLimitConfig),
   cache: (c) => new CachePlugin(c as CacheConfig, "before_request"),
   "word-filter": (c) => new WordFilterPlugin(c as WordFilterConfig),
@@ -43,10 +35,7 @@ const builtinConstructors: Record<
   budget: (c) => new BudgetPlugin(c as BudgetConfig, "before_request"),
 };
 
-export function createBuiltinPlugin<N extends BuiltinPluginName>(
-  name: N,
-  config: BuiltinPluginConfig[N],
-): IPlugin {
+export function createBuiltinPlugin<N extends BuiltinPluginName>(name: N, config: BuiltinPluginConfig[N]): IPlugin {
   const ctor = builtinConstructors[name];
   return ctor(config);
 }

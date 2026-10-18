@@ -1,9 +1,6 @@
 import { describe, it, expect, beforeEach, afterEach } from "bun:test";
 import { Database } from "bun:sqlite";
-import {
-  RequestLogStore,
-  type RequestLogEntry,
-} from "@/persistence/request-log-store";
+import { RequestLogStore, type RequestLogEntry } from "@/persistence/request-log-store";
 
 // ---------------------------------------------------------------------------
 // Helpers
@@ -351,9 +348,10 @@ describe("RequestLogStore", () => {
     expect(result.data[0]!.traceId).toBe("persisted");
 
     // Verify ledger has both versions recorded
-    const rows = db
-      .query(`SELECT version, name FROM request_log_schema_migrations ORDER BY version`)
-      .all() as Array<{ version: number; name: string }>;
+    const rows = db.query(`SELECT version, name FROM request_log_schema_migrations ORDER BY version`).all() as Array<{
+      version: number;
+      name: string;
+    }>;
     expect(rows).toHaveLength(2);
     expect(rows[0]!.version).toBe(1);
     expect(rows[0]!.name).toBe("request_logs_baseline");

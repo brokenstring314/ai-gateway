@@ -30,7 +30,12 @@ describe("line endings", () => {
   it("\\r\\n split across two reads is one terminator, not two", async () => {
     // If the \r and \n were taken as two line ends, the empty line between
     // them would dispatch the first data line on its own.
-    const out = await collect(streamOf([`data: {"id":"c",\r`, `\ndata: "choices":[{"index":0,"delta":{"content":"M"},"finish_reason":"stop"}]}\r\n\r\n`]));
+    const out = await collect(
+      streamOf([
+        `data: {"id":"c",\r`,
+        `\ndata: "choices":[{"index":0,"delta":{"content":"M"},"finish_reason":"stop"}]}\r\n\r\n`,
+      ]),
+    );
     expect(out).toEqual(["M"]);
   });
 
@@ -43,7 +48,11 @@ describe("line endings", () => {
 describe("[DONE]", () => {
   it("ends the stream at once, ignores later data and cancels the upstream body", async () => {
     let cancelled = false;
-    const out = await collect(streamOf([`${ev("a")}\n\ndata: [DONE]\n\n${ev("AFTER")}\n\n`, `${ev("LATER")}\n\n`], () => { cancelled = true; }));
+    const out = await collect(
+      streamOf([`${ev("a")}\n\ndata: [DONE]\n\n${ev("AFTER")}\n\n`, `${ev("LATER")}\n\n`], () => {
+        cancelled = true;
+      }),
+    );
     expect(out).toEqual(["a"]);
     expect(cancelled).toBe(true);
   });
@@ -54,7 +63,8 @@ describe("truncation", () => {
     const out: string[] = [];
     let err: unknown;
     try {
-      for await (const c of parseSSEStream(streamOf([`${ev("The answer is")}\n\n`]))) out.push(c.choices[0]!.delta!.content as string);
+      for await (const c of parseSSEStream(streamOf([`${ev("The answer is")}\n\n`])))
+        out.push(c.choices[0]!.delta!.content as string);
     } catch (e) {
       err = e;
     }
@@ -70,7 +80,10 @@ describe("truncation", () => {
 
 describe("events", () => {
   it("event: error with a plain-text payload is an upstream error", async () => {
-    const err = await collect(streamOf([`${ev("a")}\n\nevent: error\ndata: overloaded\n\n`])).then(() => null, (e: unknown) => e);
+    const err = await collect(streamOf([`${ev("a")}\n\nevent: error\ndata: overloaded\n\n`])).then(
+      () => null,
+      (e: unknown) => e,
+    );
     expect(err).toBeInstanceOf(ProviderError);
     expect((err as Error).message).toContain("overloaded");
   });
@@ -83,13 +96,23 @@ describe("events", () => {
   it("an event whose data lines together exceed the cap is rejected", () => {
     const p = new SSEParser();
     const line = `data: ${"y".repeat(1024 * 1024)}\n`;
-    expect(() => { for (let i = 0; i < 5; i++) p.feed(line); }).toThrow(ReadableStreamError);
+    expect(() => {
+      for (let i = 0; i < 5; i++) p.feed(line);
+    }).toThrow(ReadableStreamError);
   });
 });
 
 describe("chunkFromJsonBody (200 JSON on a stream request)", () => {
   it("chat.completion becomes one complete chunk", () => {
-    const c = chunkFromJsonBody(JSON.stringify({ id: "x", object: "chat.completion", model: "m", choices: [{ index: 0, message: { role: "assistant", content: "real answer" }, finish_reason: "stop" }], usage: { prompt_tokens: 1, completion_tokens: 2, total_tokens: 3 } }));
+    const c = chunkFromJsonBody(
+      JSON.stringify({
+        id: "x",
+        object: "chat.completion",
+        model: "m",
+        choices: [{ index: 0, message: { role: "assistant", content: "real answer" }, finish_reason: "stop" }],
+        usage: { prompt_tokens: 1, completion_tokens: 2, total_tokens: 3 },
+      }),
+    );
     expect(c.object).toBe("chat.completion.chunk");
     expect(c.choices[0]!.delta?.content).toBe("real answer");
     expect(c.choices[0]!.finishReason).toBe("stop");

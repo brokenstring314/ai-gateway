@@ -1,7 +1,7 @@
 import { describe, expect, it } from "bun:test";
 import { createPluginContext } from "../../../src/plugins/context.js";
 import { WordFilterPlugin } from "../../../src/plugins/builtins/word-filter.js";
-import type { ChatCompletionRequest, } from "../../../src/providers/types.js";
+import type { ChatCompletionRequest } from "../../../src/providers/types.js";
 
 function makeRequest(overrides?: Partial<ChatCompletionRequest>): ChatCompletionRequest {
   return {

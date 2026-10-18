@@ -4,9 +4,18 @@ import { Gateway } from "../../src/gateway.js";
 import { createApp } from "../../src/app.js";
 import { KeyStore } from "../../src/persistence/key-store.js";
 import type { GatewayConfig } from "../../src/config/types.js";
-import type { IProvider, IStreamProvider, ChatCompletionRequest, ChatCompletionResponse, StreamChunk, RequestContext } from "../../src/providers/types.js";
+import type {
+  IProvider,
+  IStreamProvider,
+  ChatCompletionRequest,
+  ChatCompletionResponse,
+  StreamChunk,
+  RequestContext,
+} from "../../src/providers/types.js";
 
-async function createTestKeyStore(keys: Array<{ name: string; scopes: string[] }>): Promise<{ store: KeyStore; keys: string[] }> {
+async function createTestKeyStore(
+  keys: Array<{ name: string; scopes: string[] }>,
+): Promise<{ store: KeyStore; keys: string[] }> {
   const db = new Database(":memory:");
   const store = await KeyStore.create(db);
   const created: string[] = [];
@@ -27,11 +36,13 @@ function createMockProvider(name: string, models: string[]): IProvider & IStream
         created: Math.floor(Date.now() / 1000),
         model: req.model,
         provider: name,
-        choices: [{
-          index: 0,
-          message: { role: "assistant", content: `Hello from ${name}! Model: ${req.model}` },
-          finishReason: "stop",
-        }],
+        choices: [
+          {
+            index: 0,
+            message: { role: "assistant", content: `Hello from ${name}! Model: ${req.model}` },
+            finishReason: "stop",
+          },
+        ],
         usage: { promptTokens: 10, completionTokens: 20, totalTokens: 30 },
       };
     },
@@ -41,40 +52,52 @@ function createMockProvider(name: string, models: string[]): IProvider & IStream
         object: "chat.completion.chunk",
         created: Math.floor(Date.now() / 1000),
         model: req.model,
-        choices: [{
-          index: 0,
-          delta: { role: "assistant", content: "Hello" },
-          finishReason: "",
-        }],
+        choices: [
+          {
+            index: 0,
+            delta: { role: "assistant", content: "Hello" },
+            finishReason: "",
+          },
+        ],
       };
       yield {
         id: `chatcmpl-${Date.now()}`,
         object: "chat.completion.chunk",
         created: Math.floor(Date.now() / 1000),
         model: req.model,
-        choices: [{
-          index: 0,
-          delta: { role: "assistant", content: ` from ${name}!` },
-          finishReason: "stop",
-        }],
+        choices: [
+          {
+            index: 0,
+            delta: { role: "assistant", content: ` from ${name}!` },
+            finishReason: "stop",
+          },
+        ],
       };
     },
-    supportedModels(): string[] { return models; },
-    supportsModel(model: string): boolean { return models.includes(model); },
-    models() { return modelList; },
+    supportedModels(): string[] {
+      return models;
+    },
+    supportsModel(model: string): boolean {
+      return models.includes(model);
+    },
+    models() {
+      return modelList;
+    },
   };
 }
 
 function createTestConfig(): GatewayConfig {
   return {
     strategy: { mode: "single", targets: ["test-provider"] },
-    targets: [{
-      name: "test-provider",
-      provider: "openai",
-      apiKey: "test-key",
-      baseURL: "http://localhost:9999/v1",
-      models: ["gpt-4", "gpt-3.5-turbo"],
-    }],
+    targets: [
+      {
+        name: "test-provider",
+        provider: "openai",
+        apiKey: "test-key",
+        baseURL: "http://localhost:9999/v1",
+        models: ["gpt-4", "gpt-3.5-turbo"],
+      },
+    ],
     auth: { enabled: true, keys: ["sk-test-key-123"] },
     adminSecret: "test-admin-secret-1234",
     maxRequestBytes: 1024 * 1024,
@@ -288,7 +311,9 @@ describe("Integration: Security headers", () => {
   beforeAll(() => {
     const config: GatewayConfig = {
       strategy: { mode: "single", targets: ["test"] },
-      targets: [{ name: "test", provider: "openai", apiKey: "key", baseURL: "http://localhost:9999/v1", models: ["gpt-4"] }],
+      targets: [
+        { name: "test", provider: "openai", apiKey: "key", baseURL: "http://localhost:9999/v1", models: ["gpt-4"] },
+      ],
     };
     const gateway = new Gateway(config);
     app = createApp(gateway, config);
@@ -316,7 +341,9 @@ describe("Integration: Body limit middleware", () => {
   beforeAll(() => {
     const config: GatewayConfig = {
       strategy: { mode: "single", targets: ["test"] },
-      targets: [{ name: "test", provider: "openai", apiKey: "key", baseURL: "http://localhost:9999/v1", models: ["gpt-4"] }],
+      targets: [
+        { name: "test", provider: "openai", apiKey: "key", baseURL: "http://localhost:9999/v1", models: ["gpt-4"] },
+      ],
       maxRequestBytes: 100,
     };
     const gateway = new Gateway(config);
@@ -347,7 +374,15 @@ describe("Integration: Admin API", () => {
   beforeAll(() => {
     config = {
       strategy: { mode: "single", targets: ["test"] },
-      targets: [{ name: "test", provider: "openai", apiKey: "sk-secret-key", baseURL: "http://localhost:9999/v1", models: ["gpt-4"] }],
+      targets: [
+        {
+          name: "test",
+          provider: "openai",
+          apiKey: "sk-secret-key",
+          baseURL: "http://localhost:9999/v1",
+          models: ["gpt-4"],
+        },
+      ],
       auth: { enabled: true, keys: ["sk-admin-key"] },
       adminSecret: "test-admin-secret-1234",
     };
@@ -410,7 +445,9 @@ describe("Integration: Metrics endpoint", () => {
   beforeAll(() => {
     const config: GatewayConfig = {
       strategy: { mode: "single", targets: ["test"] },
-      targets: [{ name: "test", provider: "openai", apiKey: "key", baseURL: "http://localhost:9999/v1", models: ["gpt-4"] }],
+      targets: [
+        { name: "test", provider: "openai", apiKey: "key", baseURL: "http://localhost:9999/v1", models: ["gpt-4"] },
+      ],
     };
     const gateway = new Gateway(config);
     const mockProvider = createMockProvider("test", ["gpt-4"]);
@@ -435,16 +472,15 @@ describe("Integration: Gateway with observability", () => {
 
     const config: GatewayConfig = {
       strategy: { mode: "single", targets: ["obs-test"] },
-      targets: [{ name: "obs-test", provider: "openai", apiKey: "key", baseURL: "http://localhost:9999/v1", models: ["gpt-4"] }],
+      targets: [
+        { name: "obs-test", provider: "openai", apiKey: "key", baseURL: "http://localhost:9999/v1", models: ["gpt-4"] },
+      ],
     };
     const gateway = new Gateway(config);
     const mockProvider = createMockProvider("obs-test", ["gpt-4"]);
     gateway.registerProvider(mockProvider);
 
-    await gateway.route(
-      { metadata: {} },
-      { model: "gpt-4", messages: [{ role: "user", content: "test" }] },
-    );
+    await gateway.route({ metadata: {} }, { model: "gpt-4", messages: [{ role: "user", content: "test" }] });
 
     const formatted = await metrics.format();
     expect(formatted).toContain("ai_gateway_tokens_input_total");
@@ -457,7 +493,15 @@ describe("Integration: Model aliases", () => {
   it("resolves model alias before routing", async () => {
     const config: GatewayConfig = {
       strategy: { mode: "single", targets: ["alias-test"] },
-      targets: [{ name: "alias-test", provider: "openai", apiKey: "key", baseURL: "http://localhost:9999/v1", models: ["gpt-4"] }],
+      targets: [
+        {
+          name: "alias-test",
+          provider: "openai",
+          apiKey: "key",
+          baseURL: "http://localhost:9999/v1",
+          models: ["gpt-4"],
+        },
+      ],
       aliases: { "my-gpt4": "gpt-4" },
     };
     const gateway = new Gateway(config);
@@ -476,7 +520,15 @@ describe("Integration: Plugin chain in gateway", () => {
   it("before_request plugin can modify request", async () => {
     const config: GatewayConfig = {
       strategy: { mode: "single", targets: ["plug-test"] },
-      targets: [{ name: "plug-test", provider: "openai", apiKey: "key", baseURL: "http://localhost:9999/v1", models: ["gpt-4"] }],
+      targets: [
+        {
+          name: "plug-test",
+          provider: "openai",
+          apiKey: "key",
+          baseURL: "http://localhost:9999/v1",
+          models: ["gpt-4"],
+        },
+      ],
     };
     const gateway = new Gateway(config);
     const mockProvider = createMockProvider("plug-test", ["gpt-4"]);

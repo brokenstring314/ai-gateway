@@ -48,11 +48,28 @@ export type McpSpawner = (config: McpServerConfig) => McpSubprocess;
  * `env`, or name extra variables in `inheritEnv`.
  */
 export const MCP_ENV_ALLOWLIST: readonly string[] = [
-  "PATH", "HOME", "USER", "LOGNAME", "SHELL", "TERM", "TZ",
-  "LANG", "LANGUAGE", "LC_ALL", "LC_CTYPE", "TMPDIR",
+  "PATH",
+  "HOME",
+  "USER",
+  "LOGNAME",
+  "SHELL",
+  "TERM",
+  "TZ",
+  "LANG",
+  "LANGUAGE",
+  "LC_ALL",
+  "LC_CTYPE",
+  "TMPDIR",
   // Windows equivalents needed to start most processes.
-  "SYSTEMROOT", "WINDIR", "COMSPEC", "PATHEXT", "TEMP", "TMP",
-  "USERPROFILE", "APPDATA", "LOCALAPPDATA",
+  "SYSTEMROOT",
+  "WINDIR",
+  "COMSPEC",
+  "PATHEXT",
+  "TEMP",
+  "TMP",
+  "USERPROFILE",
+  "APPDATA",
+  "LOCALAPPDATA",
 ];
 
 /**
@@ -121,10 +138,7 @@ export class McpClient {
     options: McpServerOptions = {},
     private readonly spawn: McpSpawner = defaultSpawner,
   ) {
-    this.allowedTools =
-      options.allowedTools && options.allowedTools.length > 0
-        ? new Set(options.allowedTools)
-        : null;
+    this.allowedTools = options.allowedTools && options.allowedTools.length > 0 ? new Set(options.allowedTools) : null;
     this.timeoutMs = (options.timeoutSeconds ?? DEFAULT_TIMEOUT_SECONDS) * 1000;
   }
 
@@ -197,19 +211,13 @@ export class McpClient {
 
   async callTool(name: string, args: Record<string, unknown>): Promise<string> {
     if (!this.isToolAllowed(name)) {
-      throw new Error(
-        `MCP tool "${name}" is not allowed by this server's allowedTools configuration`,
-      );
+      throw new Error(`MCP tool "${name}" is not allowed by this server's allowedTools configuration`);
     }
 
     const result = await this.sendRequest<{
       content: Array<{ type: string; text?: string }>;
       isError?: boolean;
-    }>(
-      "tools/call",
-      { name, arguments: args },
-      { timeoutMs: this.timeoutMs, label: `MCP tool "${name}"` },
-    );
+    }>("tools/call", { name, arguments: args }, { timeoutMs: this.timeoutMs, label: `MCP tool "${name}"` });
 
     const text = result.content
       .filter((part): part is { type: string; text: string } => part.type === "text" && typeof part.text === "string")
@@ -263,11 +271,7 @@ export class McpClient {
     return undefined;
   }
 
-  private sendRequest<T>(
-    method: string,
-    params: Record<string, unknown>,
-    options?: SendRequestOptions,
-  ): Promise<T> {
+  private sendRequest<T>(method: string, params: Record<string, unknown>, options?: SendRequestOptions): Promise<T> {
     return new Promise<T>((resolve, reject) => {
       const pipe = this.stdinPipe;
       if (!pipe || this.state === "unready") {
@@ -291,9 +295,7 @@ export class McpClient {
       const timer = setTimeout(() => {
         if (!this.pending.has(id)) return;
         this.pending.delete(id);
-        reject(
-          new McpToolTimeoutError(`${options?.label ?? method} timed out after ${timeoutMs}ms`),
-        );
+        reject(new McpToolTimeoutError(`${options?.label ?? method} timed out after ${timeoutMs}ms`));
       }, timeoutMs);
 
       this.pending.set(id, {
@@ -407,9 +409,7 @@ export class McpClient {
     this.pending.delete(response.id);
 
     if (response.error) {
-      pending.reject(
-        new Error(`MCP error ${response.error.code}: ${response.error.message}`),
-      );
+      pending.reject(new Error(`MCP error ${response.error.code}: ${response.error.message}`));
     } else {
       pending.resolve(response.result);
     }

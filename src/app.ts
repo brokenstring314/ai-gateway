@@ -39,7 +39,11 @@ import { registerCapabilitiesHandler } from "./handlers/capabilities.js";
 import { createAdminApp, type AdminAppOptions } from "./admin/handlers.js";
 import { createDashboardApp } from "./dashboard/index.js";
 import { createProxyHandler, createProxyKeyValidator, resolveProxyTarget } from "./proxy/proxy.js";
-import { compileRouteAllowlist, DEFAULT_PASSTHROUGH_ROUTES, GATEWAY_ROUTE_METHODS } from "./core/surfaces/passthrough.js";
+import {
+  compileRouteAllowlist,
+  DEFAULT_PASSTHROUGH_ROUTES,
+  GATEWAY_ROUTE_METHODS,
+} from "./core/surfaces/passthrough.js";
 import { resolveBaseURL } from "./core/provider-presets.js";
 import { expandTargetEnvRefs } from "./config/envref.js";
 import { getMetrics as getPrometheusMetrics } from "./metrics/metrics.js";
@@ -100,13 +104,15 @@ export function createApp(
 
   // One gate for every route: bootstrap keys stop working as soon as a real
   // admin credential exists (store admin key, adminSecret or auth.keys).
-  const bootstrap: BootstrapGate = options?.bootstrap ?? createBootstrapGate({
-    bootstrapKey: options?.bootstrapKey,
-    bootstrapReadOnlyKey: options?.bootstrapReadOnlyKey,
-    keyStore,
-    adminSecret: () => options?.adminSecret ?? config.adminSecret,
-    configKeys: () => config.auth?.keys,
-  });
+  const bootstrap: BootstrapGate =
+    options?.bootstrap ??
+    createBootstrapGate({
+      bootstrapKey: options?.bootstrapKey,
+      bootstrapReadOnlyKey: options?.bootstrapReadOnlyKey,
+      keyStore,
+      adminSecret: () => options?.adminSecret ?? config.adminSecret,
+      configKeys: () => config.auth?.keys,
+    });
 
   // Every finalized request is also written to the log store (/admin/logs, dashboard).
   if (options?.logStore) gateway.addRequestLogSink(requestLogStoreSink(options.logStore));
@@ -138,7 +144,10 @@ export function createApp(
       if (tracker.draining && !DRAIN_EXEMPT_PATHS.has(c.req.path)) {
         c.header("Connection", "close");
         c.header("Retry-After", "1");
-        return c.json({ error: { message: "Server is shutting down", type: "unavailable", code: "shutting_down" } }, 503);
+        return c.json(
+          { error: { message: "Server is shutting down", type: "unavailable", code: "shutting_down" } },
+          503,
+        );
       }
       options.inFlightTracker?.increment();
       try {
@@ -169,38 +178,46 @@ export function createApp(
     if (keyStore === undefined && !hasConfigKeys(config.auth?.keys)) {
       console.error(
         "[auth] client auth is enabled but no credentials exist (no auth.keys and no key store): " +
-        "every /v1/* request will be rejected with 401. Add auth.keys or set auth.enabled: false.",
+          "every /v1/* request will be rejected with 401. Add auth.keys or set auth.enabled: false.",
       );
     }
-    app.use("*", authMiddleware({
-      keyStore,
-      bootstrapKey: options?.bootstrapKey,
-      bootstrapReadOnlyKey: options?.bootstrapReadOnlyKey,
-      bootstrap,
-      skipPaths: ["/health", "/metrics", "/livez", "/readyz"],
-      configKeys: () => config.auth?.keys,
-    }));
+    app.use(
+      "*",
+      authMiddleware({
+        keyStore,
+        bootstrapKey: options?.bootstrapKey,
+        bootstrapReadOnlyKey: options?.bootstrapReadOnlyKey,
+        bootstrap,
+        skipPaths: ["/health", "/metrics", "/livez", "/readyz"],
+        configKeys: () => config.auth?.keys,
+      }),
+    );
   }
 
   // Per-IP limiter: off unless configured (server.perIpRateLimit, or the
   // RATE_LIMIT_RPS / RATE_LIMIT_BURST env vars, which take precedence).
   const trustedProxies = parseTrustedProxies(process.env["TRUSTED_PROXIES"]);
-  app.use("/v1/*", perIpRateLimitMiddleware({
-    rps: parseEnvNumber(process.env["RATE_LIMIT_RPS"]) ?? config.server?.perIpRateLimit?.rps,
-    burst: parseEnvNumber(process.env["RATE_LIMIT_BURST"]) ?? config.server?.perIpRateLimit?.burst,
-    resolveClientIp: (c) => resolveClientIp(
-      requestRemoteAddress(c),
-      Object.fromEntries(c.req.raw.headers.entries()),
-      trustedProxies,
-    ),
-  }));
+  app.use(
+    "/v1/*",
+    perIpRateLimitMiddleware({
+      rps: parseEnvNumber(process.env["RATE_LIMIT_RPS"]) ?? config.server?.perIpRateLimit?.rps,
+      burst: parseEnvNumber(process.env["RATE_LIMIT_BURST"]) ?? config.server?.perIpRateLimit?.burst,
+      resolveClientIp: (c) =>
+        resolveClientIp(requestRemoteAddress(c), Object.fromEntries(c.req.raw.headers.entries()), trustedProxies),
+    }),
+  );
 
   app.use("*", requestTimeoutMiddleware(config.requestTimeout));
 
   // ── Handlers ──
   registerHealthHandler(app);
   registerLivenessHandler(app, gateway);
-  registerReadinessHandler(app, gateway, [keyStore, options?.logStore], () => options?.inFlightTracker?.draining ?? false);
+  registerReadinessHandler(
+    app,
+    gateway,
+    [keyStore, options?.logStore],
+    () => options?.inFlightTracker?.draining ?? false,
+  );
   registerCapabilitiesHandler(app, gateway);
   registerChatHandler(app, gateway);
   registerCompletionsHandler(app, gateway);
@@ -209,9 +226,12 @@ export function createApp(
   registerModelsHandler(app, gateway);
 
   const resolveTarget = (selector: { provider: string } | { model: string }) => {
-    const target = "provider" in selector
-      ? config.targets.find((candidate) => candidate.name === selector.provider || candidate.provider === selector.provider)
-      : config.targets.find((candidate) => candidate.models?.includes(selector.model));
+    const target =
+      "provider" in selector
+        ? config.targets.find(
+            (candidate) => candidate.name === selector.provider || candidate.provider === selector.provider,
+          )
+        : config.targets.find((candidate) => candidate.models?.includes(selector.model));
     if (target === undefined) return undefined;
     const expanded = expandTargetEnvRefs(target);
     // A target without baseURL uses its provider preset's default.
@@ -222,13 +242,19 @@ export function createApp(
   // e.g. GET /v1/chat/completions would list the upstream account's stored
   // completions with the operator key, S3-6).
   for (const [path, methods] of Object.entries(GATEWAY_ROUTE_METHODS)) {
-    app.all(path, (c) => c.json({
-      error: {
-        message: `Method ${c.req.method} is not allowed on ${path}`,
-        type: "invalid_request_error",
-        code: "method_not_allowed",
-      },
-    }, 405, { Allow: methods.join(", ") }));
+    app.all(path, (c) =>
+      c.json(
+        {
+          error: {
+            message: `Method ${c.req.method} is not allowed on ${path}`,
+            type: "invalid_request_error",
+            code: "method_not_allowed",
+          },
+        },
+        405,
+        { Allow: methods.join(", ") },
+      ),
+    );
   }
 
   // Pass-through proxy for other /v1/* routes (e.g. /v1/responses, /v1/files).
@@ -238,45 +264,53 @@ export function createApp(
   // (rate-limit, budget check, word-filter on messages/input/prompt) run first.
   if (config.passthroughProxy?.enabled === true) {
     const isRouteAllowed = compileRouteAllowlist(config.passthroughProxy.routes ?? DEFAULT_PASSTHROUGH_ROUTES);
-    app.all("/v1/*", createProxyHandler({
-      resolveTarget,
-      isRouteAllowed,
-      keyStore,
-      // Normally the global auth middleware has already authenticated the
-      // request; this fallback lets config.auth.keys through without a store.
-      validateKey: (token) => createProxyKeyValidator(
-        (config.auth?.keys ?? []).filter((k): k is string => typeof k === "string" && k !== ""),
-      )(token),
-      environment: process.env["GATEWAY_ENV"],
-      allowUnauthenticatedProxy:
-        process.env["ALLOW_UNAUTHENTICATED_PROXY"] === "true" || !clientAuthEnabled,
-      beforeForward: async (c, bodyText) => {
-        try {
-          const rewritten = await gateway.runPassthroughBeforePlugins(
-            {
-              traceId: c.req.header("X-Request-Id") ?? crypto.randomUUID(),
-              metadata: { apiKey: (c.get as unknown as (k: string) => unknown)("apiKey") },
-            },
-            bodyText,
-            new URL(c.req.url).pathname,
-          );
-          return rewritten === undefined ? undefined : { bodyText: rewritten };
-        } catch (err) {
-          if (err instanceof PluginRejectionError) {
-            return respondError(c as unknown as Context, err);
+    app.all(
+      "/v1/*",
+      createProxyHandler({
+        resolveTarget,
+        isRouteAllowed,
+        keyStore,
+        // Normally the global auth middleware has already authenticated the
+        // request; this fallback lets config.auth.keys through without a store.
+        validateKey: (token) =>
+          createProxyKeyValidator(
+            (config.auth?.keys ?? []).filter((k): k is string => typeof k === "string" && k !== ""),
+          )(token),
+        environment: process.env["GATEWAY_ENV"],
+        allowUnauthenticatedProxy: process.env["ALLOW_UNAUTHENTICATED_PROXY"] === "true" || !clientAuthEnabled,
+        beforeForward: async (c, bodyText) => {
+          try {
+            const rewritten = await gateway.runPassthroughBeforePlugins(
+              {
+                traceId: c.req.header("X-Request-Id") ?? crypto.randomUUID(),
+                metadata: { apiKey: (c.get as unknown as (k: string) => unknown)("apiKey") },
+              },
+              bodyText,
+              new URL(c.req.url).pathname,
+            );
+            return rewritten === undefined ? undefined : { bodyText: rewritten };
+          } catch (err) {
+            if (err instanceof PluginRejectionError) {
+              return respondError(c as unknown as Context, err);
+            }
+            throw err;
           }
-          throw err;
-        }
-      },
-    }));
+        },
+      }),
+    );
   } else {
-    app.all("/v1/*", (c) => c.json({
-      error: {
-        message: `Unknown route ${c.req.method} ${c.req.path}. The pass-through proxy is disabled (set passthroughProxy.enabled: true to forward other /v1/* routes).`,
-        type: "invalid_request_error",
-        code: "unknown_route",
-      },
-    }, 404));
+    app.all("/v1/*", (c) =>
+      c.json(
+        {
+          error: {
+            message: `Unknown route ${c.req.method} ${c.req.path}. The pass-through proxy is disabled (set passthroughProxy.enabled: true to forward other /v1/* routes).`,
+            type: "invalid_request_error",
+            code: "unknown_route",
+          },
+        },
+        404,
+      ),
+    );
   }
 
   // ── Admin API ──
@@ -303,10 +337,14 @@ export function createApp(
     app.use("/admin/dashboard/*", dashboardAuth);
   } else if (config.adminSecret) {
     const legacyDashboardAuth: MiddlewareHandler = async (c, next) => {
-      const supplied = c.req.header("X-Admin-Secret")
-        ?? c.req.header("Authorization")?.replace(/^Bearer\s+/i, "");
+      const supplied = c.req.header("X-Admin-Secret") ?? c.req.header("Authorization")?.replace(/^Bearer\s+/i, "");
       if (supplied !== config.adminSecret) {
-        return c.json({ error: { message: "Invalid admin credentials", type: "authentication_error", code: "invalid_admin_secret" } }, 401);
+        return c.json(
+          {
+            error: { message: "Invalid admin credentials", type: "authentication_error", code: "invalid_admin_secret" },
+          },
+          401,
+        );
       }
       await next();
     };

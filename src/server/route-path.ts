@@ -26,7 +26,11 @@ export function normalizeRoutePath(path: string): string {
   let p = path.replace(/\/{2,}/g, "/");
   if (p.length > 1) p = p.replace(/\/+$/, "");
   if (p === "") p = "/";
-  const canonical = p.replace(/%2f/gi, "/").replace(/\/{2,}/g, "/").replace(/\/+$/, "").toLowerCase();
+  const canonical = p
+    .replace(/%2f/gi, "/")
+    .replace(/\/{2,}/g, "/")
+    .replace(/\/+$/, "")
+    .toLowerCase();
   for (const route of GATEWAY_V1_ROUTES) {
     if (canonical === route) return route;
   }

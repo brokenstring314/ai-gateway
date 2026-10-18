@@ -12,17 +12,25 @@ function hang(ctx: RequestContext, errName: "AbortError" | "reason"): Promise<ne
   return new Promise((_, reject) => {
     const signal = ctx.signal;
     if (!signal) return; // never settles: test would time out
-    signal.addEventListener("abort", () => {
-      reject(errName === "reason" ? signal.reason : new DOMException("The operation was aborted.", "AbortError"));
-    }, { once: true });
+    signal.addEventListener(
+      "abort",
+      () => {
+        reject(errName === "reason" ? signal.reason : new DOMException("The operation was aborted.", "AbortError"));
+      },
+      { once: true },
+    );
   });
 }
 
 function hungProvider(errName: "AbortError" | "reason"): IProvider {
   return {
     name: "mock",
-    async complete() { throw new Error("unused"); },
-    async *completeStream() { throw new Error("unused"); },
+    async complete() {
+      throw new Error("unused");
+    },
+    async *completeStream() {
+      throw new Error("unused");
+    },
     embed: (ctx: RequestContext) => hang(ctx, errName),
     generateImage: (ctx: RequestContext) => hang(ctx, errName),
     supportedModels: () => ["m"],
@@ -34,7 +42,8 @@ function hungProvider(errName: "AbortError" | "reason"): IProvider {
 function setup(errName: "AbortError" | "reason") {
   const cfg = {
     requestTimeout: "1s",
-    auth: { enabled: false }, strategy: { mode: "single", targets: ["mock"] },
+    auth: { enabled: false },
+    strategy: { mode: "single", targets: ["mock"] },
     targets: [{ name: "mock", provider: "openai", apiKey: "k", baseURL: "http://127.0.0.1:1/v1", models: ["m"] }],
   } as unknown as GatewayConfig;
   const gw = new Gateway(cfg);
@@ -55,7 +64,7 @@ describe("request timeout on embeddings / images", () => {
       ]);
       for (const r of [e, i]) {
         expect(r.status).toBe(504);
-        const body = await r.json() as { error: { type: string; code: string } };
+        const body = (await r.json()) as { error: { type: string; code: string } };
         expect(body.error.type).toBe("timeout_error");
         expect(body.error.code).toBe("gateway_timeout");
       }

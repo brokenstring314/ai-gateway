@@ -67,10 +67,7 @@ export const RESPONSE_EXTRA_KEYS: readonly string[] = [
 ];
 
 /** Choice-level response fields (besides `logprobs`, which is typed). */
-export const CHOICE_EXTRA_KEYS: readonly string[] = [
-  "content_filter_results",
-  "stop_reason",
-];
+export const CHOICE_EXTRA_KEYS: readonly string[] = ["content_filter_results", "stop_reason"];
 
 /** Response message / stream delta fields returned to the client. */
 export const RESPONSE_MESSAGE_EXTRA_KEYS: readonly string[] = [
@@ -128,14 +125,16 @@ export function tokenDetails(raw: unknown): Record<string, number> | undefined {
 }
 
 /** Normalise an upstream wire `usage` object into the internal shape (details and extras kept). */
-export function normalizeWireUsage(raw: unknown): {
-  promptTokens: number;
-  completionTokens: number;
-  totalTokens: number;
-  promptTokensDetails?: Record<string, number>;
-  completionTokensDetails?: Record<string, number>;
-  extra?: Json;
-} | undefined {
+export function normalizeWireUsage(raw: unknown):
+  | {
+      promptTokens: number;
+      completionTokens: number;
+      totalTokens: number;
+      promptTokensDetails?: Record<string, number>;
+      completionTokensDetails?: Record<string, number>;
+      extra?: Json;
+    }
+  | undefined {
   if (!isJsonObject(raw)) return undefined;
   const num = (v: unknown) => (typeof v === "number" && Number.isFinite(v) ? v : 0);
   const usage: ReturnType<typeof normalizeWireUsage> & object = {

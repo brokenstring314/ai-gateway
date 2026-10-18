@@ -159,27 +159,26 @@ export const TargetConfigSchema = strictObject({
 });
 
 export const ConditionalRuleSchema = strictObject({
-    field: z.enum(["model", "user", "message", "prompt"]),
-    pattern: z.string().min(1).optional(),
-    contains: z.string().min(1).optional(),
-    target: z.string().min(1),
-  })
-  .superRefine((rule, ctx) => {
-    if ((rule.pattern === undefined) === (rule.contains === undefined)) {
-      ctx.addIssue({ code: "custom", message: 'a rule needs exactly one of "pattern" (regex) or "contains"' });
+  field: z.enum(["model", "user", "message", "prompt"]),
+  pattern: z.string().min(1).optional(),
+  contains: z.string().min(1).optional(),
+  target: z.string().min(1),
+}).superRefine((rule, ctx) => {
+  if ((rule.pattern === undefined) === (rule.contains === undefined)) {
+    ctx.addIssue({ code: "custom", message: 'a rule needs exactly one of "pattern" (regex) or "contains"' });
+  }
+  if (rule.pattern !== undefined) {
+    try {
+      new RegExp(rule.pattern);
+    } catch (err) {
+      ctx.addIssue({
+        code: "custom",
+        path: ["pattern"],
+        message: `invalid regex: ${err instanceof Error ? err.message : String(err)}`,
+      });
     }
-    if (rule.pattern !== undefined) {
-      try {
-        new RegExp(rule.pattern);
-      } catch (err) {
-        ctx.addIssue({
-          code: "custom",
-          path: ["pattern"],
-          message: `invalid regex: ${err instanceof Error ? err.message : String(err)}`,
-        });
-      }
-    }
-  });
+  }
+});
 
 export const StrategyConfigSchema = strictObject(
   {
@@ -201,7 +200,7 @@ export const PluginConfigSchema = strictObject({
 
 export const ObservabilityConfigSchema = strictObject(
   {
-  tracing: strictObject({
+    tracing: strictObject({
       enabled: z.boolean().optional().default(false),
       otlpEndpoint: z.string().optional(),
       otlpProtocol: z.enum(["grpc", "http"]).optional().default("http"),
@@ -210,13 +209,11 @@ export const ObservabilityConfigSchema = strictObject(
       privacyLevel: z.enum(["none", "metadata", "full"]).optional().default("metadata"),
       shutdownGrace: durationString("Invalid shutdownGrace duration").optional().default("10s"),
       headers: z.record(z.string(), z.string()).optional().default({}),
-    })
-    .optional(),
-  metrics: strictObject({
+    }).optional(),
+    metrics: strictObject({
       enabled: z.boolean().optional().default(false),
       port: z.number().int().positive().optional(),
-    })
-    .optional(),
+    }).optional(),
   },
   REMOVED_OBSERVABILITY_KEYS,
 );
@@ -229,24 +226,32 @@ const MCP_HTTP_REMOVED =
   "MCP http transport is not supported (removed in 0.2.0; it was never implemented): use a stdio server (command/args)";
 
 export const McpServerConfigSchema = strictObject({
-    name: z.string().min(1),
-    type: z.string().optional(),
-    command: z.string().optional(),
-    args: z.array(z.string()).optional(),
-    env: z.record(z.string(), z.string()).optional(),
-    inheritEnv: z.union([z.boolean(), z.array(z.string())]).optional(),
-    url: z.unknown().optional(),
-    headers: z.unknown().optional(),
-    allowedTools: z.array(z.string()).optional(),
-    maxCallDepth: z.number().int().positive().optional().default(5),
-    timeoutSeconds: z.number().int().positive().optional().default(30),
-    required: z.boolean().optional().default(false),
-  })
+  name: z.string().min(1),
+  type: z.string().optional(),
+  command: z.string().optional(),
+  args: z.array(z.string()).optional(),
+  env: z.record(z.string(), z.string()).optional(),
+  inheritEnv: z.union([z.boolean(), z.array(z.string())]).optional(),
+  url: z.unknown().optional(),
+  headers: z.unknown().optional(),
+  allowedTools: z.array(z.string()).optional(),
+  maxCallDepth: z.number().int().positive().optional().default(5),
+  timeoutSeconds: z.number().int().positive().optional().default(30),
+  required: z.boolean().optional().default(false),
+})
   .superRefine((val, ctx) => {
     if (val.type === "http" || val.url !== undefined || val.headers !== undefined) {
-      ctx.addIssue({ code: "custom", path: [val.type === "http" ? "type" : val.url !== undefined ? "url" : "headers"], message: MCP_HTTP_REMOVED });
+      ctx.addIssue({
+        code: "custom",
+        path: [val.type === "http" ? "type" : val.url !== undefined ? "url" : "headers"],
+        message: MCP_HTTP_REMOVED,
+      });
     } else if (val.type !== undefined && val.type !== "stdio") {
-      ctx.addIssue({ code: "custom", path: ["type"], message: `unknown MCP transport "${val.type}"; only stdio is supported` });
+      ctx.addIssue({
+        code: "custom",
+        path: ["type"],
+        message: `unknown MCP transport "${val.type}"; only stdio is supported`,
+      });
     }
     if (!val.command) {
       ctx.addIssue({ code: "custom", path: ["command"], message: "mcp server requires a command (stdio)" });
@@ -258,7 +263,12 @@ export const GatewayConfigSchema = strictObject({
   apiVersion: z.string().optional().default("v1"),
   strategy: StrategyConfigSchema,
   targets: z.array(TargetConfigSchema).min(1),
-  maxRequestBytes: z.number().int().positive().optional().default(10 * 1024 * 1024),
+  maxRequestBytes: z
+    .number()
+    .int()
+    .positive()
+    .optional()
+    .default(10 * 1024 * 1024),
   requestTimeout: durationString("Invalid requestTimeout duration").optional(),
   plugins: z.array(PluginConfigSchema).optional(),
   aliases: z.record(z.string(), z.string()).optional(),
@@ -266,43 +276,41 @@ export const GatewayConfigSchema = strictObject({
   observability: ObservabilityConfigSchema.optional(),
   compatibility: CompatibilityConfigSchema.optional(),
   server: strictObject({
-      port: z.number().int().positive().optional().default(3000),
-      host: z.string().optional().default("0.0.0.0"),
-      // Bun.serve idleTimeout (seconds, 0 = never, Bun max 255). Must exceed
-      // the longest silent gap of a slow non-streaming upstream call.
-      idleTimeoutSeconds: z.number().int().min(0).max(255).optional(),
-      // SSE `: ping` heartbeat interval while a stream is idle (0 = off).
-      sseHeartbeatSeconds: z.number().min(0).optional(),
-      // Upstream idle timeout for SSE streams once the response started
-      // (seconds, 0 = off, default 120) and optional max stream duration.
-      streamIdleTimeoutSeconds: z.number().min(0).optional(),
-      streamMaxDurationSeconds: z.number().min(0).optional(),
-      // Per-client-IP token bucket on /v1/* (off unless rps > 0).
-      perIpRateLimit: strictObject({ rps: z.number().min(0).optional(), burst: z.number().min(0).optional() })
-        .optional(),
-    })
-    .optional(),
+    port: z.number().int().positive().optional().default(3000),
+    host: z.string().optional().default("0.0.0.0"),
+    // Bun.serve idleTimeout (seconds, 0 = never, Bun max 255). Must exceed
+    // the longest silent gap of a slow non-streaming upstream call.
+    idleTimeoutSeconds: z.number().int().min(0).max(255).optional(),
+    // SSE `: ping` heartbeat interval while a stream is idle (0 = off).
+    sseHeartbeatSeconds: z.number().min(0).optional(),
+    // Upstream idle timeout for SSE streams once the response started
+    // (seconds, 0 = off, default 120) and optional max stream duration.
+    streamIdleTimeoutSeconds: z.number().min(0).optional(),
+    streamMaxDurationSeconds: z.number().min(0).optional(),
+    // Per-client-IP token bucket on /v1/* (off unless rps > 0).
+    perIpRateLimit: strictObject({ rps: z.number().min(0).optional(), burst: z.number().min(0).optional() }).optional(),
+  }).optional(),
   // Opt-in pass-through proxy for other /v1/* routes (see config/types.ts).
   passthroughProxy: strictObject({
     enabled: z.boolean().optional(),
-    routes: z.array(z.string().regex(PASSTHROUGH_ROUTE_PATTERN, 'expected "METHOD /v1/path" or "METHOD /v1/prefix/*"')).optional(),
+    routes: z
+      .array(z.string().regex(PASSTHROUGH_ROUTE_PATTERN, 'expected "METHOD /v1/path" or "METHOD /v1/prefix/*"'))
+      .optional(),
   }).optional(),
   adminSecret: z.string().min(8).optional(),
   auth: strictObject({
-      // No default: client auth is disabled ONLY when enabled === false is set
-      // explicitly. Omitting it (e.g. `auth: { keys: [...] }`) keeps auth on;
-      // see isClientAuthEnabled().
-      enabled: z.boolean().optional(),
-      keys: z.array(z.string()).optional(),
-    })
-    .optional(),
+    // No default: client auth is disabled ONLY when enabled === false is set
+    // explicitly. Omitting it (e.g. `auth: { keys: [...] }`) keeps auth on;
+    // see isClientAuthEnabled().
+    enabled: z.boolean().optional(),
+    keys: z.array(z.string()).optional(),
+  }).optional(),
   cors: strictObject({
-      enabled: z.boolean().optional().default(false),
-      origins: z.array(z.string()).optional(),
-      // Unset/empty = reflect the preflight's Access-Control-Request-Headers.
-      allowHeaders: z.array(z.string()).optional(),
-    })
-    .optional(),
+    enabled: z.boolean().optional().default(false),
+    origins: z.array(z.string()).optional(),
+    // Unset/empty = reflect the preflight's Access-Control-Request-Headers.
+    allowHeaders: z.array(z.string()).optional(),
+  }).optional(),
 }).superRefine((cfg, ctx) => {
   // Cross-references (target names, strategy targets/weights/rules, baseURL):
   // shared with the embedded Gateway constructor.

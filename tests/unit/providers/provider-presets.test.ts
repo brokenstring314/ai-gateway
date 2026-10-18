@@ -15,7 +15,10 @@ let fetchSpy: ReturnType<typeof spyOn>;
 
 const completion = () =>
   Response.json({
-    id: "c1", object: "chat.completion", created: 1, model: "m",
+    id: "c1",
+    object: "chat.completion",
+    created: 1,
+    model: "m",
     choices: [{ index: 0, message: { role: "assistant", content: "ok" }, finish_reason: "stop" }],
     usage: { prompt_tokens: 1, completion_tokens: 1, total_tokens: 2 },
   });
@@ -51,7 +54,9 @@ const post = (a: ReturnType<typeof app>, body: Record<string, unknown>) =>
 
 describe("capabilities keyed on target.provider + compatibility wired (T3-8)", () => {
   it("reject: mistral target named 'up' rejects seed with 400, nothing sent upstream", async () => {
-    const r = await post(app({ provider: "mistral" }, { compatibility: { onUnsupportedParam: "reject" } }), { seed: 7 });
+    const r = await post(app({ provider: "mistral" }, { compatibility: { onUnsupportedParam: "reject" } }), {
+      seed: 7,
+    });
     expect(r.status).toBe(400);
     expect(JSON.stringify(await r.json())).toContain("seed");
     expect(seen.length).toBe(0);
@@ -76,24 +81,50 @@ describe("capabilities keyed on target.provider + compatibility wired (T3-8)", (
   });
 
   it("drop on replicate removes camel/snake-mismatched fields too", () => {
-    const res = enforceUnsupportedParams("replicate", {
-      model: "m", messages: [], toolChoice: "auto", responseFormat: { type: "json_object" },
-      maxCompletionTokens: 5, presencePenalty: 1, topLogprobs: 2, streamOptions: { includeUsage: true }, temperature: 1,
-    } as never, "drop");
+    const res = enforceUnsupportedParams(
+      "replicate",
+      {
+        model: "m",
+        messages: [],
+        toolChoice: "auto",
+        responseFormat: { type: "json_object" },
+        maxCompletionTokens: 5,
+        presencePenalty: 1,
+        topLogprobs: 2,
+        streamOptions: { includeUsage: true },
+        temperature: 1,
+      } as never,
+      "drop",
+    );
     expect(res.action).toBe("dropped");
     const req = (res as unknown as { request: Record<string, unknown> }).request;
-    for (const k of ["toolChoice", "responseFormat", "maxCompletionTokens", "presencePenalty", "topLogprobs", "streamOptions"]) {
+    for (const k of [
+      "toolChoice",
+      "responseFormat",
+      "maxCompletionTokens",
+      "presencePenalty",
+      "topLogprobs",
+      "streamOptions",
+    ]) {
       expect(req[k]).toBeUndefined();
     }
     expect(req["temperature"]).toBe(1);
   });
 
   it("developer role: rejected on ollama in reject mode, mapped to system in drop mode", () => {
-    const req = { model: "m", messages: [{ role: "developer", content: "be brief" }, { role: "user", content: "hi" }] } as never;
+    const req = {
+      model: "m",
+      messages: [
+        { role: "developer", content: "be brief" },
+        { role: "user", content: "hi" },
+      ],
+    } as never;
     const rej = enforceUnsupportedParams("ollama", req, "reject");
     expect(rej.action).toBe("rejected");
     expect((rej as { reason: string }).reason).toContain("developer_role");
-    const drop = enforceUnsupportedParams("ollama", req, "drop") as unknown as { request: { messages: Array<{ role: string }> } };
+    const drop = enforceUnsupportedParams("ollama", req, "drop") as unknown as {
+      request: { messages: Array<{ role: string }> };
+    };
     expect(drop.request.messages[0]!.role).toBe("system");
     expect(enforceUnsupportedParams("openai", req, "reject").action).toBe("ok");
   });
@@ -120,14 +151,22 @@ describe("presets", () => {
     expect(baseURLProblem({ name: "c", provider: "cloudflare" })).toContain("needs an explicit baseURL");
     expect(baseURLProblem({ name: "x", provider: "my-vllm" })).toContain('unknown provider "my-vllm" needs a baseURL');
     expect(baseURLProblem({ name: "x", provider: "my-vllm", baseURL: "http://vllm:8000/v1" })).toBeUndefined();
-    expect(() => new Gateway({ strategy: { mode: "single" }, targets: [{ name: "d", provider: "databricks", apiKey: "k" }] } as GatewayConfig))
-      .toThrow(/explicit baseURL/);
+    expect(
+      () =>
+        new Gateway({
+          strategy: { mode: "single" },
+          targets: [{ name: "d", provider: "databricks", apiKey: "k" }],
+        } as GatewayConfig),
+    ).toThrow(/explicit baseURL/);
   });
 });
 
 describe("${VAR} in baseURL (C3-10)", () => {
   const parse = (baseURL: string) =>
-    safeParseConfig({ strategy: { mode: "single" }, targets: [{ name: "a", provider: "openai", apiKey: "${K}", baseURL }] });
+    safeParseConfig({
+      strategy: { mode: "single" },
+      targets: [{ name: "a", provider: "openai", apiKey: "${K}", baseURL }],
+    });
 
   for (const u of ["${OPENAI_BASE_URL}", "http://localhost:${PORT}/v1", "https://${AZ_RESOURCE}.openai.azure.com/v1"]) {
     it(`schema accepts ${u}`, () => expect(parse(u).success).toBe(true));
@@ -141,8 +180,9 @@ describe("${VAR} in baseURL (C3-10)", () => {
     try {
       await post(app({ provider: "openai", baseURL: "${P14_BASE}" }), {});
       expect(seen[0]!.url).toBe("http://expanded.test/v1/chat/completions");
-      expect(() => createProviderFromTarget({ name: "b", provider: "openai", apiKey: "k", baseURL: "${P14_BAD}" }))
-        .toThrow(/not a valid http\(s\) URL after/);
+      expect(() =>
+        createProviderFromTarget({ name: "b", provider: "openai", apiKey: "k", baseURL: "${P14_BAD}" }),
+      ).toThrow(/not a valid http\(s\) URL after/);
     } finally {
       delete process.env["P14_BASE"];
       delete process.env["P14_BAD"];

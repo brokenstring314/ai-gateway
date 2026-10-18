@@ -10,7 +10,11 @@ let gw: GatewayProcess;
 async function start() {
   return startGateway({
     config: baseConfig([
-      { name: "a", mock: a, extra: { circuitBreaker: { failureThreshold: 3, successThreshold: 1, timeoutMs: 60_000 } } },
+      {
+        name: "a",
+        mock: a,
+        extra: { circuitBreaker: { failureThreshold: 3, successThreshold: 1, timeoutMs: 60_000 } },
+      },
       { name: "b", mock: b },
     ]),
   });
@@ -21,8 +25,15 @@ beforeAll(async () => {
   b = startMockUpstream("b");
   gw = await start();
 });
-afterAll(async () => { await gw?.stop(); a?.stop(); b?.stop(); });
-beforeEach(() => { a.reset(); b.reset(); });
+afterAll(async () => {
+  await gw?.stop();
+  a?.stop();
+  b?.stop();
+});
+beforeEach(() => {
+  a.reset();
+  b.reset();
+});
 
 const messages = [{ role: "user" as const, content: "hi" }];
 

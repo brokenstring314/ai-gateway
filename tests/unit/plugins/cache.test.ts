@@ -18,9 +18,7 @@ function makeResponse(overrides?: Partial<ChatCompletionResponse>): ChatCompleti
     created: Date.now(),
     model: "test-model",
     provider: "test",
-    choices: [
-      { index: 0, message: { role: "assistant", content: "hi" }, finishReason: "stop" },
-    ],
+    choices: [{ index: 0, message: { role: "assistant", content: "hi" }, finishReason: "stop" }],
     usage: { promptTokens: 5, completionTokens: 3, totalTokens: 8 },
     ...overrides,
   };
@@ -170,9 +168,11 @@ describe("CachePlugin", () => {
   it("cache key differs when tools are present vs absent", async () => {
     const beforeCache = new CachePlugin({ ttlSeconds: 60 }, "before_request");
     const ctx1 = createPluginContext(makeRequest());
-    const ctx2 = createPluginContext(makeRequest({
-      tools: [{ type: "function", function: { name: "get_weather" } }],
-    }));
+    const ctx2 = createPluginContext(
+      makeRequest({
+        tools: [{ type: "function", function: { name: "get_weather" } }],
+      }),
+    );
 
     await beforeCache.execute(ctx1);
     await beforeCache.execute(ctx2);

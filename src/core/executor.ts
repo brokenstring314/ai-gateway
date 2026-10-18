@@ -131,7 +131,8 @@ export class TargetExecutor {
   private settleFailure(name: string, a: Admission, ctx: RequestContext, err: unknown, started: boolean): unknown {
     const c = classifyAttemptError(err, { signal: ctx?.signal, admitted: true, started });
     this.settle(a, c.breaker, name);
-    if (c.breaker === "failure") this.notify(() => this.deps.onAttemptFailure?.(name, c.timedOut ? gatewayTimeout(name) : err));
+    if (c.breaker === "failure")
+      this.notify(() => this.deps.onAttemptFailure?.(name, c.timedOut ? gatewayTimeout(name) : err));
     return c.timedOut ? gatewayTimeout(name) : err;
   }
 
@@ -179,7 +180,8 @@ export class TargetExecutor {
       // A stream that ends without a single chunk produced no answer: a
       // failed attempt (breaker failure, eligible for failover), never an
       // empty "success" (T3-5).
-      if (!started) throw new ReadableStreamError(`${name}: upstream stream ended without any chunk`, "upstream_empty_stream");
+      if (!started)
+        throw new ReadableStreamError(`${name}: upstream stream ended without any chunk`, "upstream_empty_stream");
       settled = true;
       this.settle(a, "success", name);
     } catch (err) {
@@ -290,7 +292,10 @@ export class TargetExecutor {
         lastError = err;
         errors.push(err);
         if (!isFailoverEligible(err) || ctx?.signal?.aborted) throw unwrapRetry(err);
-        console.error(`${opts.label}: streaming target "${name}" failed:`, err instanceof Error ? err.message : String(err));
+        console.error(
+          `${opts.label}: streaming target "${name}" failed:`,
+          err instanceof Error ? err.message : String(err),
+        );
         continue;
       }
 
@@ -342,7 +347,10 @@ export function strategyRunOptions(
     label,
     onServed,
     exhausted: (chosen) =>
-      new FallbackExhaustedError(`FallbackStrategy: all ${candidateCount} ${streaming ? "streaming " : ""}targets failed`, chosen),
+      new FallbackExhaustedError(
+        `FallbackStrategy: all ${candidateCount} ${streaming ? "streaming " : ""}targets failed`,
+        chosen,
+      ),
   };
 }
 
@@ -354,7 +362,12 @@ export async function executeChat(
   req: ChatCompletionRequest,
 ): Promise<ChatCompletionResponse> {
   const candidates = strategy.selectTargets(req);
-  return executor.run(ctx, candidates, (p) => p.complete(ctx, req), strategyRunOptions(strategy, false, candidates.length));
+  return executor.run(
+    ctx,
+    candidates,
+    (p) => p.complete(ctx, req),
+    strategyRunOptions(strategy, false, candidates.length),
+  );
 }
 
 /** Streaming chat completion over the strategy's candidates; `onServed` names the target of the first chunk. */

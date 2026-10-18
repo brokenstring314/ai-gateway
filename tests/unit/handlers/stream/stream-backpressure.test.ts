@@ -13,13 +13,31 @@ for (const path of ["/v1/chat/completions", "/v1/completions"]) {
       let produced = 0;
       const pad = "x".repeat(64 * 1024);
       const enc = new TextEncoder();
-      const s = setup(() => new Response(new ReadableStream<Uint8Array>({
-        pull(c) {
-          if (produced >= TOTAL) { c.enqueue(enc.encode("data: [DONE]\n\n")); c.close(); return; }
-          produced++;
-          c.enqueue(enc.encode(`data: ${JSON.stringify({ id: "c", object: "chat.completion.chunk", created: 1, model: "gpt-4o", choices: [{ index: 0, delta: { content: pad }, finish_reason: null }] })}\n\n`));
-        },
-      }, { highWaterMark: 0 }), { headers: { "content-type": "text/event-stream" } }), { server: { sseHeartbeatSeconds: 0.05 } } as never);
+      const s = setup(
+        () =>
+          new Response(
+            new ReadableStream<Uint8Array>(
+              {
+                pull(c) {
+                  if (produced >= TOTAL) {
+                    c.enqueue(enc.encode("data: [DONE]\n\n"));
+                    c.close();
+                    return;
+                  }
+                  produced++;
+                  c.enqueue(
+                    enc.encode(
+                      `data: ${JSON.stringify({ id: "c", object: "chat.completion.chunk", created: 1, model: "gpt-4o", choices: [{ index: 0, delta: { content: pad }, finish_reason: null }] })}\n\n`,
+                    ),
+                  );
+                },
+              },
+              { highWaterMark: 0 },
+            ),
+            { headers: { "content-type": "text/event-stream" } },
+          ),
+        { server: { sseHeartbeatSeconds: 0.05 } } as never,
+      );
       try {
         const extra = path === "/v1/completions" ? { prompt: "hi", messages: undefined } : {};
         const r = await post(s.app, { stream: true, ...extra }, path);
@@ -34,7 +52,9 @@ for (const path of ["/v1/chat/completions", "/v1/completions"]) {
         const text = await r.text();
         expect(produced).toBe(TOTAL);
         expect(text.endsWith("data: [DONE]\n\n")).toBe(true);
-      } finally { s.stop(); }
+      } finally {
+        s.stop();
+      }
     }, 20000);
   });
 }

@@ -72,14 +72,17 @@ export function registerReadinessHandler(
     const mcpReady = gatewayReadiness.isMcpReady?.() ?? true;
     const draining = isDraining?.() ?? false;
     const ready = providerReady && storeReady && mcpReady && !draining;
-    return c.json({
-      status: draining ? "draining" : ready ? "ok" : "not ready",
-      providers: providerReady,
-      stores: storeReady,
-      mcpServers: gatewayReadiness.mcpReadiness?.() ?? {},
-      circuitBreakers: gatewayReadiness.circuitBreakerStates?.() ?? {},
-      upstreamAvailable: gatewayReadiness.hasUsableTarget?.() ?? true,
-      draining,
-    }, ready ? 200 : 503);
+    return c.json(
+      {
+        status: draining ? "draining" : ready ? "ok" : "not ready",
+        providers: providerReady,
+        stores: storeReady,
+        mcpServers: gatewayReadiness.mcpReadiness?.() ?? {},
+        circuitBreakers: gatewayReadiness.circuitBreakerStates?.() ?? {},
+        upstreamAvailable: gatewayReadiness.hasUsableTarget?.() ?? true,
+        draining,
+      },
+      ready ? 200 : 503,
+    );
   });
 }

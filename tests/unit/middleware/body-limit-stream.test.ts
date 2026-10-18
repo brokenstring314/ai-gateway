@@ -8,13 +8,19 @@ import { KeyStore } from "@/persistence/key-store";
 import type { GatewayConfig } from "@/config/types";
 
 let server: ReturnType<typeof Bun.serve> | undefined;
-afterEach(() => { server?.stop(true); server = undefined; });
+afterEach(() => {
+  server?.stop(true);
+  server = undefined;
+});
 
 function bigStream(total: number, chunk = 64 * 1024): ReadableStream<Uint8Array> {
   let sent = 0;
   return new ReadableStream({
     pull(ctrl) {
-      if (sent >= total) { ctrl.close(); return; }
+      if (sent >= total) {
+        ctrl.close();
+        return;
+      }
       const n = Math.min(chunk, total - sent);
       ctrl.enqueue(new Uint8Array(n).fill(97));
       sent += n;
@@ -36,7 +42,10 @@ describe("bodyLimitMiddleware — streamed bodies", () => {
     const app = new Hono();
     app.use("*", bodyLimitMiddleware(1024));
     let reached = false;
-    app.post("/x", async (c) => { reached = true; return c.text(String((await c.req.arrayBuffer()).byteLength)); });
+    app.post("/x", async (c) => {
+      reached = true;
+      return c.text(String((await c.req.arrayBuffer()).byteLength));
+    });
     server = Bun.serve({ port: 0, hostname: "127.0.0.1", fetch: app.fetch });
     const res = await postStream(`http://127.0.0.1:${server.port}/x`, 2 * 1024 * 1024);
     expect(res.status).toBe(413);
@@ -66,7 +75,15 @@ describe("bodyLimitMiddleware — streamed bodies", () => {
   it("covers the /v1 proxy path: oversized chunked body is 413 before the proxy reads it", async () => {
     const config: GatewayConfig = {
       strategy: { mode: "single", targets: ["mock"] },
-      targets: [{ name: "mock", provider: "openai", apiKey: "sk-target-secret", baseURL: "http://127.0.0.1:1/v1", models: ["gpt-4o"] }],
+      targets: [
+        {
+          name: "mock",
+          provider: "openai",
+          apiKey: "sk-target-secret",
+          baseURL: "http://127.0.0.1:1/v1",
+          models: ["gpt-4o"],
+        },
+      ],
       maxRequestBytes: 4096,
       auth: { enabled: true, keys: ["sk-client-key-abc"] },
       passthroughProxy: { enabled: true },

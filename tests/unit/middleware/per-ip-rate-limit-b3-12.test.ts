@@ -11,7 +11,9 @@ import type { GatewayConfig } from "@/config/types";
 function cfg(extra: Partial<GatewayConfig> = {}): GatewayConfig {
   return {
     strategy: { mode: "single", targets: ["mock"] },
-    targets: [{ name: "mock", provider: "openai", apiKey: "sk-x", baseURL: "http://127.0.0.1:1/v1", models: ["gpt-4o"] }],
+    targets: [
+      { name: "mock", provider: "openai", apiKey: "sk-x", baseURL: "http://127.0.0.1:1/v1", models: ["gpt-4o"] },
+    ],
     auth: { enabled: false },
     ...extra,
   };
@@ -97,7 +99,12 @@ describe("B3-12 per-IP limiter", () => {
 
   it("idle buckets are swept", async () => {
     let now = 0;
-    const limit = perIpRateLimitMiddleware({ rps: 10, burst: 10, resolveClientIp: (c) => c.req.header("x-ip") ?? "", nowMs: () => now });
+    const limit = perIpRateLimitMiddleware({
+      rps: 10,
+      burst: 10,
+      resolveClientIp: (c) => c.req.header("x-ip") ?? "",
+      nowMs: () => now,
+    });
     const app = new Hono();
     app.use("*", limit);
     app.get("/", (c) => c.text("ok"));

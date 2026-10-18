@@ -1,14 +1,7 @@
 import { describe, expect, it } from "bun:test";
 import { Counter, Gauge, Histogram } from "prom-client";
-import {
-  Metrics,
-  getMetrics,
-  resetMetrics,
-} from "../../../src/metrics/metrics.js";
-import type {
-  CircuitBreakerState,
-  RequestLabels,
-} from "../../../src/metrics/metrics.js";
+import { Metrics, getMetrics, resetMetrics } from "../../../src/metrics/metrics.js";
+import type { CircuitBreakerState, RequestLabels } from "../../../src/metrics/metrics.js";
 
 const PREFIX = "ai_gateway";
 
@@ -108,16 +101,8 @@ function parseMetrics(text: string): Map<string, Sample[]> {
   return samples;
 }
 
-function findSample(
-  samples: Map<string, Sample[]>,
-  name: string,
-  labels: Record<string, string>,
-): Sample | undefined {
-  return samples
-    .get(name)
-    ?.find((s) =>
-      Object.entries(labels).every(([key, value]) => s.labels[key] === value),
-    );
+function findSample(samples: Map<string, Sample[]>, name: string, labels: Record<string, string>): Sample | undefined {
+  return samples.get(name)?.find((s) => Object.entries(labels).every(([key, value]) => s.labels[key] === value));
 }
 
 const reqLabels: RequestLabels = {
@@ -149,17 +134,9 @@ describe("Metrics", () => {
 
   it("exposes the underlying registry with correctly typed metrics", () => {
     const metrics = new Metrics();
-    expect(
-      metrics.registry.getSingleMetric(`${PREFIX}_requests_total`),
-    ).toBeInstanceOf(Counter);
-    expect(
-      metrics.registry.getSingleMetric(
-        `${PREFIX}_request_duration_seconds`,
-      ),
-    ).toBeInstanceOf(Histogram);
-    expect(
-      metrics.registry.getSingleMetric(`${PREFIX}_mcp_server_up`),
-    ).toBeInstanceOf(Gauge);
+    expect(metrics.registry.getSingleMetric(`${PREFIX}_requests_total`)).toBeInstanceOf(Counter);
+    expect(metrics.registry.getSingleMetric(`${PREFIX}_request_duration_seconds`)).toBeInstanceOf(Histogram);
+    expect(metrics.registry.getSingleMetric(`${PREFIX}_mcp_server_up`)).toBeInstanceOf(Gauge);
   });
 
   it("recordRequest increments requests_total with method/status/provider labels", async () => {
@@ -272,9 +249,7 @@ describe("Metrics", () => {
 
     const samples = parseMetrics(await metrics.format());
     const name = `${PREFIX}_circuit_breaker_state`;
-    expect(
-      findSample(samples, name, { provider: "openai", state: "open" })?.value,
-    ).toBe(0);
+    expect(findSample(samples, name, { provider: "openai", state: "open" })?.value).toBe(0);
     expect(
       findSample(samples, name, {
         provider: "openai",
@@ -282,19 +257,12 @@ describe("Metrics", () => {
       })?.value,
     ).toBe(1);
     // A state that was never active does not appear at all.
-    expect(
-      findSample(samples, name, { provider: "openai", state: "closed" }),
-    ).toBeUndefined();
+    expect(findSample(samples, name, { provider: "openai", state: "closed" })).toBeUndefined();
   });
 
   it("setCircuitBreakerState rejects unknown states", () => {
     const metrics = new Metrics();
-    expect(() =>
-      metrics.setCircuitBreakerState(
-        "openai",
-        "DEGRADED" as CircuitBreakerState,
-      ),
-    ).toThrow(RangeError);
+    expect(() => metrics.setCircuitBreakerState("openai", "DEGRADED" as CircuitBreakerState)).toThrow(RangeError);
   });
 
   it("setMcpServerUp tracks mcp_server_up gauge per server", async () => {
@@ -308,10 +276,7 @@ describe("Metrics", () => {
         server: "filesystem",
       })?.value,
     ).toBe(1);
-    expect(
-      findSample(samples, `${PREFIX}_mcp_server_up`, { server: "github" })
-        ?.value,
-    ).toBe(0);
+    expect(findSample(samples, `${PREFIX}_mcp_server_up`, { server: "github" })?.value).toBe(0);
   });
 
   it("recordRateLimitRejection increments the rate limit counter", async () => {
@@ -436,18 +401,12 @@ describe("Metrics", () => {
     const samples = parseMetrics(text);
 
     const reqs = samples.get(`${PREFIX}_requests_total`) ?? [];
-    const injected = reqs.find(
-      (s) => s.labels["method"] === "POST" && s.labels["status"] === "200",
-    );
+    const injected = reqs.find((s) => s.labels["method"] === "POST" && s.labels["status"] === "200");
     expect(injected).toBeDefined();
-    expect(injected?.labels["provider"]).toBe(
-      "openai_}_# TYPE evil counter_  }",
-    );
+    expect(injected?.labels["provider"]).toBe("openai_}_# TYPE evil counter_  }");
 
     const longOne = reqs.find((s) => s.labels["method"] === "GET");
-    expect(longOne?.labels["provider"]?.startsWith("openai with a very long name")).toBe(
-      true,
-    );
+    expect(longOne?.labels["provider"]?.startsWith("openai with a very long name")).toBe(true);
     expect(longOne?.labels["provider"]?.length).toBe(64);
   });
 

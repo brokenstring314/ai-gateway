@@ -33,19 +33,22 @@ export function startSseHeartbeat(
   const ping = new TextEncoder().encode(SSE_PING);
   let last = Date.now();
   let stopped = false;
-  const timer = setInterval(() => {
-    if (stopped || Date.now() - last < intervalMs) return;
-    // Backpressure: only ping when the queue has room, so a client that has
-    // stopped reading never makes the heartbeat grow the buffer.
-    if ((controller.desiredSize ?? 0) <= 0) return;
-    try {
-      controller.enqueue(ping);
-      last = Date.now();
-    } catch {
-      // Stream closed or cancelled underneath us.
-      stop();
-    }
-  }, Math.max(10, Math.floor(intervalMs / 2)));
+  const timer = setInterval(
+    () => {
+      if (stopped || Date.now() - last < intervalMs) return;
+      // Backpressure: only ping when the queue has room, so a client that has
+      // stopped reading never makes the heartbeat grow the buffer.
+      if ((controller.desiredSize ?? 0) <= 0) return;
+      try {
+        controller.enqueue(ping);
+        last = Date.now();
+      } catch {
+        // Stream closed or cancelled underneath us.
+        stop();
+      }
+    },
+    Math.max(10, Math.floor(intervalMs / 2)),
+  );
   (timer as { unref?: () => void }).unref?.();
   function stop(): void {
     if (stopped) return;

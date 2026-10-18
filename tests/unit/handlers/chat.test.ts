@@ -13,9 +13,7 @@ function makeResponse(overrides?: Partial<ChatCompletionResponse>): ChatCompleti
     created: Date.now(),
     model: "gpt-4",
     provider: "test",
-    choices: [
-      { index: 0, message: { role: "assistant", content: "hi" }, finishReason: "stop" },
-    ],
+    choices: [{ index: 0, message: { role: "assistant", content: "hi" }, finishReason: "stop" }],
     usage: { promptTokens: 5, completionTokens: 3, totalTokens: 8 },
     ...overrides,
   };

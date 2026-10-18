@@ -9,26 +9,40 @@ import type { RequestContext, ChatCompletionRequest, StreamChunk } from "@/provi
 // client abort must surface as AbortError (not ProviderError(0)).
 
 const cfg = {
-  auth: { enabled: false }, strategy: { mode: "single", targets: ["mock"] },
+  auth: { enabled: false },
+  strategy: { mode: "single", targets: ["mock"] },
   targets: [{ name: "mock", provider: "openai", apiKey: "sk", baseURL: "https://up.example/v1", models: ["gpt-4o"] }],
 } as GatewayConfig;
 
 function slowStreamProvider(state: { aborted: boolean; produced: number; done: boolean }) {
   return {
     name: "mock",
-    async complete() { throw new Error("n/a"); },
+    async complete() {
+      throw new Error("n/a");
+    },
     async *completeStream(ctx: RequestContext, req: ChatCompletionRequest): AsyncGenerator<StreamChunk> {
-      ctx.signal?.addEventListener("abort", () => { state.aborted = true; });
+      ctx.signal?.addEventListener("abort", () => {
+        state.aborted = true;
+      });
       try {
         for (let i = 0; i < 20; i++) {
           state.produced++;
-          yield { id: "x", object: "chat.completion.chunk", created: 1, model: req.model,
-            choices: [{ index: 0, delta: { content: "t" }, finishReason: null }] } as unknown as StreamChunk;
+          yield {
+            id: "x",
+            object: "chat.completion.chunk",
+            created: 1,
+            model: req.model,
+            choices: [{ index: 0, delta: { content: "t" }, finishReason: null }],
+          } as unknown as StreamChunk;
           await Bun.sleep(20);
         }
-      } finally { state.done = true; }
+      } finally {
+        state.done = true;
+      }
     },
-    supportedModels: () => ["gpt-4o"], supportsModel: () => true, models: () => [{ id: "gpt-4o", ownedBy: "mock" }],
+    supportedModels: () => ["gpt-4o"],
+    supportsModel: () => true,
+    models: () => [{ id: "gpt-4o", ownedBy: "mock" }],
   };
 }
 
@@ -52,12 +66,23 @@ describe("chat streaming client disconnect", () => {
 
 describe("provider abort propagation", () => {
   it("client abort surfaces as AbortError, not ProviderError(statusCode 0)", async () => {
-    const server = Bun.serve({ port: 0, fetch: async () => { await Bun.sleep(2000); return new Response("{}"); } });
+    const server = Bun.serve({
+      port: 0,
+      fetch: async () => {
+        await Bun.sleep(2000);
+        return new Response("{}");
+      },
+    });
     try {
       const p = createOpenAICompatProvider({ name: "p", baseURL: `http://127.0.0.1:${server.port}/v1`, apiKey: "k" });
       const ac = new AbortController();
       setTimeout(() => ac.abort(), 20);
-      const err = await p.complete({ signal: ac.signal } as any, { model: "m", messages: [{ role: "user", content: "x" }] }).then(() => null, (e) => e);
+      const err = await p
+        .complete({ signal: ac.signal } as any, { model: "m", messages: [{ role: "user", content: "x" }] })
+        .then(
+          () => null,
+          (e) => e,
+        );
       expect(err?.name).toBe("AbortError");
     } finally {
       server.stop(true);

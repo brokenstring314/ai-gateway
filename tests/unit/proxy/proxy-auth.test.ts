@@ -161,11 +161,14 @@ describe("createProxyHandler auth gate", () => {
   it("enforces auth when the handler is used standalone", async () => {
     const fetchImpl = vi.fn().mockResolvedValue(new Response("{}", { status: 200 }));
     const app = new Hono();
-    app.all("/v1/*", createProxyHandler({
-      resolveTarget: () => makeTarget(),
-      fetchImpl: fetchImpl as unknown as typeof fetch,
-      keyStore: fakeKeyStore(["sk-valid"]),
-    }));
+    app.all(
+      "/v1/*",
+      createProxyHandler({
+        resolveTarget: () => makeTarget(),
+        fetchImpl: fetchImpl as unknown as typeof fetch,
+        keyStore: fakeKeyStore(["sk-valid"]),
+      }),
+    );
 
     const denied = await app.request("/v1/files", {
       method: "GET",
@@ -185,13 +188,16 @@ describe("createProxyHandler auth gate", () => {
   it("production blocks unauthenticated proxying even with the allow flag", async () => {
     const fetchImpl = vi.fn().mockResolvedValue(new Response("{}", { status: 200 }));
     const app = new Hono();
-    app.all("/v1/*", createProxyHandler({
-      resolveTarget: () => makeTarget(),
-      fetchImpl: fetchImpl as unknown as typeof fetch,
-      environment: "production",
-      allowUnauthenticatedProxy: true,
-      keyStore: fakeKeyStore(["sk-valid"]),
-    }));
+    app.all(
+      "/v1/*",
+      createProxyHandler({
+        resolveTarget: () => makeTarget(),
+        fetchImpl: fetchImpl as unknown as typeof fetch,
+        environment: "production",
+        allowUnauthenticatedProxy: true,
+        keyStore: fakeKeyStore(["sk-valid"]),
+      }),
+    );
 
     const denied = await app.request("/v1/files", {
       method: "GET",
@@ -210,13 +216,16 @@ describe("createProxyHandler auth gate", () => {
   it("allows unauthenticated proxying in development when explicitly enabled", async () => {
     const fetchImpl = vi.fn().mockResolvedValue(new Response("{}", { status: 200 }));
     const app = new Hono();
-    app.all("/v1/*", createProxyHandler({
-      resolveTarget: () => makeTarget(),
-      fetchImpl: fetchImpl as unknown as typeof fetch,
-      environment: "development",
-      allowUnauthenticatedProxy: true,
-      keyStore: fakeKeyStore(["sk-valid"]),
-    }));
+    app.all(
+      "/v1/*",
+      createProxyHandler({
+        resolveTarget: () => makeTarget(),
+        fetchImpl: fetchImpl as unknown as typeof fetch,
+        environment: "development",
+        allowUnauthenticatedProxy: true,
+        keyStore: fakeKeyStore(["sk-valid"]),
+      }),
+    );
 
     const res = await app.request("/v1/files", {
       method: "GET",

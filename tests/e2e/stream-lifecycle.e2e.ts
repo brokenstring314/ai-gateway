@@ -12,7 +12,10 @@ beforeAll(async () => {
     config: baseConfig([{ name: "a", mock: up }], { server: { sseHeartbeatSeconds: 0, streamIdleTimeoutSeconds: 1 } }),
   });
 });
-afterAll(async () => { await gw?.stop(); up?.stop(); });
+afterAll(async () => {
+  await gw?.stop();
+  up?.stop();
+});
 beforeEach(() => up.reset());
 
 const body = { model: "gpt-4o", messages: [{ role: "user", content: "hi" }], stream: true };

@@ -20,9 +20,7 @@ function makeResponse(overrides?: Partial<ChatCompletionResponse>): ChatCompleti
     created: Date.now(),
     model: "test-model",
     provider: "test",
-    choices: [
-      { index: 0, message: { role: "assistant", content: "hi" }, finishReason: "stop" },
-    ],
+    choices: [{ index: 0, message: { role: "assistant", content: "hi" }, finishReason: "stop" }],
     usage: { promptTokens: 5, completionTokens: 3, totalTokens: 8 },
     ...overrides,
   };
@@ -33,11 +31,7 @@ class TestPlugin implements IPlugin {
   readonly stage: Stage;
   private readonly handler: (ctx: PluginContext) => Promise<PluginResult>;
 
-  constructor(
-    name: string,
-    stage: Stage,
-    handler: (ctx: PluginContext) => Promise<PluginResult>,
-  ) {
+  constructor(name: string, stage: Stage, handler: (ctx: PluginContext) => Promise<PluginResult>) {
     this.name = name;
     this.stage = stage;
     this.handler = handler;
@@ -61,26 +55,17 @@ describe("PluginManager", () => {
     });
 
     it("returns true when a before_request plugin is registered", () => {
-      manager.register(
-        "before_request",
-        new TestPlugin("t1", "before_request", async () => ({ action: "continue" })),
-      );
+      manager.register("before_request", new TestPlugin("t1", "before_request", async () => ({ action: "continue" })));
       expect(manager.hasPlugins()).toBe(true);
     });
 
     it("returns true when an after_request plugin is registered", () => {
-      manager.register(
-        "after_request",
-        new TestPlugin("t1", "after_request", async () => ({ action: "continue" })),
-      );
+      manager.register("after_request", new TestPlugin("t1", "after_request", async () => ({ action: "continue" })));
       expect(manager.hasPlugins()).toBe(true);
     });
 
     it("returns true when an on_error plugin is registered", () => {
-      manager.register(
-        "on_error",
-        new TestPlugin("t1", "on_error", async () => ({ action: "continue" })),
-      );
+      manager.register("on_error", new TestPlugin("t1", "on_error", async () => ({ action: "continue" })));
       expect(manager.hasPlugins()).toBe(true);
     });
   });

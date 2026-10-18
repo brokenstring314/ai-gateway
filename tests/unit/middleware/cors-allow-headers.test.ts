@@ -12,15 +12,26 @@ import { KeyStore } from "@/persistence/key-store";
 import type { GatewayConfig } from "@/config/types";
 
 const SDK_HEADERS = [
-  "authorization", "content-type", "x-stainless-arch", "x-stainless-lang", "x-stainless-os",
-  "x-stainless-package-version", "x-stainless-retry-count", "x-stainless-runtime",
-  "x-stainless-runtime-version", "openai-organization", "openai-project", "openai-beta",
+  "authorization",
+  "content-type",
+  "x-stainless-arch",
+  "x-stainless-lang",
+  "x-stainless-os",
+  "x-stainless-package-version",
+  "x-stainless-retry-count",
+  "x-stainless-runtime",
+  "x-stainless-runtime-version",
+  "openai-organization",
+  "openai-project",
+  "openai-beta",
 ];
 
 function makeConfig(cors: GatewayConfig["cors"]): GatewayConfig {
   return {
     strategy: { mode: "single", targets: ["mock"] },
-    targets: [{ name: "mock", provider: "openai", apiKey: "sk-x", baseURL: "https://upstream.example/v1", models: ["gpt-4o"] }],
+    targets: [
+      { name: "mock", provider: "openai", apiKey: "sk-x", baseURL: "https://upstream.example/v1", models: ["gpt-4o"] },
+    ],
     adminSecret: "test-admin-secret-1234",
     cors,
   };
@@ -41,7 +52,10 @@ async function preflight(config: GatewayConfig, requestHeaders: string) {
 
 describe("CORS allowHeaders (B3-8)", () => {
   it("reflects Access-Control-Request-Headers by default (openai SDK preflight passes)", async () => {
-    const res = await preflight(makeConfig({ enabled: true, origins: ["https://app.example.com"] }), SDK_HEADERS.join(","));
+    const res = await preflight(
+      makeConfig({ enabled: true, origins: ["https://app.example.com"] }),
+      SDK_HEADERS.join(","),
+    );
     expect(res.status).toBe(204);
     const allow = (res.headers.get("access-control-allow-headers") ?? "").toLowerCase().split(/\s*,\s*/);
     for (const h of SDK_HEADERS) expect(allow).toContain(h);

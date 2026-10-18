@@ -97,7 +97,9 @@ export function resolveBaseURL(target: Pick<TargetConfig, "name" | "provider" | 
   const problem = baseURLProblem(target);
   if (problem !== undefined) throw new Error(problem);
   const url =
-    target.baseURL !== undefined && target.baseURL !== "" ? target.baseURL : (getPreset(target.provider)?.baseURL ?? "");
+    target.baseURL !== undefined && target.baseURL !== ""
+      ? target.baseURL
+      : (getPreset(target.provider)?.baseURL ?? "");
   let parsed: URL | undefined;
   try {
     parsed = new URL(url);

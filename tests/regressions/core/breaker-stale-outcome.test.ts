@@ -6,24 +6,32 @@ afterEach(() => setSystemTime());
 
 describe("breaker stale outcomes", () => {
   it("a pre-outage request finishing late closes the breaker without any probe", () => {
-    let t = 1_000_000; setSystemTime(new Date(t));
+    let t = 1_000_000;
+    setSystemTime(new Date(t));
     const b = new CircuitBreaker("a", { failureThreshold: 2, successThreshold: 3, timeoutMs: 1000 });
-    const longStream = b.acquire()!;            // long generation started while healthy
-    b.recordFailure(b.acquire()); b.recordFailure(b.acquire()); // upstream dies -> OPEN
+    const longStream = b.acquire()!; // long generation started while healthy
+    b.recordFailure(b.acquire());
+    b.recordFailure(b.acquire()); // upstream dies -> OPEN
     expect(b.getState()).toBe("OPEN");
-    setSystemTime(new Date(t += 1000));
-    expect(b.getState()).toBe("HALF_OPEN");     // no probe sent yet
+    setSystemTime(new Date((t += 1000)));
+    expect(b.getState()).toBe("HALF_OPEN"); // no probe sent yet
     // the old stream ends now: 3 such stale successes (successThreshold=3) close the breaker
-    b.recordSuccess(longStream); b.recordSuccess(longStream); b.recordSuccess(longStream);
-    expect(b.getState()).toBe("HALF_OPEN");     // was CLOSED, no probe ever ran
+    b.recordSuccess(longStream);
+    b.recordSuccess(longStream);
+    b.recordSuccess(longStream);
+    expect(b.getState()).toBe("HALF_OPEN"); // was CLOSED, no probe ever ran
   });
   it("a pre-outage request failing late keeps pushing the OPEN window forward", () => {
-    let t = 1_000_000; setSystemTime(new Date(t));
+    let t = 1_000_000;
+    setSystemTime(new Date(t));
     const b = new CircuitBreaker("a", { failureThreshold: 1, timeoutMs: 1000 });
     const inflight = Array.from({ length: 10 }, () => b.acquire()!); // 10 in-flight when it dies
-    b.recordFailure(inflight[0]);               // -> OPEN at t
-    for (let i = 0; i < 9; i++) { setSystemTime(new Date(t += 900)); b.recordFailure(inflight[i + 1]); } // stragglers time out one by one
+    b.recordFailure(inflight[0]); // -> OPEN at t
+    for (let i = 0; i < 9; i++) {
+      setSystemTime(new Date((t += 900)));
+      b.recordFailure(inflight[i + 1]);
+    } // stragglers time out one by one
     setSystemTime(new Date(1_000_000 + 1000 * 2));
-    expect(b.getState()).not.toBe("OPEN");      // was still OPEN ~9s after a 1s timeoutMs
+    expect(b.getState()).not.toBe("OPEN"); // was still OPEN ~9s after a 1s timeoutMs
   });
 });

@@ -18,27 +18,19 @@ export function validateProductionSafety(ctx: ProductionSafetyContext): void {
   if (ctx.gatewayEnv !== "production") return;
 
   if (ctx.allowUnauthenticatedProxy === true) {
-    throw new ProductionSafetyError(
-      "production mode must not allow unauthenticated proxy access",
-    );
+    throw new ProductionSafetyError("production mode must not allow unauthenticated proxy access");
   }
 
   if (ctx.adminSecret !== undefined && ctx.adminSecret.length < 16) {
-    throw new ProductionSafetyError(
-      "production mode requires an admin secret of at least 16 characters",
-    );
+    throw new ProductionSafetyError("production mode requires an admin secret of at least 16 characters");
   }
 
   if (ctx.authEnabled === false) {
-    throw new ProductionSafetyError(
-      "production mode requires authentication to be enabled",
-    );
+    throw new ProductionSafetyError("production mode requires authentication to be enabled");
   }
 
   if (!ctx.hasAuthKeys && ctx.keyStoreEmpty !== false) {
-    throw new ProductionSafetyError(
-      "production mode requires at least one API key",
-    );
+    throw new ProductionSafetyError("production mode requires at least one API key");
   }
 }
 

@@ -12,12 +12,7 @@
 
 import { describe, it, expect, vi, beforeEach } from "bun:test";
 import { createStrategy } from "@/routing/strategy-factory";
-import type {
-  SingleConfig,
-  FallbackConfig,
-  LoadBalanceConfig,
-  ConditionalConfig,
-} from "@/routing/strategy-factory";
+import type { SingleConfig, FallbackConfig, LoadBalanceConfig, ConditionalConfig } from "@/routing/strategy-factory";
 import { SingleStrategy } from "@/routing/single";
 import { FallbackStrategy, FallbackExhaustedError } from "@/routing/fallback";
 import { LoadBalanceStrategy } from "@/routing/loadbalance";
@@ -31,11 +26,7 @@ import type {
   StreamChunk,
 } from "@/providers/types";
 import type { GatewayConfig, StrategyConfig as GatewayStrategyConfig } from "@/config/types";
-import {
-  createMockProvider,
-  createReq,
-  createFailingProvider,
-} from "./helpers";
+import { createMockProvider, createReq, createFailingProvider } from "./helpers";
 import { boundConditional, boundFallback, boundLoadBalance, boundSingle } from "./helpers";
 
 // ── Test helpers ──
@@ -49,10 +40,7 @@ function seededRandom(seed: number): () => number {
   };
 }
 
-function withSeededRandom(
-  seed: number,
-  fn: () => Promise<void> | void,
-): Promise<void> {
+function withSeededRandom(seed: number, fn: () => Promise<void> | void): Promise<void> {
   const spy = vi.spyOn(Math, "random").mockImplementation(seededRandom(seed));
   return (async () => {
     try {
@@ -94,9 +82,7 @@ function makeResponse(provider = "a"): ChatCompletionResponse {
     created: Date.now(),
     model: "gpt-4",
     provider,
-    choices: [
-      { index: 0, message: { role: "assistant", content: "hi" }, finishReason: "stop" },
-    ],
+    choices: [{ index: 0, message: { role: "assistant", content: "hi" }, finishReason: "stop" }],
     usage: { promptTokens: 5, completionTokens: 3, totalTokens: 8 },
   };
 }
@@ -112,16 +98,23 @@ describe("strategy factory & gateway wiring", () => {
     { mode: "single", config: { target: "a" }, modeName: "single" },
     { mode: "fallback", config: { targets: ["a", "b"] }, modeName: "fallback" },
     { mode: "loadbalance", config: { targets: [{ name: "a", weight: 1 }] }, modeName: "loadbalance" },
-    { mode: "conditional", config: { rules: [{ field: "model", pattern: "gpt-", target: "a" }], defaultTarget: "a" }, modeName: "conditional" },
+    {
+      mode: "conditional",
+      config: { rules: [{ field: "model", pattern: "gpt-", target: "a" }], defaultTarget: "a" },
+      modeName: "conditional",
+    },
   ];
 
   it.each(factoryConfigs)("createStrategy builds the $modeName strategy", ({ mode, config, modeName }) => {
     const strategy = createStrategy(mode, config);
     expect(strategy).toBeInstanceOf(
-      modeName === "single" ? SingleStrategy :
-      modeName === "fallback" ? FallbackStrategy :
-      modeName === "loadbalance" ? LoadBalanceStrategy :
-      ConditionalStrategy,
+      modeName === "single"
+        ? SingleStrategy
+        : modeName === "fallback"
+          ? FallbackStrategy
+          : modeName === "loadbalance"
+            ? LoadBalanceStrategy
+            : ConditionalStrategy,
     );
     expect(strategy.mode).toBe(mode);
   });
@@ -142,7 +135,6 @@ describe("strategy factory & gateway wiring", () => {
       expect(resp.provider).toBe("a");
     }
   });
-
 });
 
 // ── Single ──
@@ -159,9 +151,7 @@ describe("single strategy runtime", () => {
     expect(resp.provider).toBe("a");
 
     const missing = boundSingle(() => undefined, { target: "nope" });
-    await expect(
-      missing.execute({ metadata: {} }, createReq()),
-    ).rejects.toThrow("not found");
+    await expect(missing.execute({ metadata: {} }, createReq())).rejects.toThrow("not found");
   });
 });
 
@@ -191,9 +181,7 @@ describe("fallback strategy runtime", () => {
       targets: ["a", "b"],
     });
 
-    await expect(
-      strategy.execute({ metadata: {} }, createReq()),
-    ).rejects.toThrow(FallbackExhaustedError);
+    await expect(strategy.execute({ metadata: {} }, createReq())).rejects.toThrow(FallbackExhaustedError);
   });
 
   it("skips unregistered targets and still succeeds", async () => {
@@ -320,18 +308,17 @@ describe("conditional strategy runtime", () => {
 describe("shared error handling", () => {
   it("reports a missing provider target", async () => {
     const strategy = boundSingle(() => undefined, { target: "ghost" });
-    await expect(
-      strategy.execute({ metadata: {} }, createReq()),
-    ).rejects.toThrow("not found");
+    await expect(strategy.execute({ metadata: {} }, createReq())).rejects.toThrow("not found");
   });
 
   it("embedded Gateway: removed modes throw the migration hint, abtest runs as loadbalance", async () => {
-    expect(() => new Gateway(makeGatewayConfig({ mode: "least_latency" as never, targets: ["a"] }))).toThrow(/removed in 0.2.0/);
+    expect(() => new Gateway(makeGatewayConfig({ mode: "least_latency" as never, targets: ["a"] }))).toThrow(
+      /removed in 0.2.0/,
+    );
     const g = new Gateway(makeGatewayConfig({ mode: "abtest" as never, targets: ["a"] }));
     g.registerProvider(createMockProvider("a"));
     expect((await g.route({ metadata: {} }, createReq())).provider).toBe("a");
   });
-
 });
 
 // ── Gateway per-target concurrency limiter (task 4) ──

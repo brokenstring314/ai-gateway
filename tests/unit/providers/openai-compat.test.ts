@@ -6,7 +6,7 @@
  */
 import { describe, it, expect, vi, beforeEach, afterEach } from "bun:test";
 import { createOpenAICompatProvider, ProviderError } from "@/providers/openai-compat";
-import type { ChatCompletionRequest, } from "@/providers/types";
+import type { ChatCompletionRequest } from "@/providers/types";
 
 // ---------------------------------------------------------------------------
 // Helpers
@@ -38,9 +38,7 @@ function makeRequest(overrides?: Partial<ChatCompletionRequest>): ChatCompletion
 
 function mockFetch(status: number, body: unknown, headers?: Record<string, string>) {
   const h = new Headers(headers);
-  fetchMock.mockResolvedValueOnce(
-    new Response(JSON.stringify(body), { status, headers: h }),
-  );
+  fetchMock.mockResolvedValueOnce(new Response(JSON.stringify(body), { status, headers: h }));
 }
 
 function mockFetchStream(chunks: string[]) {
@@ -54,9 +52,7 @@ function mockFetchStream(chunks: string[]) {
     },
   });
 
-  fetchMock.mockResolvedValueOnce(
-    new Response(stream, { status: 200 }),
-  );
+  fetchMock.mockResolvedValueOnce(new Response(stream, { status: 200 }));
 }
 
 // ---------------------------------------------------------------------------
@@ -140,13 +136,16 @@ describe("createOpenAICompatProvider", () => {
       });
 
       const p = makeProvider();
-      await p.complete(makeCtx(), makeRequest({
-        temperature: 0.7,
-        maxTokens: 100,
-        seed: 42,
-        topP: 0.9,
-        stop: ["END"],
-      }));
+      await p.complete(
+        makeCtx(),
+        makeRequest({
+          temperature: 0.7,
+          maxTokens: 100,
+          seed: 42,
+          topP: 0.9,
+          stop: ["END"],
+        }),
+      );
 
       const call = fetchMock.mock.calls[0]!;
       const body = JSON.parse((call[1] as RequestInit).body as string) as Record<string, unknown>;
@@ -168,13 +167,18 @@ describe("createOpenAICompatProvider", () => {
       });
 
       const p = makeProvider();
-      await p.complete(makeCtx(), makeRequest({
-        tools: [{
-          type: "function",
-          function: { name: "get_weather", description: "Get weather", parameters: { city: "string" } },
-        }],
-        toolChoice: "auto",
-      }));
+      await p.complete(
+        makeCtx(),
+        makeRequest({
+          tools: [
+            {
+              type: "function",
+              function: { name: "get_weather", description: "Get weather", parameters: { city: "string" } },
+            },
+          ],
+          toolChoice: "auto",
+        }),
+      );
 
       const call = fetchMock.mock.calls[0]!;
       const body = JSON.parse((call[1] as RequestInit).body as string) as Record<string, unknown>;
@@ -320,7 +324,19 @@ describe("createOpenAICompatProvider", () => {
         object: "chat.completion",
         created: 1234,
         model: "test-model",
-        choices: [{ index: 0, message: { role: "assistant", content: null, tool_calls: [{ id: "call_1", type: "function", function: { name: "get_weather", arguments: '{"city":"NYC"}' } }] }, finish_reason: "tool_calls" }],
+        choices: [
+          {
+            index: 0,
+            message: {
+              role: "assistant",
+              content: null,
+              tool_calls: [
+                { id: "call_1", type: "function", function: { name: "get_weather", arguments: '{"city":"NYC"}' } },
+              ],
+            },
+            finish_reason: "tool_calls",
+          },
+        ],
         usage: { prompt_tokens: 0, completion_tokens: 0, total_tokens: 0 },
       });
 
@@ -410,9 +426,9 @@ describe("createOpenAICompatProvider", () => {
         compatibility: "reject",
       });
 
-      await expect(
-        p.complete(makeCtx(), makeRequest({ seed: 42 })),
-      ).rejects.toThrow("Unsupported parameters for this model");
+      await expect(p.complete(makeCtx(), makeRequest({ seed: 42 }))).rejects.toThrow(
+        "Unsupported parameters for this model",
+      );
 
       // Verify fetch was never called.
       expect(fetch).not.toHaveBeenCalled();

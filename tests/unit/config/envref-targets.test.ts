@@ -29,11 +29,17 @@ describe("target env-ref expansion", () => {
     const seen: { url: string; auth?: string }[] = [];
     globalThis.fetch = (async (url: string | URL | Request, init?: RequestInit) => {
       seen.push({ url: String(url), auth: (init?.headers as Record<string, string>)["Authorization"] });
-      return new Response(JSON.stringify({
-        id: "1", object: "chat.completion", created: 1, model: "gpt-4o",
-        choices: [{ index: 0, message: { role: "assistant", content: "ok" }, finish_reason: "stop" }],
-        usage: { prompt_tokens: 1, completion_tokens: 1, total_tokens: 2 },
-      }), { status: 200 });
+      return new Response(
+        JSON.stringify({
+          id: "1",
+          object: "chat.completion",
+          created: 1,
+          model: "gpt-4o",
+          choices: [{ index: 0, message: { role: "assistant", content: "ok" }, finish_reason: "stop" }],
+          usage: { prompt_tokens: 1, completion_tokens: 1, total_tokens: 2 },
+        }),
+        { status: 200 },
+      );
     }) as typeof fetch;
 
     const config = cfg("${H7_TEST_KEY}", "https://${H7_TEST_HOST}/v1");
@@ -51,6 +57,9 @@ describe("target env-ref expansion", () => {
   });
 
   it("expandTargetEnvRefs leaves plain values and bare $ untouched", () => {
-    expect(expandTargetEnvRefs({ apiKey: "pa$$w0rd", baseURL: "https://x/v1" })).toEqual({ apiKey: "pa$$w0rd", baseURL: "https://x/v1" });
+    expect(expandTargetEnvRefs({ apiKey: "pa$$w0rd", baseURL: "https://x/v1" })).toEqual({
+      apiKey: "pa$$w0rd",
+      baseURL: "https://x/v1",
+    });
   });
 });

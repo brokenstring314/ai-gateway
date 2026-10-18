@@ -14,7 +14,13 @@ function sse(events: unknown[]): ReadableStream<Uint8Array> {
 }
 
 function chunk(toolCalls: unknown[]) {
-  return { id: "c1", object: "chat.completion.chunk", created: 1, model: "m", choices: [{ index: 0, delta: { tool_calls: toolCalls }, finish_reason: null }] };
+  return {
+    id: "c1",
+    object: "chat.completion.chunk",
+    created: 1,
+    model: "m",
+    choices: [{ index: 0, delta: { tool_calls: toolCalls }, finish_reason: null }],
+  };
 }
 
 // Parallel tool calls stream as interleaved deltas, each carrying a single call
@@ -40,7 +46,9 @@ describe("streaming tool-call index", () => {
     const args: Record<number, string> = {};
     const names: Record<number, string> = {};
     for await (const c of parseSSEStream(sse(events))) {
-      const wire = serialize(c) as { choices: { delta: { tool_calls?: { index: number; function: { name?: string; arguments: string } }[] } }[] };
+      const wire = serialize(c) as {
+        choices: { delta: { tool_calls?: { index: number; function: { name?: string; arguments: string } }[] } }[];
+      };
       for (const tc of wire.choices[0]?.delta.tool_calls ?? []) {
         args[tc.index] = (args[tc.index] ?? "") + tc.function.arguments;
         if (tc.function.name) names[tc.index] = tc.function.name;

@@ -4,11 +4,7 @@
 
 import type { IProvider, ChatCompletionRequest } from "../providers/types.js";
 
-export type StrategyMode =
-  | "single"
-  | "fallback"
-  | "loadbalance"
-  | "conditional";
+export type StrategyMode = "single" | "fallback" | "loadbalance" | "conditional";
 
 /**
  * A routing strategy only ORDERS candidate targets for a request (preferred

@@ -1,11 +1,5 @@
 import { describe, it, expect } from "bun:test";
-import {
-  hashKey,
-  displayKey,
-  generateAPIKey,
-  generateID,
-  timingSafeEqual,
-} from "@/auth/key-hash";
+import { hashKey, displayKey, generateAPIKey, generateID, timingSafeEqual } from "@/auth/key-hash";
 
 describe("hashKey", () => {
   it("produces deterministic output for same input", () => {
@@ -27,9 +21,7 @@ describe("hashKey", () => {
     const hash = hashKey("");
     expect(hash).toHaveLength(64);
     // Known SHA-256 of empty string
-    expect(hash).toBe(
-      "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
-    );
+    expect(hash).toBe("e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855");
   });
 });
 
@@ -73,9 +65,7 @@ describe("generateAPIKey", () => {
 describe("generateID", () => {
   it("produces UUID v4 format (8-4-4-4-12 hex chars)", () => {
     const id = generateID();
-    expect(id).toMatch(
-      /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/,
-    );
+    expect(id).toMatch(/^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/);
   });
 
   it("generates unique IDs", () => {

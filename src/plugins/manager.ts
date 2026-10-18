@@ -42,7 +42,13 @@ export class PluginManager implements IPluginManager {
       }
 
       if (result.action === "reject") {
-        throw new PluginRejectionError("before_request", result.reason, plugin.name, result.status, result.retryAfterSeconds);
+        throw new PluginRejectionError(
+          "before_request",
+          result.reason,
+          plugin.name,
+          result.status,
+          result.retryAfterSeconds,
+        );
       }
 
       if (result.action === "modify") {

@@ -1,9 +1,5 @@
 import { describe, it, expect, beforeEach } from "bun:test";
-import {
-  ConcurrencyLimiter,
-  ConcurrencyLimitError,
-  ConcurrencyLimiterRegistry,
-} from "@/routing/concurrency-limiter";
+import { ConcurrencyLimiter, ConcurrencyLimitError, ConcurrencyLimiterRegistry } from "@/routing/concurrency-limiter";
 
 describe("ConcurrencyLimiter", () => {
   it("admits requests within maxConcurrency synchronously", () => {

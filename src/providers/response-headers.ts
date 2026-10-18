@@ -29,9 +29,7 @@ const HOP_BY_HOP_RESPONSE_HEADERS: ReadonlySet<string> = new Set([
   "upgrade",
 ]);
 
-const FORWARDABLE_HEADER_SET: ReadonlySet<string> = new Set(
-  FORWARDABLE_UPSTREAM_HEADERS,
-);
+const FORWARDABLE_HEADER_SET: ReadonlySet<string> = new Set(FORWARDABLE_UPSTREAM_HEADERS);
 
 /**
  * Extract the forwardable headers from an upstream `Headers` object.
@@ -39,9 +37,7 @@ const FORWARDABLE_HEADER_SET: ReadonlySet<string> = new Set(
  * the fixed whitelist are skipped. Returns `undefined` when no whitelisted
  * header is present.
  */
-export function extractForwardableHeaders(
-  headers: Headers,
-): Record<string, string> | undefined {
+export function extractForwardableHeaders(headers: Headers): Record<string, string> | undefined {
   const out: Record<string, string> = {};
   for (const [name, value] of headers) {
     const lower = name.toLowerCase();

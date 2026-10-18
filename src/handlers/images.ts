@@ -20,7 +20,6 @@ const ImageRequestSchema = z.object({
   user: z.string().optional(),
 });
 
-
 export function registerImagesHandler(app: AppType, gateway: Gateway): void {
   app.post("/v1/images/generations", async (c) => {
     let body: unknown;
