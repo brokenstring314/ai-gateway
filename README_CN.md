@@ -248,10 +248,11 @@ observability:
 ```bash
 AI_GATEWAY_SERVER_PORT=8080
 AI_GATEWAY_AUTH_ENABLED=true
-AI_GATEWAY_MAX_REQUEST_BYTES=20971520
+AI_GATEWAY_MAX_REQUEST_BYTES=20971520   # 驼峰键：maxRequestBytes
+AI_GATEWAY_CORS_ORIGINS=https://a.example,https://b.example   # 数组：逗号分隔
 ```
 
-字符串字段（如 `apiKey`、`adminSecret`）不会被自动转换为数字。
+各段按不区分大小写的方式匹配配置键（相邻的段会拼成驼峰键）。值按字段类型转换，所以字符串字段（如 `apiKey`、`adminSecret`）不会被转换为数字。不对应任何配置键的变量会被忽略并打印警告。
 
 ### 运行时环境变量
 
