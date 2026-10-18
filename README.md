@@ -518,7 +518,10 @@ concurrency limit, or that fails with a failover-eligible error (network,
 each target's own `retry` config. Caller-caused 4xx (400/409/413/422...),
 client aborts and the gateway request timeout end the request. Streams fail
 over only before their first chunk. Conditional / content_based fail over
-from the matched target to the default target only.
+from the matched target to the default target only. `/v1/embeddings` and
+`/v1/images/generations` use the same strategy order (filtered to targets
+that support the model and capability), with the same breakers, concurrency
+limits, retry and failover; streams are not involved there.
 
 ### Single
 
