@@ -8,7 +8,7 @@ import { createApp } from "@/app";
 import { cfg, memKeyStore } from "./_h";
 
 describe("S3-5 scrubConfig gaps", () => {
-  it.failing("read_only GET /admin/config must not return any secret material", async () => {
+  it("read_only GET /admin/config must not return any secret material", async () => {
     process.env["PFX"] = ""; process.env["SFX"] = "";
     const ks = await memKeyStore();
     const config = cfg({
@@ -23,12 +23,13 @@ describe("S3-5 scrubConfig gaps", () => {
       observability: { tracing: { enabled: false, otlpEndpoint: "https://otel:LEAK_OTLP@collector:4318" } },
     });
     const app = createApp(new Gateway(config), config, undefined, ks, {
-      adminSecret: "admin-secret-0123456789", bootstrapReadOnlyKey: "ro-bootstrap-key",
+      adminSecret: "admin-secret-0123456789",
     });
-    const r = await app.request("/admin/config", { headers: { authorization: "Bearer ro-bootstrap-key" } });
+    const ro = ks.create("viewer", ["read_only"]).key;
+    const r = await app.request("/admin/config", { headers: { authorization: `Bearer ${ro}` } });
     expect(r.status).toBe(200);
     const text = await r.text();
     const leaked = ["LEAK_USERINFO", "LEAK_QUERY_KEY", "LEAK_LITERAL_KEY", "LEAK_DB_PASS", "LEAK_ARG_KEY", "LEAK_OTLP"].filter((s) => text.includes(s));
-    expect(leaked).toEqual([]); // FAILS: all six leak
+    expect(leaked).toEqual([]); // fixed in 3.3 (S3-5)
   });
 });

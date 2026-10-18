@@ -503,7 +503,7 @@ All admin endpoints require the `X-Admin-Secret` header (or `Authorization: Bear
 
 | Method | Path                   | Description                            |
 | ------ | ---------------------- | -------------------------------------- |
-| GET    | `/admin/config`        | Get current config (secrets redacted)  |
+| GET    | `/admin/config`        | Get current config (secrets redacted: API keys, admin secret, client keys, URL credentials, OTLP headers, MCP env/args, secret-looking plugin config; exact `${VAR}` templates are shown as-is) |
 | GET    | `/admin/keys`          | List API keys (redacted)               |
 | POST   | `/admin/keys`          | Add a new API key                      |
 | DELETE | `/admin/keys/:id`      | Delete an API key by index             |

@@ -483,7 +483,7 @@ Prometheus 格式的指标，包括：
 
 | 方法     | 路径                     | 说明                |
 | ------ | ---------------------- | ----------------- |
-| GET    | `/admin/config`        | 获取当前配置（密钥已脱敏）    |
+| GET    | `/admin/config`        | 获取当前配置（已脱敏：API 密钥、admin secret、客户端密钥、URL 中的凭据、OTLP 头、MCP env/args、插件配置里疑似密钥的字段；完整的 `${VAR}` 模板原样显示） |
 | GET    | `/admin/keys`          | 列出 API 密钥（脱敏）     |
 | POST   | `/admin/keys`          | 添加新的 API 密钥       |
 | DELETE | `/admin/keys/:id`      | 按索引删除 API 密钥      |

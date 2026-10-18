@@ -125,3 +125,73 @@ describe("scrubConfig — extended secret coverage", () => {
     expect(s.plugins![0]!.config!["rps"]).toBe(5);
   });
 });
+
+describe("S3-5 scrub gaps (3.3)", () => {
+  it("read_only GET /admin/config returns no secret material", async () => {
+    const { Database } = await import("bun:sqlite");
+    const { KeyStore } = await import("@/persistence/key-store");
+    const { Gateway } = await import("@/gateway");
+    const { createApp } = await import("@/app");
+    process.env["PFX"] = "";
+    process.env["SFX"] = "";
+    try {
+      const ks = await KeyStore.create(new Database(":memory:"));
+      const config = {
+        auth: { enabled: false },
+        adminSecret: "admin-secret-0123456789",
+        strategy: { mode: "single", targets: ["g"] },
+        targets: [
+          { name: "g", provider: "openai", apiKey: "k", baseURL: "https://u:LEAK_USERINFO@llm.internal/v1?key=LEAK_QUERY_KEY&x=1", models: ["gpt-4o"] },
+          { name: "t", provider: "openai", apiKey: "${PFX}LEAK_LITERAL_KEY${SFX}", baseURL: "https://up.example/v1", models: ["m2"] },
+        ],
+        mcpServers: [
+          { name: "db", command: "npx", args: ["@mcp/postgres", "postgres://app:LEAK_DB_PASS@db:5432/x", "--api-key", "LEAK_ARG_KEY"] },
+        ],
+        observability: { tracing: { enabled: false, otlpEndpoint: "https://otel:LEAK_OTLP@collector:4318" } },
+        plugins: [{ name: "x", stage: "before_request", enabled: false, config: { webhook: "https://hook.example/p?token=LEAK_PLUGIN_URL" } }],
+      } as unknown as GatewayConfig;
+      const ro = ks.create("viewer", ["read_only"]).key;
+      const app = createApp(new Gateway(config), config, undefined, ks, { adminSecret: "admin-secret-0123456789" });
+      const r = await app.request("/admin/config", { headers: { authorization: `Bearer ${ro}` } });
+      expect(r.status).toBe(200);
+      const text = await r.text();
+      const leaked = ["LEAK_USERINFO", "LEAK_QUERY_KEY", "LEAK_LITERAL_KEY", "LEAK_DB_PASS", "LEAK_ARG_KEY", "LEAK_OTLP", "LEAK_PLUGIN_URL", "admin-secret-0123456789"]
+        .filter((s) => text.includes(s));
+      expect(leaked).toEqual([]);
+      // Non-secret parts survive.
+      expect(text).toContain("llm.internal/v1");
+      expect(text).toContain("x=1");
+      expect(text).toContain("collector:4318");
+    } finally {
+      delete process.env["PFX"];
+      delete process.env["SFX"];
+    }
+  });
+
+  it("only an exact single ${VAR} counts as a template", () => {
+    const s = scrubConfig(makeConfig({
+      targets: [
+        { name: "a", provider: "openai", apiKey: "${OPENAI_KEY}" },
+        { name: "b", provider: "openai", apiKey: "${A}sk-literal${B}" },
+        { name: "c", provider: "openai", apiKey: "${A} x" },
+      ],
+    }));
+    expect(s.targets.map((t) => t.apiKey)).toEqual(["${OPENAI_KEY}", "***", "***"]);
+  });
+
+  it("scrubUrl: userinfo and sensitive query values only", async () => {
+    const { scrubUrl } = await import("@/admin/config-scrub");
+    expect(scrubUrl("https://user:pw@h/v1")).toBe("https://***@h/v1");
+    expect(scrubUrl("https://tok@h/v1")).toBe("https://***@h/v1");
+    expect(scrubUrl("https://h/v1?api_key=s&sig=s2&model=m")).toBe("https://h/v1?api_key=***&sig=***&model=m");
+    expect(scrubUrl("https://h/v1?key=${GEMINI_KEY}")).toBe("https://h/v1?key=${GEMINI_KEY}");
+    expect(scrubUrl("http://localhost:${PORT}/v1")).toBe("http://localhost:${PORT}/v1");
+    expect(scrubUrl("${BASE_URL}")).toBe("${BASE_URL}");
+  });
+
+  it("redacts every MCP arg", () => {
+    const s = scrubConfig(makeConfig({ mcpServers: [{ name: "m", command: "npx", args: ["pkg", "--token", "t"] }] }));
+    expect(s.mcpServers![0]!.args).toEqual(["***", "***", "***"]);
+    expect(s.mcpServers![0]!.command).toBe("npx");
+  });
+});
