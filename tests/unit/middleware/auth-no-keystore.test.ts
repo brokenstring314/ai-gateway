@@ -78,7 +78,7 @@ describe("createApp without a KeyStore enforces client auth", () => {
 
   it("with a KeyStore, auth.keys keep working alongside store keys", async () => {
     const ks = await KeyStore.create(new Database(":memory:"));
-    const storeKey = ks.create("app", ["client"]).key;
+    const storeKey = ks.create("app", ["inference"]).key;
     const c = cfg({ auth: { enabled: true, keys: ["client-key-1"] } });
     const app = createApp(new Gateway(c), c, undefined, ks);
     expect((await chat(app, "Bearer client-key-1")).status).toBe(200);

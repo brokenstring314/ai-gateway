@@ -55,7 +55,32 @@ export class KeyNotFoundError extends Error {
 
 const LEDGER = "api_key_schema_migrations";
 const PRIMARY_TABLE = "api_keys";
-const SCOPE_ADMIN = "admin";
+/** Full management access: /admin/* (read and write) and /v1/*. */
+export const SCOPE_ADMIN = "admin";
+/** Read-only management access: GET /admin/* and /v1/*. */
+export const SCOPE_READ_ONLY = "read_only";
+/** Inference only: /v1/*; rejected on /admin/*. Default for new keys. */
+export const SCOPE_INFERENCE = "inference";
+/** Every scope a key may carry. */
+export const VALID_SCOPES: readonly string[] = [SCOPE_ADMIN, SCOPE_READ_ONLY, SCOPE_INFERENCE];
+/** Scopes given to a key created without any (least privilege). */
+export const DEFAULT_SCOPES: readonly string[] = [SCOPE_INFERENCE];
+
+export class InvalidScopeError extends Error {
+  constructor(scope: unknown) {
+    super(`invalid scope: ${JSON.stringify(scope)}; allowed: ${VALID_SCOPES.join(", ")}`);
+    this.name = "InvalidScopeError";
+  }
+}
+
+/** Throw InvalidScopeError unless every entry is a known scope string. */
+export function assertValidScopes(scopes: readonly unknown[]): asserts scopes is string[] {
+  for (const scope of scopes) {
+    if (typeof scope !== "string" || !VALID_SCOPES.includes(scope)) {
+      throw new InvalidScopeError(scope);
+    }
+  }
+}
 
 const KEY_ROW_SELECT =
   "SELECT id, key_display, name, scopes, created_at, revoked_at, expires_at, rotated_at, active, usage_count, last_used_at FROM api_keys";
@@ -230,10 +255,13 @@ export class KeyStore {
 
   /**
    * Generate a new API key. The full secret is returned; only the hash and
-   * display form are persisted. Default scope is ["admin"] if empty.
+   * display form are persisted. Empty scopes default to ["inference"]
+   * (inference only); admin access must be requested explicitly. Throws
+   * InvalidScopeError for an unknown scope.
    */
   create(name: string, scopes: string[], expiresAt?: Date): APIKey {
-    const finalScopes = scopes.length > 0 ? [...scopes] : [SCOPE_ADMIN];
+    assertValidScopes(scopes);
+    const finalScopes = scopes.length > 0 ? [...new Set(scopes)] : [...DEFAULT_SCOPES];
     const key = generateAPIKey();
     const id = generateID();
     const now = new Date();
@@ -366,16 +394,18 @@ export class KeyStore {
 
   /**
    * Update name and/or scopes. Empty name is ignored; empty scopes are
-   * ignored (matching Go). Returns the updated key.
+   * ignored (matching Go). Throws InvalidScopeError for an unknown scope.
+   * Returns the updated key.
    */
   update(id: string, name: string, scopes: string[]): APIKey {
+    assertValidScopes(scopes);
     const current = this.get(id);
     if (current === null) {
       throw new KeyNotFoundError(id);
     }
 
     const newName = name !== "" ? name : current.name;
-    const newScopes = scopes.length > 0 ? [...scopes] : current.scopes;
+    const newScopes = scopes.length > 0 ? [...new Set(scopes)] : current.scopes;
 
     this.stmtUpdate.run(newName, JSON.stringify(newScopes), id);
 

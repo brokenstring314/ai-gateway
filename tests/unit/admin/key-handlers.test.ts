@@ -71,7 +71,7 @@ describe("key handlers", () => {
     expect(body.name).toBe("test-key");
   });
 
-  it("create with empty scopes → defaults to admin", async () => {
+  it("create with empty scopes → defaults to inference (not admin)", async () => {
     const app = createAdminApp(keyStore);
     const res = await app.request("/keys", {
       method: "POST",
@@ -80,7 +80,7 @@ describe("key handlers", () => {
     });
     expect(res.status).toBe(201);
     const body = await res.json();
-    expect(body.scopes).toEqual(["admin"]);
+    expect(body.scopes).toEqual(["inference"]);
   });
 
   it("create with explicit scopes → preserved", async () => {

@@ -166,13 +166,14 @@ describe("adminAuthMiddleware", () => {
     expect(res.status).toBe(200);
   });
 
-  it("rejects API key with neither admin nor read_only scope (401)", async () => {
+  it("rejects API key with neither admin nor read_only scope (403 insufficient_scope)", async () => {
     const otherKey = keyStore.create("other-key", ["inference"]).key;
     const app = createAdminApp();
     const res = await app.request("/admin/config", {
       headers: { Authorization: `Bearer ${otherKey}` },
     });
-    expect(res.status).toBe(401);
+    expect(res.status).toBe(403);
+    expect(((await res.json()) as { error: { code: string } }).error.code).toBe("insufficient_scope");
   });
 
   it("accepts X-Admin-Secret header", async () => {

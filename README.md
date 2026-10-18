@@ -479,6 +479,20 @@ curl -X POST \
   http://localhost:3000/admin/keys
 ```
 
+#### Key scopes (key-store mode)
+
+When the server runs with the API key store (`ai-gateway serve` / `bun src/index.ts serve`), `POST /admin/keys` takes `{"name": "...", "scopes": [...], "expiresAt"?: "..."}` and returns the generated key once. Scopes:
+
+| Scope       | `/v1/*` | `GET /admin/*` | Mutating `/admin/*` |
+| ----------- | ------- | -------------- | ------------------- |
+| `inference` | yes     | 403            | 403                 |
+| `read_only` | yes     | yes            | 403                 |
+| `admin`     | yes     | yes            | yes                 |
+
+A key created without `scopes` (or with `[]`) gets `["inference"]`: admin access must be requested explicitly with `"scopes": ["admin"]`. Any other value (non-array, non-string entries, unknown names) is rejected with 400 on create and update. Keys created by older versions without scopes were stored as `["admin"]`; review them with `GET /admin/keys` and downgrade with `PUT /admin/keys/:id {"scopes": ["inference"]}`.
+
+`ADMIN_BOOTSTRAP_KEY` / `ADMIN_BOOTSTRAP_READ_ONLY_KEY` are accepted only while the key store is empty (`auth.keys` do not count), so they remain valid until the first key is created; startup prints a warning while that is the case.
+
 ### Response Headers
 
 The gateway adds these headers to responses:

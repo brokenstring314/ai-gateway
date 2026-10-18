@@ -461,6 +461,20 @@ curl -X POST \
   http://localhost:3000/admin/keys
 ```
 
+#### 密钥作用域（密钥库模式）
+
+服务器使用 API 密钥库运行时（`ai-gateway serve` / `bun src/index.ts serve`），`POST /admin/keys` 接受 `{"name": "...", "scopes": [...], "expiresAt"?: "..."}`，生成的密钥只返回一次。作用域：
+
+| 作用域        | `/v1/*` | `GET /admin/*` | 修改类 `/admin/*` |
+| ------------- | ------- | -------------- | ----------------- |
+| `inference`   | 允许    | 403            | 403               |
+| `read_only`   | 允许    | 允许           | 403               |
+| `admin`       | 允许    | 允许           | 允许              |
+
+未提供 `scopes`（或为 `[]`）创建的密钥默认为 `["inference"]`；管理员权限必须显式指定 `"scopes": ["admin"]`。其他取值（非数组、非字符串元素、未知名称）在创建和更新时均返回 400。旧版本中未指定作用域创建的密钥存储为 `["admin"]`，请用 `GET /admin/keys` 检查，并用 `PUT /admin/keys/:id {"scopes": ["inference"]}` 降级。
+
+`ADMIN_BOOTSTRAP_KEY` / `ADMIN_BOOTSTRAP_READ_ONLY_KEY` 仅在密钥库为空时有效（`auth.keys` 不计入），因此在创建第一个密钥之前一直有效；在此期间启动时会打印警告。
+
 ### 响应头
 
 网关在响应中添加以下头：
