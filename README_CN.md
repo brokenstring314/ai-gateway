@@ -649,19 +649,19 @@ targets:
 
 #### 限流（Rate Limit）
 
-令牌桶限流器，支持全局、按密钥和按用户限制。
+按 API 密钥限流，使用固定窗口计数器（每个密钥 O(1) 内存和 CPU；空闲密钥会被清理）。
 
 ```yaml
 plugins:
   - name: rate-limit
     stage: before_request
     config:
-      requestsPerSecond: 100    # 全局速率（默认：100）
-      burst: 200                # 突发容量（默认：200）
-      keyRpm: 60                # 每个 API 密钥的每分钟请求数
-      userRpm: 30               # 每个用户（来自请求 user 字段）的 RPM
-      maxKeys: 10000            # 最大追踪密钥数，LRU 淘汰（;默认：10000）
+      maxRequestsPerMinute: 60  # 必填（别名：keyRpm、rpm）
+      maxRequestsPerDay: 5000   # 可选（别名：rpd）；不设置时不跟踪日窗口
+      key: shared               # 可选，没有 API 密钥的请求使用的桶名（默认："default"）
 ```
+
+窗口从该密钥的第一个请求开始计时，60 秒 / 24 小时后重置，因此跨越窗口边界的突发最多可放行两倍限额。限额按进程计算（多副本之间不共享）。被拒绝时返回 403 `plugin_rejected`。
 
 #### 响应缓存（Cache）
 

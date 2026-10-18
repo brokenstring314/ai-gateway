@@ -689,19 +689,19 @@ Plugins run at three stages of the request lifecycle:
 
 #### Rate Limit
 
-Token-bucket rate limiter with global, per-key, and per-user limits.
+Per-API-key request limits using fixed-window counters (O(1) memory and CPU per key; idle keys are evicted).
 
 ```yaml
 plugins:
   - name: rate-limit
     stage: before_request
     config:
-      requestsPerSecond: 100    # Global rate (default: 100)
-      burst: 200                # Burst capacity (default: 200)
-      keyRpm: 60                # Per-API-key requests/minute
-      userRpm: 30               # Per-user (from request `user` field) RPM
-      maxKeys: 10000            # Max tracked keys, LRU eviction (default: 10000)
+      maxRequestsPerMinute: 60  # Required (aliases: keyRpm, rpm)
+      maxRequestsPerDay: 5000   # Optional (alias: rpd); no day window is tracked when unset
+      key: shared               # Optional bucket name for requests without an API key (default: "default")
 ```
+
+Windows start at a key's first request and reset after 60 s / 24 h, so a burst straddling a window boundary can admit up to twice the limit. Limits are per process (not shared between replicas). Rejections answer 403 `plugin_rejected`.
 
 #### Response Cache
 
