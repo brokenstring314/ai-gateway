@@ -244,7 +244,7 @@ AI_GATEWAY_MAX_REQUEST_BYTES=20971520
 | `RATE_LIMIT_RPS` | 未设置（限流关闭） | `/v1/*` 按客户端 IP 的每秒请求数，优先于 `server.perIpRateLimit.rps`；`0` 表示关闭。 |
 | `RATE_LIMIT_BURST` | 2 × rps | 每个 IP 的桶容量，优先于 `server.perIpRateLimit.burst`。 |
 | `TRUSTED_PROXIES` | `127.0.0.1,::1` | 逗号分隔的 IP/CIDR，来自这些地址的 `X-Forwarded-For` / `X-Real-IP` 才被按 IP 限流信任。部署在负载均衡后面时请设为 LB 的地址段，否则所有请求共享 LB 的 IP。 |
-| `SHUTDOWN_GRACE_MS` | `10000` | 收到 SIGTERM/SIGINT 后等待在途请求完成的时间（毫秒）。 |
+| `SHUTDOWN_GRACE_MS` | `10000` | 收到 SIGTERM/SIGINT 后等待在途请求完成的时间（毫秒）。关闭顺序：`/readyz` 立即返回 503，已有连接上的新请求返回 503 `shutting_down`；监听器停止接受新连接；等待在途请求完成（响应带 `Connection: close`）；最后关闭监听器和存储。 |
 | `OTEL_EXPORTER_OTLP_ENDPOINT` | 未设置 | 未配置 `observability.tracing.otlpEndpoint` 时使用的 OTLP HTTP 端点。 |
 | `OTEL_TRACES_SAMPLER` | 未设置 | `always_on`、`always_off` 或 `traceidratio`（使用 `sampleRatio`）；其他值被忽略。 |
 

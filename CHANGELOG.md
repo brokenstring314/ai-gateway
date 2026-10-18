@@ -105,3 +105,9 @@
   buckets. *Migration:* deployments that relied on the implicit 20 rps / 40
   burst must set it explicitly. README now documents every operational
   environment variable and the contents of the data directory.
+- **Shutdown stops accepting connections before draining** (C3-7 / B3-9,
+  remaining part; readiness 503 + refusing new work landed in 989c3ad).
+  SIGTERM now flips readiness, calls `server.stop(false)` so no new
+  connections are accepted, drains in-flight requests (responses get
+  `Connection: close`), logs if the grace period runs out, then closes
+  components.

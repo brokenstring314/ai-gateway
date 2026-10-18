@@ -268,6 +268,9 @@ export async function serve(configPath: string, overrides: ServeOverrides = {}):
 
   console.log(`AI Gateway listening on http://${host}:${port}`);
 
+  // SIGTERM: readiness 503 -> stop accepting new connections -> drain ->
+  // close the listener and components.
+  shutdown.setStopAccepting(() => server.stop(false));
   shutdown.register({ name: "http", close: () => server.stop() });
   shutdown.register({ name: "gateway", close: () => gateway.close() });
   shutdown.register({ name: "request-logger", close: () => getRequestLogger().close() });

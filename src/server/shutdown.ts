@@ -15,6 +15,7 @@ export class ShutdownManager {
   private readonly graceMs: number;
   private readonly logger: (msg: string) => void;
   private shuttingDownFlag = false;
+  private stopAcceptingHook: (() => unknown) | null = null;
 
   constructor(opts: ShutdownManagerOptions = {}) {
     this.graceMs = opts.shutdownGraceMs ?? 10_000;
@@ -30,6 +31,15 @@ export class ShutdownManager {
     return this.shuttingDownFlag;
   }
 
+  /**
+   * Called right after readiness flips to draining and before the drain:
+   * stop accepting new connections (e.g. `server.stop(false)`) while
+   * in-flight requests keep running. Errors are logged, never thrown.
+   */
+  setStopAccepting(hook: () => unknown): void {
+    this.stopAcceptingHook = hook;
+  }
+
   register(component: Shutdownable): void {
     this.components.push(component);
   }
@@ -43,7 +53,22 @@ export class ShutdownManager {
     // load balancer stops sending traffic while in-flight requests finish.
     this.inFlightTracker.startDraining();
     this.logger(`shutdown started: ${reason ?? "unknown reason"}`);
-    await this.inFlightTracker.drain(this.graceMs);
+    // Order: readiness 503 -> stop accepting -> drain in-flight -> close components.
+    if (this.stopAcceptingHook !== null) {
+      try {
+        // Not awaited: Bun's stop(false) promise settles only once every
+        // connection has closed, which is what the drain below waits for.
+        void Promise.resolve(this.stopAcceptingHook()).catch((err: unknown) => {
+          this.logger(`failed to stop accepting connections: ${String(err)}`);
+        });
+      } catch (err) {
+        this.logger(`failed to stop accepting connections: ${String(err)}`);
+      }
+    }
+    const drained = await this.inFlightTracker.drain(this.graceMs);
+    if (!drained) {
+      this.logger(`grace period of ${this.graceMs}ms elapsed with ${this.inFlightTracker.pending} request(s) in flight; closing anyway`);
+    }
     for (const component of this.components) {
       try {
         await component.close();
