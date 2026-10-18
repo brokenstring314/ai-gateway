@@ -224,10 +224,13 @@ describe("Upstream response-header forwarding", () => {
   });
 
   it("forwards upstream headers from the legacy completions handler", async () => {
+    // The completions handler runs execute(completionsSurface) (plan 2.9).
     const mockGateway = createMockGateway({
-      route: vi.fn().mockResolvedValue(makeResponse({
-        upstreamHeaders: { "retry-after": "5", "x-request-id": "req_xyz" },
-      })),
+      execute: vi.fn().mockResolvedValue({
+        kind: "ok",
+        target: "test",
+        value: makeResponse({ upstreamHeaders: { "retry-after": "5", "x-request-id": "req_xyz" } }),
+      }),
     } as unknown as Gateway);
 
     const { registerCompletionsHandler } = await import("@/handlers/completions");

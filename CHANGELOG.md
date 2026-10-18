@@ -213,6 +213,12 @@
 
 ### Added
 
+- `Gateway.execute(surface, req, ctx)` and `Gateway.executeStream(surface,
+  req, ctx)` run any surface (`core/surfaces/*`) through the pipeline.
+  `/v1/completions` now uses them: its requests are logged and counted with
+  `surface: "completions"` / `"completions_stream"` instead of `chat` /
+  `chat_stream` (MCP tools still apply to non-streaming completions).
+
 - **Allow-listed wire pass-through** (T3-11, T3-9 fields), stream and
   non-stream: request `reasoning_effort`, `store`, `metadata`, `modalities`,
   `tools[].function.strict`, provider knobs (`top_k`, `thinking`, …) and

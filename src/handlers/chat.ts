@@ -9,11 +9,9 @@ import { z } from "zod";
 import type { AppType } from "../app.js";
 import { respondError, respondInvalidJson, respondValidation } from "./error-response.js";
 import type { Gateway } from "../gateway.js";
-import type { ChatCompletionRequest, RequestContext, StreamChunk } from "../providers/types.js";
+import type { ChatCompletionRequest } from "../providers/types.js";
 import { mergeForwardedHeaders } from "../providers/response-headers.js";
-import { heartbeatIntervalMs } from "./sse-heartbeat.js";
-import { linkAbortSignals } from "./abort.js";
-import { createSseStream, streamIdleTimeoutMs, streamMaxDurationMs } from "./sse-stream.js";
+import { handlerRequest, respondSse } from "./request.js";
 import {
   createOpenAIWireStreamSerializer,
   attachWireRequestExtras,
@@ -99,73 +97,18 @@ export function registerChatHandler(app: AppType, gateway: Gateway): void {
     // Allow-listed fields the schema does not model (reasoning_effort, store,
     // message reasoning_content …) are forwarded upstream verbatim (T3-11).
     const req = attachWireRequestExtras(body, parsed.data as ChatCompletionRequest);
-    // Upstream work is cancelled when the request times out, the client
-    // connection goes away, or the SSE response body is cancelled.
-    const upstreamAbort = new AbortController();
-    const signal = linkAbortSignals(upstreamAbort, [
-      c.get("abortController")?.signal,
-      c.req.raw.signal,
-    ]);
+    const hr = handlerRequest(c);
+    const { ctx } = hr;
     const startTime = Date.now();
 
-    const apiKey = c.get("apiKey");
-    const ctx: RequestContext = {
-      signal,
-      traceId: c.req.header("X-Request-Id") ?? crypto.randomUUID(),
-      metadata: { apiKey },
-    };
-
-    // Streaming path
     if (req.stream) {
-      try {
-        const stream = gateway.routeStream(ctx, req);
-        const iterator = stream[Symbol.asyncIterator]();
-
-        // Prime the generator so the provider's upstream fetch completes and
-        // any forwardable upstream headers are published on the context before
-        // the SSE Response is constructed (headers must be fixed at
-        // construction time).
-        let firstChunk: StreamChunk | undefined;
-        try {
-          const first = await iterator.next();
-          if (!first.done) {
-            firstChunk = first.value;
-          }
-        } catch (err) {
-          return respondError(c, err);
-        }
-
-        const providerName = firstChunk?.model ?? "unknown";
-        const serverCfg = gateway.getConfig?.()?.server;
-        const toWire = createOpenAIWireStreamSerializer();
-        return new Response(
-          createSseStream<StreamChunk>({
-            iterator,
-            firstChunk,
-            serialize: toWire,
-            upstreamAbort,
-            heartbeatMs: heartbeatIntervalMs(serverCfg?.sseHeartbeatSeconds),
-            idleTimeoutMs: streamIdleTimeoutMs(serverCfg?.streamIdleTimeoutSeconds),
-            maxDurationMs: streamMaxDurationMs(serverCfg?.streamMaxDurationSeconds),
-          }),
-          {
-            status: 200,
-            headers: mergeForwardedHeaders(
-              {
-                "Content-Type": "text/event-stream",
-                "Cache-Control": "no-cache",
-                Connection: "keep-alive",
-                "X-Accel-Buffering": "no",
-                "X-Gateway-Provider": providerName,
-                "X-Gateway-Overhead-Ms": String(Date.now() - startTime),
-              },
-              ctx.upstreamHeaders,
-            ),
-          },
-        );
-      } catch (err) {
-        return respondError(c, err);
-      }
+      return respondSse(c, gateway, hr, gateway.routeStream(ctx, req), {
+        serialize: createOpenAIWireStreamSerializer(),
+        headers: (first) => ({
+          "X-Gateway-Provider": first?.model ?? "unknown",
+          "X-Gateway-Overhead-Ms": String(Date.now() - startTime),
+        }),
+      });
     }
 
     // Non-streaming path

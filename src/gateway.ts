@@ -36,22 +36,17 @@ import type { GatewayConfig, RetryConfig, TargetConfig } from "./config/types.js
 import { getMetrics } from "./metrics/metrics.js";
 import { McpRegistry } from "./mcp/registry.js";
 import { McpExecutor } from "./mcp/executor.js";
-import { CircuitBreakerRegistry, CircuitOpenError, type CircuitBreaker } from "./routing/circuit-breaker.js";
-import { TargetExecutor, chatStreamPlan } from "./core/executor.js";
-import { executeStream, iterateStream } from "./core/stream-runner.js";
-import { ConcurrencyLimiterRegistry, ConcurrencyLimitError } from "./routing/concurrency-limiter.js";
+import { CircuitBreakerRegistry, type CircuitBreaker } from "./routing/circuit-breaker.js";
+import { TargetExecutor } from "./core/executor.js";
+import type { ChatShapedSurface } from "./core/chat-stream.js";
+import { ConcurrencyLimiterRegistry } from "./routing/concurrency-limiter.js";
 import { Pipeline, type RequestLogSink } from "./core/pipeline.js";
 import { mcpLoop } from "./core/mcp-loop.js";
 import { chatSurface } from "./core/surfaces/chat.js";
 import { embeddingsSurface } from "./core/surfaces/embeddings.js";
 import { imagesSurface } from "./core/surfaces/images.js";
-import type { StreamEnd, Surface } from "./core/types.js";
+import type { Result, Surface } from "./core/types.js";
 import { settlePluginContext } from "./plugins/context.js";
-import {
-  accumulateChunk,
-  estimateStreamUsage,
-  newStreamAccumulator,
-} from "./core/usage.js";
 import { toGatewayError } from "./core/errors.js";
 
 type McpServerRuntimeConfig = GatewayConfig["mcpServers"] extends readonly (infer T)[]
@@ -298,64 +293,22 @@ export class Gateway {
   }
 
   /**
-   * Streaming chat completion. Before plugins, candidates and the single
-   * finalize come from the pipeline; the after-request plugins, the request
-   * log and the metrics see the streamed request exactly once, however it
-   * ends: normal completion, upstream error, or the client going away
-   * (generator return()). Without a usage chunk, usage is estimated
-   * (~4 chars/token) so the budget cannot be bypassed.
+   * Streaming chat completion: a wrapper over executeStream(chat). The
+   * after-request plugins, request log and metrics see the stream exactly
+   * once, however it ends (core/chat-stream.ts).
    */
-  async *routeStream(
-    ctx: RequestContext,
-    req: ChatCompletionRequest,
-  ): AsyncGenerator<StreamChunk> {
-    const begun = await this.pipeline.begin(chatStreamSurface, req, ctx);
-    // chatStreamSurface never accepts a short-circuit (begin() rejects it).
-    if (begun.kind !== "proceed") return;
-    const { run } = begun;
-    // MCP tools are NOT injected on the streaming path: there is no agentic
-    // loop here, so injected tools would surface to the client as tool_calls
-    // for tools it never declared and cannot execute.
-    const finalReq = run.request;
-    const acc = newStreamAccumulator(finalReq.model);
-    // Breaker, limiter, retry and failover before the first chunk:
-    // core/executor.ts; first chunk, StreamEnd and settle-once:
-    // core/stream-runner.ts; finalize-once: core/pipeline.ts.
-    const finalize = async (end: StreamEnd, target: string | undefined): Promise<void> => {
-      const streamError = streamErrorOf(end, acc.chunks);
-      const usage = acc.usage ?? estimateStreamUsage(finalReq, acc);
-      const usageEstimated = acc.usage === undefined;
-      const response: ChatCompletionResponse = {
-        id: acc.id,
-        object: "chat.completion",
-        created: acc.created,
-        model: acc.model,
-        provider: target ?? "unknown",
-        choices: [{ index: 0, message: { role: "assistant", content: acc.content }, finishReason: acc.finishReason }],
-        usage,
-        metadata: usageEstimated ? { usageEstimated: true } : undefined,
-      };
-      if (streamError === undefined) {
-        await this.pipeline.finalize(run, { kind: "ok", value: response, target: target ?? "unknown", usage, usageEstimated });
-      } else if (acc.chunks === 0) {
-        await this.pipeline.finalize(run, { kind: "error", error: streamError, target });
-      } else {
-        await this.pipeline.finalize(run, { kind: "error", error: streamError, target, partial: { response, usage, usageEstimated } });
-      }
-    };
-    let result: Awaited<ReturnType<typeof executeStream<StreamChunk>>>;
-    try {
-      const plan = chatStreamPlan(this.executor, this.strategy, ctx, finalReq);
-      result = await executeStream(ctx, plan, { mapError: toPipelineError, finalize });
-    } catch (err) {
-      // e.g. strategy selection failed before executeStream could settle.
-      await this.pipeline.finalize(run, { kind: "error", error: err });
-      throw err;
-    }
-    for await (const chunk of iterateStream(result, ctx?.signal, toPipelineError)) {
-      accumulateChunk(acc, chunk);
-      yield chunk;
-    }
+  routeStream(ctx: RequestContext, req: ChatCompletionRequest): AsyncGenerator<StreamChunk> {
+    return this.pipeline.executeStream(chatSurface, req, ctx);
+  }
+
+  /** Any surface through the whole pipeline (plugins, executor, MCP loop, finalize). */
+  execute<Req, Res, Chunk>(surface: Surface<Req, Res, Chunk>, req: Req, ctx: RequestContext): Promise<Result<Res>> {
+    return this.pipeline.execute(surface, req, ctx);
+  }
+
+  /** A chat-shaped surface (chat, completions) streamed through the pipeline. */
+  executeStream(surface: ChatShapedSurface, req: ChatCompletionRequest, ctx: RequestContext): AsyncGenerator<StreamChunk> {
+    return this.pipeline.executeStream(surface, req, ctx);
   }
 
   /** Embedding request through the pipeline (plugins, executor, finalize). */
@@ -476,14 +429,6 @@ export class Gateway {
 
 }
 
-/** Streaming chat: same as chat, but a plugin short-circuit is rejected. */
-const chatStreamSurface: Surface<ChatCompletionRequest, ChatCompletionResponse, StreamChunk> = {
-  ...chatSurface,
-  logLabel: "chat_stream",
-  fromShortCircuit: () => undefined,
-  shortCircuitUnsupported: "Plugin short-circuited during streaming request; short-circuit is not supported for streaming",
-};
-
 /**
  * Pass-through proxy routes: an arbitrary body cannot be rewritten
  * faithfully, so a plugin that modifies the message content (e.g.
@@ -516,22 +461,6 @@ const passthroughSurface: Surface<ChatCompletionRequest, never> = {
   fromShortCircuit: () => undefined,
   shortCircuitUnsupported: "Plugin short-circuit is not supported on pass-through proxy routes",
 };
-
-/**
- * The error finalize records for a stream end: none for a completed stream
- * or a client that went away after output; otherwise the end's error.
- */
-function streamErrorOf(end: StreamEnd, chunks: number): Error | undefined {
-  if (end.reason === "done") return undefined;
-  if (end.reason === "client_cancel" && chunks > 0 && end.error === undefined) return undefined;
-  const err = end.error ?? new Error(`stream ended: ${end.reason}`);
-  return err instanceof Error ? err : new Error(String(err));
-}
-
-/** Breaker-open / queue-full errors as GatewayErrors (HTTP 503 / 429). */
-function toPipelineError(err: unknown): unknown {
-  return err instanceof CircuitOpenError || err instanceof ConcurrencyLimitError ? toGatewayError(err) : err;
-}
 
 type PassthroughMessage = ChatCompletionRequest["messages"][number];
 

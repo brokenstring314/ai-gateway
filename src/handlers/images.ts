@@ -7,7 +7,7 @@ import type { AppType } from "../app.js";
 import { respondError, respondInvalidJson, respondValidation } from "./error-response.js";
 import type { Gateway } from "../gateway.js";
 import { toOpenAIWireImageResponse, fromOpenAIWireImageRequest } from "./openai-wire.js";
-import { linkAbortSignals } from "./abort.js";
+import { handlerRequest } from "./request.js";
 
 const ImageRequestSchema = z.object({
   model: z.string().min(1),
@@ -37,13 +37,8 @@ export function registerImagesHandler(app: AppType, gateway: Gateway): void {
 
     const req = parsed.data;
     // Upstream work stops when the request times out or the client goes away.
-    const signal = linkAbortSignals(new AbortController(), [c.get("abortController")?.signal, c.req.raw.signal]);
-    const apiKey = c.get("apiKey");
-    const ctx = {
-      signal,
-      traceId: c.req.header("X-Request-Id") ?? crypto.randomUUID(),
-      metadata: { apiKey },
-    };
+    const { ctx } = handlerRequest(c);
+    const { signal } = ctx;
 
     try {
       const response = await gateway.generateImageWithPlugins(ctx, {
