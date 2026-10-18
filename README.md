@@ -1369,3 +1369,9 @@ bun run test:watch
 | Per-target concurrency limiter                | Not included (use circuit breaker)     |
 | Model catalog / discovery                     | Static config only                     |
 | Config file watcher                           | Not supported: edit the file and restart |
+
+## License
+
+Apache License 2.0. See [LICENSE](LICENSE).
+
+The design is derived from [Ferro Labs AI Gateway](https://github.com/ferro-labs/ai-gateway) (Apache-2.0); attribution is kept in [NOTICE](NOTICE).

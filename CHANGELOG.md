@@ -213,6 +213,8 @@
 
 ### Added
 
+- Licensed under Apache-2.0 (`LICENSE`); `NOTICE` credits Ferro Labs AI Gateway (Apache-2.0), whose design this project derives from. Both files are shipped in the Docker image.
+
 - `Gateway.execute(surface, req, ctx)` and `Gateway.executeStream(surface,
   req, ctx)` run any surface (`core/surfaces/*`) through the pipeline.
   `/v1/completions` now uses them: its requests are logged and counted with
