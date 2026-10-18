@@ -4,14 +4,9 @@
 
 export { createAdminApp, type AdminAppOptions } from "./handlers.js";
 export {
-  type ConfigHandlerState,
   type ConfigState,
   getConfigHandler,
-  putConfigHandler,
-  reloadConfigHandler,
-  deleteConfigHandler,
-  getConfigHistoryHandler,
-  rollbackConfigHandler,
+  removedConfigWriteHandler,
 } from "./config-handlers.js";
 export { scrubConfig, scrubConfigJson } from "./config-scrub.js";
 export {

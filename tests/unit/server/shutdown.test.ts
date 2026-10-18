@@ -177,3 +177,22 @@ describe("InFlightTracker", () => {
     expect(tracker.pending).toBe(0);
   });
 });
+
+describe("SIGHUP (no hot reload since 0.2.0)", () => {
+  it("logs and is ignored: no shutdown, no drain", () => {
+    const logs: string[] = [];
+    const component = makeComponent("db");
+    const manager = new ShutdownManager({ logger: (m) => logs.push(m) });
+    manager.register(component);
+    const uninstall = manager.installSignalHandlers();
+    try {
+      process.emit("SIGHUP" as NodeJS.Signals);
+      expect(manager.isShuttingDown).toBe(false);
+      expect(manager.inFlight.draining).toBe(false);
+      expect(component.close).not.toHaveBeenCalled();
+      expect(logs.some((m) => m.includes("SIGHUP ignored"))).toBe(true);
+    } finally {
+      uninstall();
+    }
+  });
+});

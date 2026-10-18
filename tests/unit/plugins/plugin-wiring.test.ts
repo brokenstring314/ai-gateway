@@ -190,18 +190,6 @@ describe("H3: config.plugins are instantiated", () => {
     expect(() => buildPluginsFromConfig([{ name: "budget", stage: "before_request", config: {} }])).toThrow(/dailyBudget/);
   });
 
-  it("reloadConfig swaps config plugins and keeps programmatic ones", async () => {
-    const calls: ChatCompletionRequest[] = [];
-    const c = cfg({ plugins: [{ name: "word-filter", stage: "before_request", config: { blocklist: ["old"] } }] });
-    const gw = new Gateway(c);
-    gw.registerProvider(mockProvider(calls));
-    gw.registerPlugin("before_request", new RateLimitPlugin({ maxRequestsPerMinute: 1000, key: "reload-" + uniq() }));
-    await expect(gw.route({ metadata: {} }, msg("old"))).rejects.toThrow();
-    gw.reloadConfig(cfg({ plugins: [{ name: "word-filter", stage: "before_request", config: { blocklist: ["new"] } }] }));
-    gw.registerProvider(mockProvider(calls));
-    await gw.route({ metadata: {} }, msg("old"));
-    await expect(gw.route({ metadata: {} }, msg("new"))).rejects.toThrow();
-  });
 });
 
 describe("createPluginContext", () => {

@@ -57,11 +57,19 @@ export class ShutdownManager {
     const handler = (): void => {
       void this.shutdown("signal received");
     };
+    // SIGHUP is the conventional "reload" signal. There is no hot reload
+    // (removed in 0.2.0), and Bun's default action would kill the process
+    // without draining, so log and ignore it.
+    const hupHandler = (): void => {
+      this.logger("SIGHUP ignored: config hot reload is not supported; restart the gateway to apply config changes");
+    };
     process.on("SIGTERM", handler);
     process.on("SIGINT", handler);
+    process.on("SIGHUP", hupHandler);
     return () => {
       process.off("SIGTERM", handler);
       process.off("SIGINT", handler);
+      process.off("SIGHUP", hupHandler);
     };
   }
 }

@@ -3,7 +3,6 @@ import { Database } from "bun:sqlite";
 import { Gateway } from "@/gateway";
 import { createApp } from "@/app";
 import { KeyStore } from "@/persistence/key-store";
-import { ConfigStore } from "@/persistence/config-store";
 import { RequestLogStore } from "@/persistence/request-log-store";
 import { ShutdownManager } from "@/server/shutdown";
 import type { GatewayConfig } from "@/config/types";
@@ -48,7 +47,6 @@ function makeMockProvider(): IProvider {
 describe("Wave 3 wiring (integration)", () => {
   let gateway: Gateway;
   let keyStore: KeyStore;
-  let configStore: ConfigStore;
   let logStore: RequestLogStore;
   let app: ReturnType<typeof createApp>;
   let apiKey: string;
@@ -71,13 +69,11 @@ describe("Wave 3 wiring (integration)", () => {
     gateway.registerProvider(makeMockProvider());
 
     keyStore = await KeyStore.create(new Database(":memory:"));
-    configStore = await ConfigStore.create(new Database(":memory:"));
     logStore = await RequestLogStore.create(new Database(":memory:"));
     apiKey = keyStore.create("test-key", ["admin"]).key;
 
     shutdown = new ShutdownManager({ logger: () => {} });
     app = createApp(gateway, config, undefined, keyStore, {
-      configStore,
       logStore,
       adminSecret: config.adminSecret,
       inFlightTracker: shutdown.inFlight,

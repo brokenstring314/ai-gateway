@@ -156,20 +156,6 @@ describe("Gateway", () => {
     });
   });
 
-  describe("reloadConfig()", () => {
-    it("updates strategy and providers", () => {
-      gateway.reloadConfig(makeConfig({
-        strategy: { mode: "single", targets: ["test-provider"] },
-        targets: [
-          { name: "test-provider", provider: "openai", apiKey: "sk-test", baseURL: "http://localhost:1234/v1" },
-        ],
-      }));
-
-      const config = gateway.getConfig();
-      expect(config.strategy.mode).toBe("single");
-    });
-  });
-
   describe("circuit breaker integration", () => {
     it("records failure on provider error", async () => {
       (mockProvider.complete as ReturnType<typeof vi.fn>).mockRejectedValue(new Error("fail"));

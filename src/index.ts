@@ -9,10 +9,9 @@ import { loadConfigFromPath } from "./config/loader.js";
 import { safeParseConfig } from "./config/schema.js";
 import type { GatewayConfig } from "./config/types.js";
 import { Database } from "bun:sqlite";
-import { mkdirSync } from "node:fs";
+import { existsSync, mkdirSync } from "node:fs";
 import { join } from "node:path";
 import { KeyStore } from "./persistence/key-store.js";
-import { ConfigStore } from "./persistence/config-store.js";
 import { RequestLogStore } from "./persistence/request-log-store.js";
 import {
   parseAllowUnauthenticatedProxy,
@@ -139,8 +138,7 @@ export interface ServeOverrides {
 }
 
 /**
- * Full server bootstrap: config (file, then persisted override), stores
- * (keys, config, logs), production-safety checks, auth, observability and
+ * Full server bootstrap: config file, stores (keys, logs), production-safety checks, auth, observability and
  * graceful shutdown. Both `bun src/index.ts serve` and the `ai-gateway serve`
  * CLI (src/cli/index.ts) go through here so they enforce the same auth.
  */
@@ -157,37 +155,30 @@ export async function serve(configPath: string, overrides: ServeOverrides = {}):
   mkdirSync(dataDir, { recursive: true });
 
   const keyDb = new Database(join(dataDir, "api-keys.sqlite"));
-  const configDb = new Database(join(dataDir, "gateway-config.sqlite"));
   const logDb = new Database(join(dataDir, "request-logs.sqlite"));
 
   let keyStore: KeyStore;
-  let configStore: ConfigStore;
   let logStore: RequestLogStore;
   try {
-    [keyStore, configStore, logStore] = await Promise.all([
+    [keyStore, logStore] = await Promise.all([
       KeyStore.create(keyDb),
-      ConfigStore.create(configDb),
       RequestLogStore.create(logDb),
     ]);
   } catch (err) {
     keyDb.close();
-    configDb.close();
     logDb.close();
     throw err;
   }
 
-  const persistedConfig = configStore.load();
-  if (persistedConfig !== null) {
-    try {
-      const parsed = safeParseConfig(JSON.parse(persistedConfig));
-      if (parsed.success) {
-        config = parsed.data as GatewayConfig;
-      } else {
-        console.warn("Persisted gateway config is invalid; using the config file");
-      }
-    } catch {
-      console.warn("Persisted gateway config is not valid JSON; using the config file");
-    }
+  // Before 0.2.0 a config saved via PUT /admin/config was persisted here and
+  // silently replaced the config file at startup. The file is now the only
+  // source of truth; say so once if an old database is still around.
+  const legacyConfigDb = join(dataDir, "gateway-config.sqlite");
+  if (existsSync(legacyConfigDb)) {
+    console.warn(
+      `[config] ignoring ${legacyConfigDb}: persisted runtime config was removed in 0.2.0; ` +
+        `using ${configPath}. Delete the file to silence this warning.`,
+    );
   }
 
   validateProductionSafety({
@@ -250,7 +241,6 @@ export async function serve(configPath: string, overrides: ServeOverrides = {}):
     },
   });
   const app = createApp(gateway, config, configPath, keyStore, {
-    configStore,
     logStore,
     adminSecret: config.adminSecret,
     bootstrapKey: process.env["ADMIN_BOOTSTRAP_KEY"],
@@ -293,7 +283,6 @@ export async function serve(configPath: string, overrides: ServeOverrides = {}):
   shutdown.register({ name: "gateway", close: () => gateway.close() });
   shutdown.register({ name: "request-logger", close: () => getRequestLogger().close() });
   shutdown.register({ name: "api-key-store", close: () => keyStore.close() });
-  shutdown.register({ name: "config-store", close: () => configStore.close() });
   shutdown.register({ name: "request-log-store", close: () => logStore.close() });
   shutdown.installSignalHandlers();
 }

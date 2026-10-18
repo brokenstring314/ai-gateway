@@ -150,7 +150,7 @@ export function createApp(
   // ── Handlers ──
   registerHealthHandler(app);
   registerLivenessHandler(app);
-  registerReadinessHandler(app, gateway, options?.configStore, () => options?.inFlightTracker?.draining ?? false);
+  registerReadinessHandler(app, gateway, [keyStore, options?.logStore], () => options?.inFlightTracker?.draining ?? false);
   registerCapabilitiesHandler(app, gateway);
   registerChatHandler(app, gateway);
   registerCompletionsHandler(app, gateway);
@@ -213,7 +213,6 @@ export function createApp(
   // ── Admin API ──
   const adminApp = createAdminApp(gateway, config, configPath, {
     keyStore,
-    configStore: options?.configStore,
     logStore: options?.logStore,
     adminSecret: options?.adminSecret,
     bootstrapKey: options?.bootstrapKey,

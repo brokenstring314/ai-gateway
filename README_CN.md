@@ -439,13 +439,13 @@ Prometheus 格式的指标，包括：
 
 | 方法     | 路径                     | 说明                |
 | ------ | ---------------------- | ----------------- |
-| GET    | `/admin/config`        | 获取当前配置（API 密钥已脱敏） |
-| PUT    | `/admin/config`        | 替换配置（Zod 验证）      |
-| POST   | `/admin/config/reload` | 从文件重新加载配置         |
+| GET    | `/admin/config`        | 获取当前配置（密钥已脱敏）    |
 | GET    | `/admin/keys`          | 列出 API 密钥（脱敏）     |
 | POST   | `/admin/keys`          | 添加新的 API 密钥       |
 | DELETE | `/admin/keys/:id`      | 按索引删除 API 密钥      |
 | GET    | `/admin/logs`          | 查看最近的日志条目         |
+
+运行时配置只读：没有热重载，也没有配置写接口（0.2.0 起移除；旧的写接口返回 `410 config_api_removed`）。改配置 = 改文件 + 重启（负载均衡后面滚动重启）。收到 `SIGHUP` 只打日志，不做任何事。
 
 **示例：**
 
@@ -1007,7 +1007,6 @@ gateway.close();
 | `listModels()`                       | 列出所有模型                             |
 | `registerProvider(provider)`         | 运行时添加提供商                           |
 | `registerPlugin(stage, plugin)`      | 运行时添加插件                            |
-| `reloadConfig(config)`               | 热重载配置                              |
 | `getConfig()`                        | 获取当前配置（只读）                         |
 | `close()`                            | 优雅关闭                               |
 
@@ -1203,4 +1202,4 @@ bun run test:watch
 | `httputil.ReverseProxy` 透传代理        | 不包含                               |
 | 每目标并发限制                             | 不包含（使用熔断器替代）                      |
 | 模型目录 / 动态发现                         | 仅静态配置                             |
-| 配置文件监视                              | 管理 API 重载（`PUT /admin/config`）    |
+| 配置文件监视                              | 不支持：改文件后重启                   |

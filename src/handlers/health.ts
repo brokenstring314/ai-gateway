@@ -4,7 +4,6 @@
 
 import type { AppType } from "../app.js";
 import type { Gateway } from "../gateway.js";
-import type { ConfigStore } from "../persistence/config-store.js";
 
 export function registerHealthHandler(app: AppType): void {
   app.get("/health", (c) => {
@@ -39,16 +38,17 @@ export function registerLivenessHandler(app: AppType): void {
 export function registerReadinessHandler(
   app: AppType,
   gateway: Gateway,
-  configStore?: ConfigStore,
+  stores: ReadonlyArray<{ ping(): void } | undefined> = [],
   isDraining?: () => boolean,
 ): void {
   app.get("/readyz", (c) => {
     const registry = gateway.getRegistry();
     const config = gateway.getConfig();
     let storeReady = true;
-    if (configStore) {
+    for (const store of stores) {
+      if (store === undefined) continue;
       try {
-        configStore.ping();
+        store.ping();
       } catch {
         storeReady = false;
       }
@@ -66,7 +66,7 @@ export function registerReadinessHandler(
     return c.json({
       status: draining ? "draining" : ready ? "ok" : "not ready",
       providers: providerReady,
-      configStore: storeReady,
+      stores: storeReady,
       mcpServers: gatewayReadiness.mcpReadiness?.() ?? {},
       circuitBreakers: gatewayReadiness.circuitBreakerStates?.() ?? {},
       upstreamAvailable: gatewayReadiness.hasUsableTarget?.() ?? true,
