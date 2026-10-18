@@ -113,7 +113,7 @@ describe("N6 streaming runs after-request plugins / logs / metrics", () => {
   });
 
   it("streams are counted in metrics and the request log", async () => {
-    const { getMetrics } = await import("@/observability/metrics");
+    const { getMetrics } = await import("@/metrics/metrics");
     getMetrics().reset();
     const lines: string[] = [];
     const orig = console.log;
@@ -130,6 +130,8 @@ describe("N6 streaming runs after-request plugins / logs / metrics", () => {
     } finally {
       console.log = orig;
     }
-    expect(getMetrics().format()).toContain(`ai_gateway_requests_total{provider="mock",model="gpt-4o"} 1`);
+    const text = await getMetrics().format();
+    expect(text).toContain(`ai_gateway_tokens_input_total{provider="mock",model="gpt-4o"} 1000`);
+    expect(text).toContain(`ai_gateway_tokens_output_total{provider="mock",model="gpt-4o"} 1000`);
   });
 });

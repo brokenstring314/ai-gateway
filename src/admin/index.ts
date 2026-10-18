@@ -8,7 +8,7 @@ export {
   getConfigHandler,
   removedConfigWriteHandler,
 } from "./config-handlers.js";
-export { scrubConfig, scrubConfigJson } from "./config-scrub.js";
+export { scrubConfig } from "./config-scrub.js";
 export {
   type KeyHandlerState,
   SCOPE_ADMIN,

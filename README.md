@@ -2,7 +2,7 @@
 
 A high-performance OpenAI-compatible API gateway built with TypeScript, Bun, and Hono.
 
-Route requests across 20+ LLM providers through a single unified endpoint, with 8 routing strategies, 6 built-in plugins, circuit breakers, retry with backoff, MCP agentic tool calling, and full observability.
+Route requests across 20+ LLM providers through a single unified endpoint, with 4 routing strategies, 5 built-in plugins, circuit breakers, retry with backoff, MCP agentic tool calling, and full observability.
 
 ---
 
@@ -201,8 +201,6 @@ plugins:
       dailyBudget: 100
       costPer1kInput: 0.01
       costPer1kOutput: 0.03
-  - name: logger
-    stage: after_request
 
 compatibility:
   onUnsupportedParam: warn      # warn | drop | reject
@@ -211,12 +209,7 @@ mcpServers:
   - name: my-tools
     type: stdio
     command: "node"
-    args: ["my-mcp-server.js"]
-  - name: remote-tools
-    type: http
-    url: "https://mcp.example.com/sse"
-    headers:
-      Authorization: "Bearer sk-..."
+    args: ["my-mcp-server.js"]        # stdio is the only transport
 
 observability:
   tracing:
@@ -442,10 +435,11 @@ GET /metrics
 
 Prometheus-format metrics including:
 
-- `ai_gateway_requests_total{provider, model}` — request counter
-- `ai_gateway_tokens_input_total{provider, model}` — input token counter
-- `ai_gateway_tokens_output_total{provider, model}` — output token counter
-- `ai_gateway_request_duration_ms{provider, model}` — latency histogram
+- `ai_gateway_requests_total{method, status, provider}` — HTTP request counter
+- `ai_gateway_request_duration_seconds{method, status, provider}` — latency histogram
+- `ai_gateway_tokens_input_total{provider, model}` — input token counter (chat)
+- `ai_gateway_tokens_output_total{provider, model}` — output token counter (chat)
+- `ai_gateway_plugin_blocked_total{plugin, outcome, surface}` — requests ended by a before-request plugin
 
 ### Admin API
 
@@ -758,17 +752,11 @@ plugins:
       costPer1kOutput: 0.03    # Cost per 1K output tokens
 ```
 
-#### Logger
+#### Logger (removed in 0.2.0)
 
-Structured request/response logging.
-
-```yaml
-plugins:
-  - name: logger
-    stage: after_request
-    config:
-      logBody: false            # Log request/response bodies (default: false)
-```
+The `logger` plugin duplicated the gateway's own request log (one JSON line
+per request, see [Structured Logging](#structured-logging)). A `logger` entry
+in `plugins` is ignored with a startup warning; remove it.
 
 ### Plugin Error Policy
 
@@ -792,12 +780,10 @@ mcpServers:
     type: stdio
     command: "npx"
     args: ["-y", "@modelcontextprotocol/server-filesystem", "/tmp"]
-  - name: remote-tools
-    type: http
-    url: "https://mcp.example.com/sse"
-    headers:
-      Authorization: "Bearer sk-..."
 ```
+
+Only the stdio transport is supported. `type: http` / `url` / `headers` (never
+implemented) were removed from the schema in 0.2.0 and fail validation.
 
 **Agentic loop:**
 
@@ -848,10 +834,11 @@ Available at `GET /metrics`:
 
 | Metric                           | Type      | Labels              |
 | -------------------------------- | --------- | ------------------- |
-| `ai_gateway_requests_total`      | counter   | `provider`, `model` |
+| `ai_gateway_requests_total`      | counter   | `method`, `status`, `provider` |
+| `ai_gateway_request_duration_seconds` | histogram | `method`, `status`, `provider` |
 | `ai_gateway_tokens_input_total`  | counter   | `provider`, `model` |
 | `ai_gateway_tokens_output_total` | counter   | `provider`, `model` |
-| `ai_gateway_request_duration_ms` | histogram | `provider`, `model` |
+| `ai_gateway_plugin_blocked_total` | counter  | `plugin`, `outcome`, `surface` |
 
 ### Structured Logging
 
@@ -1122,10 +1109,9 @@ src/
 │   ├── manager.ts             # Plugin execution with fail-open/closed
 │   ├── context.ts             # PluginContext
 │   ├── error.ts               # PluginRejectionError
-│   └── builtins/              # 6 built-in plugins
+│   └── builtins/              # 5 built-in plugins
 │       ├── rate-limit.ts
 │       ├── cache.ts
-│       ├── logger.ts
 │       ├── word-filter.ts
 │       ├── max-token.ts
 │       └── budget.ts
@@ -1149,13 +1135,12 @@ src/
 │
 ├── mcp/
 │   ├── types.ts               # MCP protocol types
-│   ├── client.ts              # MCP client (stdio/HTTP, with timeout)
+│   ├── client.ts              # MCP client (stdio, with timeout)
 │   ├── registry.ts            # MCP server registry
 │   └── executor.ts            # Agentic tool-call loop
 │
 ├── observability/
-│   ├── tracing.ts             # OpenTelemetry tracing
-│   ├── metrics.ts             # Prometheus metrics
+│   ├── tracing.ts             # Tracing facade (OpenTelemetry bridge)
 │   └── request-log.ts         # Structured JSON logging
 │
 └── admin/

@@ -7,7 +7,7 @@
  *   - targets[].apiKey, adminSecret, auth.keys[]
  *   - observability.tracing.headers (all values — OTLP headers carry credentials)
  *   - mcpServers[].env (all values)
- *   - mcpServers[].headers, plugins[].config, observability.exporters[].config:
+ *   - plugins[].config:
  *     any key matching auth|key|token|secret|password|cookie (case-insensitive),
  *     recursively.
  */
@@ -75,9 +75,6 @@ export function scrubConfig(config: GatewayConfig): GatewayConfig {
 
   if (copy.mcpServers !== undefined) {
     for (const server of copy.mcpServers) {
-      if (server.headers !== undefined) {
-        server.headers = redactSensitiveKeys(server.headers) as Record<string, string>;
-      }
       if (server.env !== undefined) {
         for (const key of Object.keys(server.env)) {
           server.env[key] = REDACTED;
@@ -91,11 +88,6 @@ export function scrubConfig(config: GatewayConfig): GatewayConfig {
     tracing.headers = redactAll(tracing.headers) as Record<string, string>;
   }
 
-  for (const exporter of copy.observability?.exporters ?? []) {
-    if (exporter.config !== undefined) {
-      exporter.config = redactSensitiveKeys(exporter.config) as Record<string, unknown>;
-    }
-  }
 
   for (const plugin of copy.plugins ?? []) {
     if (plugin.config !== undefined) {
@@ -106,6 +98,3 @@ export function scrubConfig(config: GatewayConfig): GatewayConfig {
   return copy;
 }
 
-export function scrubConfigJson(configJson: string): string {
-  return JSON.stringify(scrubConfig(JSON.parse(configJson) as GatewayConfig));
-}

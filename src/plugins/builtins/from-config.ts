@@ -10,7 +10,6 @@ import type { PluginConfig } from "../../config/types.js";
 import type { IPlugin, Stage } from "../types.js";
 import { BudgetPlugin } from "./budget.js";
 import { CachePlugin } from "./cache.js";
-import { LoggerPlugin } from "./logger.js";
 import { MaxTokenPlugin } from "./max-token.js";
 import { RateLimitPlugin } from "./rate-limit.js";
 import { WordFilterPlugin } from "./word-filter.js";
@@ -45,6 +44,8 @@ function strings(raw: Raw, keys: readonly string[]): string[] {
   }
   return [];
 }
+
+let loggerRemovedWarned = false;
 
 export function normalizePluginName(name: string): string {
   return name.trim().toLowerCase().replace(/_/g, "-");
@@ -91,9 +92,15 @@ export function buildPluginsFromConfig(
         break;
       }
       case "logger": {
-        const plugin = new LoggerPlugin({ logBody: raw["logBody"] === true });
-        const stage: Stage = entry.stage === "on_error" ? "on_error" : "after_request";
-        out.push({ stage, plugin });
+        // Removed in 0.2.0: it duplicated the gateway's own request log.
+        // Accepted (so old configs still start) but ignored, with one warning.
+        if (!loggerRemovedWarned) {
+          loggerRemovedWarned = true;
+          console.warn(
+            '[plugins] the "logger" plugin was removed in 0.2.0 and is ignored: the gateway already writes one ' +
+              "request-log line per request. Remove it from config.plugins.",
+          );
+        }
         break;
       }
       case "word-filter": {

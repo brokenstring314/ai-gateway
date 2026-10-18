@@ -2,7 +2,7 @@
  * MCP client — connects to tool servers via stdio transport.
  * Implements the MCP 2025-03-26 protocol subset: initialize, tools/list, tools/call.
  *
- * Transport is inferred from the server config (`command` => stdio, `url` => http)
+ * Transport: stdio only (`command`)
  * rather than depending on the legacy `type` field. Runtime options (allowedTools,
  * timeoutSeconds, ...) are supplied separately from the config schema.
  */
@@ -12,7 +12,6 @@ import type {
   McpTool,
   McpServerOptions,
   McpServerReadiness,
-  McpTransport,
   McpInitializeResult,
   JsonRpcRequest,
   JsonRpcResponse,
@@ -129,10 +128,8 @@ export class McpClient {
   }
 
   async connect(): Promise<void> {
-    const transport = this.inferTransport();
-    if (transport === "http") {
-      throw new Error(`MCP transport "http" is not supported yet — only stdio`);
-    }
+    // Only stdio is supported (the never-implemented http transport was
+    // removed from the schema in 0.2.0).
     if (!this.config.command) {
       throw new Error("MCP stdio server requires a command");
     }
@@ -257,13 +254,6 @@ export class McpClient {
 
   private isToolAllowed(name: string): boolean {
     return this.allowedTools === null || this.allowedTools.has(name);
-  }
-
-  /** Infer the transport from the config: command => stdio, url => http. */
-  private inferTransport(): McpTransport {
-    if (this.config.command) return "stdio";
-    if (this.config.url) return "http";
-    throw new Error("MCP server requires either a command (stdio) or url (http)");
   }
 
   private get stdinPipe(): { write(data: string): void } | undefined {

@@ -112,6 +112,7 @@ export class Metrics {
   private readonly mcpServerUp: Gauge<string>;
   private readonly rateLimitRejections: Counter<string>;
   private readonly requestCostUsd: Counter<string>;
+  private readonly pluginBlocked: Counter<string>;
 
   /** Active circuit breaker state per provider, used to zero stale states. */
   private readonly breakerStates = new Map<string, string>();
@@ -180,6 +181,13 @@ export class Metrics {
       name: `${prefix}_request_cost_usd`,
       help: "Cumulative cost of requests in US dollars",
       labelNames: ["provider", "model"],
+      registers: [this.registry],
+    });
+
+    this.pluginBlocked = new Counter({
+      name: `${prefix}_plugin_blocked_total`,
+      help: "Requests ended by a before-request plugin (rejected or short-circuited)",
+      labelNames: ["plugin", "outcome", "surface"],
       registers: [this.registry],
     });
 
@@ -258,6 +266,15 @@ export class Metrics {
   /** Record a rate-limit rejection for a provider. */
   recordRateLimitRejection(provider = UNKNOWN): void {
     this.rateLimitRejections.inc({ provider: sanitizeLabel(provider) });
+  }
+
+  /** Record a request ended by a before-request plugin. */
+  recordPluginBlocked(plugin: string, outcome: string, surface: string): void {
+    this.pluginBlocked.inc({
+      plugin: sanitizeLabel(plugin),
+      outcome: sanitizeLabel(outcome),
+      surface: sanitizeLabel(surface),
+    });
   }
 
   /** Record the cost (in US dollars) of a completed request. */

@@ -233,33 +233,10 @@ describe("plugin config", () => {
 });
 
 describe("observability", () => {
-  it("parses exporters with name, enabled and config", () => {
-    const config = parseConfig(
-      baseConfig({
-        observability: {
-          exporters: [{ name: "langsmith", enabled: true, config: { api_key: "k" } }],
-        },
-      }),
-    );
-    expect(config.observability?.exporters?.[0]).toEqual({
-      name: "langsmith",
-      enabled: true,
-      config: { api_key: "k" },
-    });
-  });
-
-  it("defaults exporter enabled to false and config to {}", () => {
-    const config = parseConfig(
-      baseConfig({ observability: { exporters: [{ name: "langsmith" }] } }),
-    );
-    expect(config.observability?.exporters?.[0]?.enabled).toBe(false);
-    expect(config.observability?.exporters?.[0]?.config).toEqual({});
-  });
-
-  it("rejects an exporter without a name", () => {
-    expectParseFailure(
-      baseConfig({ observability: { exporters: [{ enabled: true }] } }),
-    );
+  it("observability.exporters was removed (never had an implementation)", () => {
+    const r = safeParseConfig(baseConfig({ observability: { exporters: [{ name: "langsmith" }] } }));
+    // Unknown keys are stripped today; 3.8 (strict schema) turns this into an error.
+    expect(r.success ? (r.data.observability as Record<string, unknown>)["exporters"] : undefined).toBeUndefined();
   });
 
   it("defaults sampleRatio to 1.0 and privacyLevel to metadata", () => {
@@ -385,10 +362,10 @@ describe("mcp servers", () => {
     });
   });
 
-  it("infers transport from command when type is omitted", () => {
+  it("stdio is the only transport (type defaults to stdio)", () => {
     const config = parseConfig(baseConfig({ mcpServers: [{ name: "fs", command: "npx" }] }));
     expect(config.mcpServers?.[0]?.command).toBe("npx");
-    expect(config.mcpServers?.[0]?.type).toBeUndefined();
+    expect(config.mcpServers?.[0]?.type).toBe("stdio");
   });
 
   it("rejects an mcp server with neither command nor url", () => {

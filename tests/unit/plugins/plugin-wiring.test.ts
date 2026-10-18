@@ -178,12 +178,15 @@ describe("H3: config.plugins are instantiated", () => {
     ]);
     expect(regs.map((r) => `${r.plugin.name}@${r.stage}`)).toEqual([
       "rate-limit@before_request",
-      "logger@after_request",
       "word-filter@before_request",
       "max-token@before_request",
       "budget@before_request",
       "budget@after_request",
     ]);
+  });
+
+  it("removed logger plugin is ignored with a warning (0.2.0)", () => {
+    expect(buildPluginsFromConfig([{ name: "logger", stage: "after_request" }])).toEqual([]);
   });
 
   it("rejects invalid builtin config instead of silently ignoring it", () => {

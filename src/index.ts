@@ -215,31 +215,9 @@ export async function serve(configPath: string, overrides: ServeOverrides = {}):
     serviceName: config.observability?.tracing?.serviceName,
     privacyLevel: config.observability?.tracing?.privacyLevel,
   });
-  const { resolveEnabledExporters } = await import("./observability/exporter-registry.js");
-  const exporterConfigs = (config.observability?.exporters ?? []).map((entry) => ({
-    name: entry.name,
-    enabled: entry.enabled !== false,
-    config: entry.config ?? {},
-  }));
-  const { exporters, skipped } = resolveEnabledExporters(exporterConfigs);
-  for (const name of skipped) {
-    console.warn(`[observability] exporter "${name}" unavailable; skipping`);
-  }
-  for (const exporter of exporters) {
-    console.log(`[observability] exporter "${exporter.name}" initialized`);
-  }
   shutdown.register({
     name: "otel",
-    close: async () => {
-      for (const exporter of exporters) {
-        try {
-          await exporter.shutdown();
-        } catch {
-          // best-effort: never let an exporter stall shutdown
-        }
-      }
-      await otelHandle.shutdown();
-    },
+    close: () => otelHandle.shutdown(),
   });
   const bootstrap = createBootstrapGate({
     bootstrapKey: process.env["ADMIN_BOOTSTRAP_KEY"],

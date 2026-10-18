@@ -263,24 +263,29 @@ describe("MCP transport inference", () => {
     client.close();
   });
 
-  it("rejects url-based http transport as unsupported without spawning", async () => {
-    const client = new McpClient(
-      { name: "http-server", type: "http", url: "http://127.0.0.1:9999" },
-      undefined,
-      makeSpawner(),
-    );
-    await expect(client.connect()).rejects.toThrow(/http.*not supported/i);
-    expect(client.readiness).toBe("unready");
-  });
-
-  it("requires either command or url", async () => {
+  it("requires a command", async () => {
     const client = new McpClient(
       { name: "neither", type: "stdio" },
       undefined,
       makeSpawner(),
     );
-    await expect(client.connect()).rejects.toThrow(/requires either a command \(stdio\) or url/);
+    await expect(client.connect()).rejects.toThrow(/requires a command/);
     expect(client.readiness).toBe("unready");
+  });
+
+  it("schema rejects the removed http transport with a hint", async () => {
+    const { safeParseConfig } = await import("@/config/schema");
+    const base = { strategy: { mode: "single" }, targets: [{ name: "a", provider: "openai", apiKey: "k" }] };
+    for (const server of [
+      { name: "h", type: "http", url: "http://127.0.0.1:9999" },
+      { name: "h", url: "http://127.0.0.1:9999" },
+    ]) {
+      const r = safeParseConfig({ ...base, mcpServers: [server] });
+      expect(r.success).toBe(false);
+      expect(r.success ? "" : r.error.issues.map((i) => i.message).join("\n")).toContain("http transport is not supported");
+    }
+    const ok = safeParseConfig({ ...base, mcpServers: [{ name: "s", command: "node" }] });
+    expect(ok.success).toBe(true);
   });
 });
 

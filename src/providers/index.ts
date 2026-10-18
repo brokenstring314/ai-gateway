@@ -11,7 +11,6 @@ export type {
   IStreamProvider,
   IEmbeddingProvider,
   IImageProvider,
-  IDiscoveryProvider,
   IProviderSource,
   RequestContext,
   ModelInfo,
