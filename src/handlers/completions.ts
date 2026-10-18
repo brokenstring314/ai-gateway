@@ -15,7 +15,9 @@ import { mergeForwardedHeaders } from "../providers/response-headers.js";
 import { ProviderError } from "../providers/openai-compat.js";
 import { PluginRejectionError } from "../plugins/error.js";
 import { isTimeoutAbort, isTimeoutError } from "../routing/outcome.js";
-import { startSseHeartbeat, heartbeatIntervalMs, type SseHeartbeat } from "./sse-heartbeat.js";
+import { heartbeatIntervalMs } from "./sse-heartbeat.js";
+import { createSseStream, streamIdleTimeoutMs, streamMaxDurationMs } from "./sse-stream.js";
+import { linkAbortSignals } from "./abort.js";
 
 const CompletionsRequestSchema = z.object({
   model: z.string().min(1),
@@ -101,7 +103,13 @@ export function registerCompletionsHandler(app: AppType, gateway: Gateway): void
       topLogprobs: legacy.topLogprobs,
     };
 
-    const signal = c.get("abortController")?.signal;
+    // Upstream work is cancelled when the request times out, the client
+    // connection goes away, or the SSE response body is cancelled.
+    const upstreamAbort = new AbortController();
+    const signal = linkAbortSignals(upstreamAbort, [
+      c.get("abortController")?.signal,
+      c.req.raw.signal,
+    ]);
     const apiKey = c.get("apiKey");
     const ctx: RequestContext = {
       signal,
@@ -129,36 +137,16 @@ export function registerCompletionsHandler(app: AppType, gateway: Gateway): void
           return handleGatewayError(c, err);
         }
 
-        const heartbeatMs = heartbeatIntervalMs(gateway.getConfig?.()?.server?.sseHeartbeatSeconds);
-        let heartbeat: SseHeartbeat | undefined;
+        const serverCfg = gateway.getConfig?.()?.server;
         return new Response(
-          new ReadableStream({
-            async start(controller) {
-              const encoder = new TextEncoder();
-              heartbeat = startSseHeartbeat(controller, heartbeatMs);
-              try {
-                if (firstChunk !== undefined) {
-                  controller.enqueue(encoder.encode(`data: ${JSON.stringify(firstChunk)}\n\n`));
-                  heartbeat.touch();
-                }
-                for await (const chunk of iterator) {
-                  controller.enqueue(encoder.encode(`data: ${JSON.stringify(chunk)}\n\n`));
-                  heartbeat.touch();
-                }
-                controller.enqueue(encoder.encode("data: [DONE]\n\n"));
-                controller.close();
-              } catch (err) {
-                const message = err instanceof Error ? err.message : String(err);
-                controller.enqueue(encoder.encode(`data: ${JSON.stringify({ error: { message, type: "stream_error" } })}\n\n`));
-                controller.enqueue(encoder.encode("data: [DONE]\n\n"));
-                controller.close();
-              } finally {
-                heartbeat?.stop();
-              }
-            },
-            cancel() {
-              heartbeat?.stop();
-            },
+          createSseStream<StreamChunk>({
+            iterator,
+            firstChunk,
+            serialize: (chunk) => chunk,
+            upstreamAbort,
+            heartbeatMs: heartbeatIntervalMs(serverCfg?.sseHeartbeatSeconds),
+            idleTimeoutMs: streamIdleTimeoutMs(serverCfg?.streamIdleTimeoutSeconds),
+            maxDurationMs: streamMaxDurationMs(serverCfg?.streamMaxDurationSeconds),
           }),
           {
             status: 200,
