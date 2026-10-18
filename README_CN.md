@@ -4,15 +4,47 @@
 
 通过统一的端点将请求路由到 20+ 个 LLM 提供商，支持 4 种路由策略、6 个内置插件（含 PII 与密钥防护）、熔断器、指数退避重试、MCP 智能体工具调用和完整的可观测性。
 
+> **致谢：** 本项目的设计源自 [Ferro Labs AI Gateway](https://github.com/ferro-labs/ai-gateway)（Apache-2.0）。感谢 Ferro Labs 团队；详见 [NOTICE](NOTICE)。
+
 ---
 
 ## 快速开始
 
-### 前置条件
+### 安装
 
-- [Bun](https://bun.sh/) 1? 1.3+
+**Docker 镜像**（linux/amd64、linux/arm64），来自 GitHub Container Registry：
 
-### 安装与运行
+```bash
+docker pull ghcr.io/brokenstring314/ai-gateway:0.2.0   # 或 :0.2、:latest
+docker run -d --name ai-gateway -p 3000:3000 \
+  -v "$PWD/config.yaml:/config/config.yaml:ro" \
+  -v ai-gateway-data:/data \
+  -e OPENAI_API_KEY \
+  ghcr.io/brokenstring314/ai-gateway:0.2.0
+```
+
+镜像的运行要求（生产模式、必须开启 auth）见下文 [Docker](#docker)。
+
+**预编译二进制**（单文件，无需安装 Bun）：从
+[Releases](https://github.com/brokenstring314/ai-gateway/releases) 下载对应平台的压缩包
+（`linux-x64`、`linux-arm64`、`darwin-x64`、`darwin-arm64` 为 `.tar.gz`，
+`windows-x64` 为 `.zip`）。每个压缩包包含 `ai-gateway` 可执行文件、LICENSE、NOTICE、
+README.md 和 `config.example.yaml`。
+
+```bash
+V=0.2.0 P=linux-x64
+curl -LO https://github.com/brokenstring314/ai-gateway/releases/download/v$V/ai-gateway-$V-$P.tar.gz
+curl -LO https://github.com/brokenstring314/ai-gateway/releases/download/v$V/SHA256SUMS
+sha256sum --ignore-missing -c SHA256SUMS
+tar xzf ai-gateway-$V-$P.tar.gz && cd ai-gateway-$V-$P
+./ai-gateway serve -c config.yaml     # 可从 config.example.yaml 改起
+```
+
+二进制未做代码签名。macOS 上请先清除隔离标记：`xattr -d com.apple.quarantine ./ai-gateway`。
+
+**从源码运行**（需要 [Bun](https://bun.sh/) 1.4.3+）：见下文。
+
+### 从源码运行
 
 ```bash
 git clone <仓库地址> && cd ai-gateway-rewrite

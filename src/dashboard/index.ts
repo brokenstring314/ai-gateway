@@ -11,10 +11,13 @@
  * Pages: overview, keys, logs, config, login.
  */
 
-import { readFileSync } from "node:fs";
-import { join } from "node:path";
 import { Hono } from "hono";
 import { html } from "hono/html";
+// Assets are embedded at build time (text imports), so a `bun build --compile`
+// binary serves them without the source tree on disk. console.js resolves as a
+// JS module for tsc (allowJs), hence the cast; at runtime it is the file text.
+import consoleJsText from "./static/console.js" with { type: "text" };
+import consoleCss from "./static/console.css" with { type: "text" };
 
 /** CSP for every console page and asset: same-origin script/style/fetch only. */
 export const CONSOLE_CSP =
@@ -38,21 +41,10 @@ export function routeFor(page: DashboardPage): string {
   return page === "overview" ? "/admin/dashboard" : `/admin/dashboard/${page}`;
 }
 
-const STATIC_DIR = join(import.meta.dir, "static");
-const ASSETS: Record<string, { file: string; type: string }> = {
-  "console.js": { file: "console.js", type: "text/javascript; charset=UTF-8" },
-  "console.css": { file: "console.css", type: "text/css; charset=UTF-8" },
+const ASSETS: Record<string, { body: string; type: string }> = {
+  "console.js": { body: consoleJsText as unknown as string, type: "text/javascript; charset=UTF-8" },
+  "console.css": { body: consoleCss, type: "text/css; charset=UTF-8" },
 };
-const assetCache = new Map<string, string>();
-
-function readAsset(name: string): string {
-  let body = assetCache.get(name);
-  if (body === undefined) {
-    body = readFileSync(join(STATIC_DIR, name), "utf8");
-    assetCache.set(name, body);
-  }
-  return body;
-}
 
 /** Render a console page shell. Contains no gateway data; `productName` is escaped. */
 export function renderDashboardPage(page: DashboardPage, productName = "AI Gateway"): string {
@@ -99,7 +91,7 @@ export function createDashboardApp(options: { productName?: string } = {}): Hono
   app.get("/admin/static/:name", (c) => {
     const asset = ASSETS[c.req.param("name")];
     if (asset === undefined) return c.notFound();
-    return new Response(readAsset(asset.file), { headers: headers(asset.type) });
+    return new Response(asset.body, { headers: headers(asset.type) });
   });
   return app;
 }
