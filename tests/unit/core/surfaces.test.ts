@@ -162,3 +162,14 @@ describe("passthrough HTTP (S3-6)", () => {
     expect(JSON.parse(calls[2]!.body!)).toEqual({ model: "gpt-4o", input: "hi" });
   });
 });
+
+describe("completionsSurface (core/types Surface)", () => {
+  it("is a chat-capability surface that round-trips the plugin view", async () => {
+    const { completionsSurface: s } = await import("@/core/surfaces/completions");
+    const req = { model: "m", messages: [{ role: "user" as const, content: "hi" }], maxTokens: 3 };
+    expect(s.name).toBe("completions");
+    expect(s.capability).toBe("chat");
+    expect(s.withModel(req, "x").model).toBe("x");
+    expect(s.applyPluginView(req, { ...s.toPluginView(req), maxTokens: 2 }).maxTokens).toBe(2);
+  });
+});

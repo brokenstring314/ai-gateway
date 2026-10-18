@@ -16,7 +16,8 @@
  */
 
 import { z } from "zod";
-import type { ChatCompletionRequest, ChatCompletionResponse, Choice, StreamChunk } from "../../providers/types.js";
+import type { ChatCompletionRequest, ChatCompletionResponse, Choice, IProvider, IStreamProvider, StreamChunk } from "../../providers/types.js";
+import type { Surface } from "../types.js";
 import { REQUEST_EXTRA_KEYS, applyExtras, isJsonObject, pickExtras } from "../../providers/wire-extras.js";
 import { toOpenAIWireUsage } from "../../handlers/openai-wire.js";
 
@@ -221,3 +222,37 @@ export function createTextCompletionStreamSerializer(): (chunk: StreamChunk) => 
     return applyExtras(out, chunk.extra);
   };
 }
+
+// ── Surface (core/types.ts) ──
+
+function isStreamProvider(p: IProvider): p is IStreamProvider {
+  return typeof (p as Partial<IStreamProvider>).completeStream === "function";
+}
+
+/**
+ * Pipeline surface for /v1/completions. The request is already mapped to a
+ * chat request by parseCompletionsRequest, so upstream calls, plugins and
+ * usage are chat's; only the wire shape (serializers above) differs.
+ */
+export const completionsSurface: Surface<ChatCompletionRequest, ChatCompletionResponse, StreamChunk> = {
+  name: "completions",
+  capability: "chat",
+  logLabel: "completions",
+  candidates: "strategy",
+  model: (req) => req.model,
+  withModel: (req, model) => ({ ...req, model }),
+  toPluginView: (req) => req,
+  applyPluginView: (_req, view) => view,
+  supports: (p) => typeof p.complete === "function",
+  call: (p, ctx, req) => p.complete(ctx, req),
+  callStream(p, ctx, req) {
+    if (!isStreamProvider(p)) throw new Error(`provider ${p.name} does not support streaming`);
+    return p.completeStream(ctx, req);
+  },
+  usage: (res) => res.usage,
+  toPluginResponse: (res) => res,
+  fromPluginResponse: (_res, view) => view,
+  // A short-circuit answers with a chat response, which the serializer
+  // renders as a text_completion like any other.
+  fromShortCircuit: (pc) => pc.response,
+};
