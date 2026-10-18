@@ -1274,3 +1274,9 @@ bun run test:watch
 | 每目标并发限制                             | 不包含（使用熔断器替代）                      |
 | 模型目录 / 动态发现                         | 仅静态配置                             |
 | 配置文件监视                              | 不支持：改文件后重启                   |
+
+## 许可证
+
+Apache License 2.0，见 [LICENSE](LICENSE)。
+
+本项目的设计源自 [Ferro Labs AI Gateway](https://github.com/ferro-labs/ai-gateway)（Apache-2.0），署名保留在 [NOTICE](NOTICE)。

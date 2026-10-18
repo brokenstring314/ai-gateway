@@ -16,7 +16,7 @@ ENV NODE_ENV=production \
     GATEWAY_ENV=production \
     GATEWAY_DATA_DIR=/data
 COPY --from=deps /app/node_modules ./node_modules
-COPY package.json tsconfig.json ./
+COPY package.json tsconfig.json LICENSE NOTICE ./
 COPY src ./src
 # uid/gid 1000 = the image's "bun" user; numeric so runAsNonRoot can verify it.
 RUN mkdir -p /data /config && chown -R 1000:1000 /data

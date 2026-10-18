@@ -1,0 +1,15 @@
+ai-gateway
+Copyright 2026 brokenstring314
+
+This product is licensed under the Apache License, Version 2.0 (see LICENSE).
+
+This project is a TypeScript rewrite whose architecture, configuration format,
+routing strategies, plugin model and guardrail designs are derived from:
+
+  Ferro Labs AI Gateway
+  https://github.com/ferro-labs/ai-gateway
+  Copyright Ferro Labs and its contributors
+  Licensed under the Apache License, Version 2.0
+
+No source files were copied verbatim; the work above is credited here as the
+origin of the design, as required by Section 4 of the Apache License 2.0.
