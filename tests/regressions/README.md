@@ -1,9 +1,11 @@
-# Known-open bug repros
+# Bug-hunt repros (now regression tests)
 
-Imported from the round-3 bug hunt (core / stream / sec). Every repro of a bug
-that is still open is marked `it.failing(...)`: bun reports it as passing while
-the bug reproduces, and **fails the run once the bug is fixed**. The fix PR
-must flip the case to `it(...)` (it then becomes a regression test).
+Imported from the round-3 bug hunt (core / stream / sec). **Every bug below is
+fixed and no `it.failing(...)` case is left** in `tests/regressions/` or
+`tests/e2e/`. The convention for new repros stays: a repro of a bug that is
+still open is marked `it.failing(...)` (bun reports it as passing while the
+bug reproduces and **fails the run once the bug is fixed**); the fix PR flips
+it to `it(...)`, which makes it a regression test.
 Repros of bugs already fixed were not imported; they have their own regression
 tests under `tests/unit/`. A few plain `it(...)` cases are sanity guards that
 pass today and must keep passing (including core/baseurl-envref-rejected, C3-10,
@@ -32,4 +34,4 @@ item were fixed in 2.1; their e2e cases in `tests/e2e/errors.e2e.ts` are plain
 (`tests/e2e/chat.e2e.ts`) were fixed in 2.6 and are plain `it` too.
 
 Black-box findings (B3-*) are covered by the e2e contract suite in `tests/e2e/`
-(`bun run test:e2e`), also with `it.failing` for the open ones.
+(`bun run test:e2e`); all of its cases are plain `it` as well.
