@@ -41,6 +41,7 @@ import { retryWithBackoff, RetryExhaustedError } from "../routing/retry.js";
 import { classifyAttemptError, isFailoverEligible, isTimeoutAbort } from "./outcome.js";
 import { GatewayError, gatewayTimeout, mostMeaningful } from "./errors.js";
 import { ReadableStreamError } from "../providers/sse-parser.js";
+import type { StreamPlan } from "./stream-runner.js";
 
 export type ProviderLookup = (name: string) => IProvider | undefined;
 
@@ -356,4 +357,20 @@ export async function* streamChat(
     (p) => (p as IProvider & IStreamProvider).completeStream(ctx, req),
     strategyRunOptions(strategy, true, candidates.length, onServed),
   );
+}
+
+/** Streaming chat over the strategy's candidates, as a stream-runner plan (core/stream-runner executeStream). */
+export function chatStreamPlan(
+  executor: TargetExecutor,
+  strategy: IStrategy,
+  ctx: RequestContext,
+  req: ChatCompletionRequest,
+): StreamPlan<StreamChunk> {
+  const candidates = strategy.selectTargets(req);
+  return {
+    executor,
+    candidates,
+    open: (p) => (p as IProvider & IStreamProvider).completeStream(ctx, req),
+    run: strategyRunOptions(strategy, true, candidates.length),
+  };
 }

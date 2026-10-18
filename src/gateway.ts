@@ -44,7 +44,9 @@ import { getRequestLogger } from "./observability/request-log.js";
 import { McpRegistry } from "./mcp/registry.js";
 import { McpExecutor } from "./mcp/executor.js";
 import { CircuitBreakerRegistry, CircuitOpenError } from "./routing/circuit-breaker.js";
-import { TargetExecutor, executeChat, streamChat } from "./core/executor.js";
+import { TargetExecutor, chatStreamPlan, executeChat } from "./core/executor.js";
+import { executeStream, iterateStream } from "./core/stream-runner.js";
+import type { StreamEnd } from "./core/types.js";
 import {
   ConcurrencyLimiterRegistry,
   ConcurrencyLimitError,
@@ -123,7 +125,6 @@ export class Gateway {
   /** Runs strategy-ordered candidates: breaker, limiter, retry, failover (core/executor.ts). */
   private readonly executor: TargetExecutor;
   /** Target that produced each in-flight stream (first chunk), for stream logs / metrics. */
-  private readonly streamServedBy = new WeakMap<RequestContext, string>();
 
   constructor(config: GatewayConfig) {
     // Embedded configs skip the schema: same cross-reference checks as validate/startup.
@@ -397,31 +398,20 @@ export class Gateway {
       usage: undefined,
       chunks: 0,
     };
-    let streamError: Error | undefined;
-    let finalized = false;
-    const finalize = async (): Promise<void> => {
-      if (finalized) return;
-      finalized = true;
-      try {
-        await this.finalizeStream(ctx, req, finalReq, pluginCtx, acc, streamError, startTime);
-      } catch (err) {
-        console.error(`[gateway] stream finalization failed: ${err instanceof Error ? err.message : String(err)}`);
-      }
-    };
-
-    // Breaker, limiter, retry and failover per candidate: core/executor.ts.
-    try {
-      for await (const chunk of this.streamCandidates(ctx, finalReq)) {
-        accumulateChunk(acc, chunk);
-        yield chunk;
-      }
-    } catch (err) {
-      const translated = this.translateConcurrencyError(err);
-      streamError = translated instanceof Error ? translated : new Error(String(translated));
-      throw translated;
-    } finally {
-      tracer.endSpan(span);
-      await finalize();
+    // Breaker, limiter, retry and failover before the first chunk:
+    // core/executor.ts; first chunk, StreamEnd and finalize-once:
+    // core/stream-runner.ts.
+    const mapError = (err: unknown): unknown => this.translateConcurrencyError(err);
+    const result = await executeStream(ctx, chatStreamPlan(this.executor, this.strategy, ctx, finalReq), {
+      mapError,
+      finalize: async (end, target) => {
+        tracer.endSpan(span);
+        await this.finalizeStream(ctx, req, finalReq, pluginCtx, acc, streamErrorOf(end, acc.chunks), startTime, target);
+      },
+    });
+    for await (const chunk of iterateStream(result, ctx?.signal, mapError)) {
+      accumulateChunk(acc, chunk);
+      yield chunk;
     }
   }
 
@@ -439,11 +429,12 @@ export class Gateway {
     acc: StreamAccumulator,
     streamError: Error | undefined,
     startTime: number,
+    target: string | undefined,
   ): Promise<void> {
     const metrics = getMetrics();
     const logger = getRequestLogger();
     const durationMs = Date.now() - startTime;
-    const provider = (ctx !== null && typeof ctx === "object" ? this.streamServedBy.get(ctx) : undefined) ?? "unknown";
+    const provider = target ?? "unknown";
 
     if (streamError && acc.chunks === 0) {
       // Failed before any output: same accounting as a failed route().
@@ -871,14 +862,6 @@ export class Gateway {
     }
   }
 
-  /** Strategy-ordered candidates through the executor (streaming chat). */
-  private streamCandidates(ctx: RequestContext, req: ChatCompletionRequest): AsyncGenerator<StreamChunk> {
-    const servedBy = this.streamServedBy;
-    return streamChat(this.executor, this.strategy, ctx, req, (name) => {
-      if (ctx !== null && typeof ctx === "object") servedBy.set(ctx, name);
-    });
-  }
-
   private resolveAlias(req: ChatCompletionRequest): ChatCompletionRequest {
     const alias = this.aliases[req.model];
     if (alias) {
@@ -901,6 +884,17 @@ interface StreamAccumulator {
   finishReason: string;
   usage: Usage | undefined;
   chunks: number;
+}
+
+/**
+ * The error finalize records for a stream end: none for a completed stream
+ * or a client that went away after output; otherwise the end's error.
+ */
+function streamErrorOf(end: StreamEnd, chunks: number): Error | undefined {
+  if (end.reason === "done") return undefined;
+  if (end.reason === "client_cancel" && chunks > 0 && end.error === undefined) return undefined;
+  const err = end.error ?? new Error(`stream ended: ${end.reason}`);
+  return err instanceof Error ? err : new Error(String(err));
 }
 
 function accumulateChunk(acc: StreamAccumulator, chunk: StreamChunk): void {
