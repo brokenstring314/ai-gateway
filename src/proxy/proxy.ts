@@ -12,7 +12,9 @@
  *   - upstream status/headers/body are passed through verbatim, including
  *     streaming ReadableStream bodies
  *   - upstream transport failures become stable OpenAI error JSON (502)
- *     without leaking internal error text
+ *     without leaking internal error text; the gateway's request timeout
+ *     becomes 504 timeout_error, and a client that went away gets 499
+ *     (client_closed_request) instead of being reported as an upstream error
  *
  * Proxy-route auth (proxyAuthMiddleware / createProxyHandler) follows the Go
  * convention: auth is required by default, ALLOW_UNAUTHENTICATED_PROXY opens
@@ -23,6 +25,7 @@ import type { Context, Handler, MiddlewareHandler } from "hono";
 import type { TargetConfig } from "@/config/types";
 import type { KeyStore } from "@/persistence/key-store";
 import { timingSafeEqual } from "@/auth/key-hash";
+import { isTimeoutAbort, isTimeoutError } from "@/routing/outcome";
 
 // ── Types ──
 
@@ -503,13 +506,18 @@ export function createProxyHandler(options: ProxyHandlerOptions): Handler<ProxyE
 
     const headers = buildForwardHeaders(c.req.raw.headers, target);
 
-    // Propagate the request-timeout middleware's abort, falling back to the
-    // incoming request's own signal when running without the middleware.
+    // Abort the upstream fetch on the request-timeout middleware's abort
+    // (reason TimeoutError) and on the client disconnecting (the incoming
+    // request's own signal), whichever comes first.
     const abortController = (c.get as unknown as (key: string) => unknown)("abortController");
+    const timeoutSignal =
+      abortController instanceof AbortController ? abortController.signal : undefined;
+    const clientSignal = c.req.raw.signal as AbortSignal | undefined;
+    const sources = [timeoutSignal, clientSignal].filter(
+      (s): s is AbortSignal => s !== undefined,
+    );
     const signal =
-      abortController instanceof AbortController
-        ? abortController.signal
-        : c.req.raw.signal;
+      sources.length > 1 ? AbortSignal.any(sources) : sources[0];
 
     let upstream: Response;
     try {
@@ -520,7 +528,16 @@ export function createProxyHandler(options: ProxyHandlerOptions): Handler<ProxyE
         redirect: "manual",
         signal,
       });
-    } catch {
+    } catch (err) {
+      // The gateway's own request timeout fired: 504, like the typed routes.
+      if (isTimeoutAbort(timeoutSignal) || isTimeoutError(err)) {
+        return openAIErrorResponse(504, "Upstream request timed out", "timeout_error", "gateway_timeout");
+      }
+      // The client went away: not an upstream failure. Nobody reads this
+      // response; 499 keeps it out of the 5xx / upstream-error accounting.
+      if (clientSignal?.aborted || timeoutSignal?.aborted) {
+        return openAIErrorResponse(499, "client closed request", "client_closed_request", "client_closed_request");
+      }
       // Generic, stable error — never expose internal error text/stack.
       return openAIErrorResponse(502, "upstream connection failed", "server_error", "upstream_error");
     }
