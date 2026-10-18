@@ -53,6 +53,25 @@ curl http://localhost:3000/v1/chat/completions \
   }'
 ```
 
+### Docker
+
+```bash
+docker build -t ai-gateway .
+docker run -d --name ai-gateway -p 3000:3000 \
+  -v "$PWD/config.yaml:/config/config.yaml:ro" \
+  -v ai-gateway-data:/data \
+  -e OPENAI_API_KEY \
+  ai-gateway
+```
+
+镜像以非 root 用户（uid 1000）在 `tini` 下运行，并设置 `GATEWAY_ENV=production`
+（配置必须开启 auth 且至少有一个 key；`adminSecret` 至少 16 个字符）和
+`GATEWAY_DATA_DIR=/data`（API key 与请求日志；挂载 volume 以持久化）。配置文件挂载到
+`/config/config.yaml`（只读即可）。内置 `HEALTHCHECK` 探测 3000 端口的 `/livez`；
+负载均衡 / k8s readiness 请用 `/readyz`。`docker stop` 发送 SIGTERM：`/readyz` 变为 503，
+不再接受新连接，进行中的请求在 `SHUTDOWN_GRACE_MS`（默认 10000）内排空。
+CI 用 `scripts/docker-smoke.sh <image>` 对镜像做冒烟测试。
+
 ---
 
 ## CLI 命令参考
