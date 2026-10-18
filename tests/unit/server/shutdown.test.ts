@@ -132,7 +132,7 @@ describe("ShutdownManager", () => {
     const exits: number[] = [];
     const cleanup = manager.installSignalHandlers((code) => exits.push(code));
     process.emit("SIGINT");
-    for (let i = 0; i < 20 && component.close.mock.calls.length === 0; i++) {
+    for (let i = 0; i < 20 && (component.close as unknown as { mock: { calls: unknown[] } }).mock.calls.length === 0; i++) {
       await new Promise((resolve) => setTimeout(resolve, 5));
     }
     expect(component.close).toHaveBeenCalledTimes(1);

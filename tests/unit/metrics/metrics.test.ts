@@ -437,18 +437,18 @@ describe("Metrics", () => {
 
     const reqs = samples.get(`${PREFIX}_requests_total`) ?? [];
     const injected = reqs.find(
-      (s) => s.labels.method === "POST" && s.labels.status === "200",
+      (s) => s.labels["method"] === "POST" && s.labels["status"] === "200",
     );
     expect(injected).toBeDefined();
-    expect(injected?.labels.provider).toBe(
+    expect(injected?.labels["provider"]).toBe(
       "openai_}_# TYPE evil counter_  }",
     );
 
-    const longOne = reqs.find((s) => s.labels.method === "GET");
-    expect(longOne?.labels.provider?.startsWith("openai with a very long name")).toBe(
+    const longOne = reqs.find((s) => s.labels["method"] === "GET");
+    expect(longOne?.labels["provider"]?.startsWith("openai with a very long name")).toBe(
       true,
     );
-    expect(longOne?.labels.provider?.length).toBe(64);
+    expect(longOne?.labels["provider"]?.length).toBe(64);
   });
 
   it("clamps invalid numeric inputs to zero", async () => {

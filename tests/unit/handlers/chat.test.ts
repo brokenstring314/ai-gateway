@@ -50,7 +50,7 @@ describe("Chat handler", () => {
     });
 
     expect(res.status).toBe(200);
-    const body = await res.json();
+    const body = (await res.json()) as TestJson;
     expect(body.id).toBe("resp-1");
   });
 
@@ -99,7 +99,7 @@ describe("Chat handler", () => {
     });
 
     expect(res.status).toBe(400);
-    const body = await res.json();
+    const body = (await res.json()) as TestJson;
     expect(body.error.code).toBe("invalid_json");
   });
 
@@ -118,7 +118,7 @@ describe("Chat handler", () => {
     });
 
     expect(res.status).toBe(400);
-    const body = await res.json();
+    const body = (await res.json()) as TestJson;
     expect(body.error.code).toBe("validation_failed");
   });
 
@@ -161,7 +161,7 @@ describe("Chat handler", () => {
     });
 
     expect(res.status).toBe(403);
-    const body = await res.json();
+    const body = (await res.json()) as TestJson;
     expect(body.error.type).toBe("plugin_rejection");
   });
 

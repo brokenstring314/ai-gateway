@@ -15,7 +15,7 @@ function prov(name: string, stream: () => AsyncGenerator<StreamChunk>): IProvide
 }
 async function run(s: BoundStrategy<FallbackStrategy>) {
   const out: string[] = []; let err: unknown = null;
-  try { for await (const c of s.executeStream({} as any, req)) out.push(c.choices[0]!.delta.content as string); } catch (e) { err = e; }
+  try { for await (const c of s.executeStream({} as any, req)) out.push(c.choices[0]!.delta?.content as string); } catch (e) { err = e; }
   return { out, err };
 }
 

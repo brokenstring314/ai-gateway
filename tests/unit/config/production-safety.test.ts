@@ -9,8 +9,8 @@ import {
 const ENV_KEYS = ["GATEWAY_ENV", "ALLOW_UNAUTHENTICATED_PROXY"] as const;
 
 const savedEnv: Record<(typeof ENV_KEYS)[number], string | undefined> = {
-  GATEWAY_ENV: process.env.GATEWAY_ENV,
-  ALLOW_UNAUTHENTICATED_PROXY: process.env.ALLOW_UNAUTHENTICATED_PROXY,
+  GATEWAY_ENV: process.env["GATEWAY_ENV"],
+  ALLOW_UNAUTHENTICATED_PROXY: process.env["ALLOW_UNAUTHENTICATED_PROXY"],
 };
 
 afterEach(() => {
@@ -149,29 +149,29 @@ describe("validateProductionSafety", () => {
 
 describe("isProductionMode", () => {
   it("returns true when GATEWAY_ENV is production", () => {
-    process.env.GATEWAY_ENV = "production";
+    process.env["GATEWAY_ENV"] = "production";
     expect(isProductionMode()).toBe(true);
   });
 
   it("returns false when GATEWAY_ENV is unset", () => {
-    delete process.env.GATEWAY_ENV;
+    delete process.env["GATEWAY_ENV"];
     expect(isProductionMode()).toBe(false);
   });
 });
 
 describe("parseAllowUnauthenticatedProxy", () => {
   it("returns true when ALLOW_UNAUTHENTICATED_PROXY is true", () => {
-    process.env.ALLOW_UNAUTHENTICATED_PROXY = "true";
+    process.env["ALLOW_UNAUTHENTICATED_PROXY"] = "true";
     expect(parseAllowUnauthenticatedProxy()).toBe(true);
   });
 
   it("returns false for any other value", () => {
-    process.env.ALLOW_UNAUTHENTICATED_PROXY = "false";
+    process.env["ALLOW_UNAUTHENTICATED_PROXY"] = "false";
     expect(parseAllowUnauthenticatedProxy()).toBe(false);
   });
 
   it("returns false when ALLOW_UNAUTHENTICATED_PROXY is unset", () => {
-    delete process.env.ALLOW_UNAUTHENTICATED_PROXY;
+    delete process.env["ALLOW_UNAUTHENTICATED_PROXY"];
     expect(parseAllowUnauthenticatedProxy()).toBe(false);
   });
 });

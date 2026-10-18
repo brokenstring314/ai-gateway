@@ -348,7 +348,7 @@ describe("createOpenAICompatProvider", () => {
       }
 
       expect(chunks).toHaveLength(2);
-      expect((chunks[0] as Record<string, unknown>).choices).toBeDefined();
+      expect((chunks[0] as Record<string, unknown>)["choices"]).toBeDefined();
     });
 
     it("sets stream: true in the request", async () => {
@@ -371,7 +371,7 @@ describe("createOpenAICompatProvider", () => {
       mockFetch(500, { error: { message: "Internal error" } });
 
       const p = makeProvider();
-      const iter = p.completeStream(makeCtx(), makeRequest());
+      const iter = p.completeStream(makeCtx(), makeRequest())[Symbol.asyncIterator]();
       await expect(iter.next()).rejects.toThrow(ProviderError);
     });
 

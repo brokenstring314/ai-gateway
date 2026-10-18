@@ -81,7 +81,7 @@ describe("capabilities keyed on target.provider + compatibility wired (T3-8)", (
       maxCompletionTokens: 5, presencePenalty: 1, topLogprobs: 2, streamOptions: { includeUsage: true }, temperature: 1,
     } as never, "drop");
     expect(res.action).toBe("dropped");
-    const req = (res as { request: Record<string, unknown> }).request;
+    const req = (res as unknown as { request: Record<string, unknown> }).request;
     for (const k of ["toolChoice", "responseFormat", "maxCompletionTokens", "presencePenalty", "topLogprobs", "streamOptions"]) {
       expect(req[k]).toBeUndefined();
     }
@@ -93,7 +93,7 @@ describe("capabilities keyed on target.provider + compatibility wired (T3-8)", (
     const rej = enforceUnsupportedParams("ollama", req, "reject");
     expect(rej.action).toBe("rejected");
     expect((rej as { reason: string }).reason).toContain("developer_role");
-    const drop = enforceUnsupportedParams("ollama", req, "drop") as { request: { messages: Array<{ role: string }> } };
+    const drop = enforceUnsupportedParams("ollama", req, "drop") as unknown as { request: { messages: Array<{ role: string }> } };
     expect(drop.request.messages[0]!.role).toBe("system");
     expect(enforceUnsupportedParams("openai", req, "reject").action).toBe("ok");
   });

@@ -28,7 +28,7 @@ function toolResponse(...names: string[]): ChatCompletionResponse {
         toolCalls: names.map((name, i) => ({ id: `call_${i}`, type: "function" as const, function: { name, arguments: "{}" } })),
       },
     }],
-  } as ChatCompletionResponse;
+  } as unknown as ChatCompletionResponse;
 }
 
 function countingStrategy(): { strategy: ChatCompleter & { mode?: string; selectTargets?: () => string[] }; calls: () => number } {

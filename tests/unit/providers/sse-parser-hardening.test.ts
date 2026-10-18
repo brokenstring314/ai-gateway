@@ -22,7 +22,7 @@ function streamOf(parts: string[], onCancel?: () => void): ReadableStream<Uint8A
 
 async function collect(s: ReadableStream<Uint8Array>): Promise<string[]> {
   const out: string[] = [];
-  for await (const c of parseSSEStream(s)) out.push(c.choices.map((x) => x.delta.content ?? "").join("|"));
+  for await (const c of parseSSEStream(s)) out.push(c.choices.map((x) => x.delta?.content ?? "").join("|"));
   return out;
 }
 
@@ -54,7 +54,7 @@ describe("truncation", () => {
     const out: string[] = [];
     let err: unknown;
     try {
-      for await (const c of parseSSEStream(streamOf([`${ev("The answer is")}\n\n`]))) out.push(c.choices[0]!.delta.content!);
+      for await (const c of parseSSEStream(streamOf([`${ev("The answer is")}\n\n`]))) out.push(c.choices[0]!.delta!.content as string);
     } catch (e) {
       err = e;
     }
@@ -91,7 +91,7 @@ describe("chunkFromJsonBody (200 JSON on a stream request)", () => {
   it("chat.completion becomes one complete chunk", () => {
     const c = chunkFromJsonBody(JSON.stringify({ id: "x", object: "chat.completion", model: "m", choices: [{ index: 0, message: { role: "assistant", content: "real answer" }, finish_reason: "stop" }], usage: { prompt_tokens: 1, completion_tokens: 2, total_tokens: 3 } }));
     expect(c.object).toBe("chat.completion.chunk");
-    expect(c.choices[0]!.delta.content).toBe("real answer");
+    expect(c.choices[0]!.delta?.content).toBe("real answer");
     expect(c.choices[0]!.finishReason).toBe("stop");
     expect(c.usage?.totalTokens).toBe(3);
   });

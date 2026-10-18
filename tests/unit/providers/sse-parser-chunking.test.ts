@@ -11,7 +11,7 @@ function streamOf(parts: string[]): ReadableStream<Uint8Array> {
 }
 const ev = (content: string, finish?: string) => JSON.stringify({ id: "1", choices: [{ index: 0, delta: { content }, ...(finish ? { finish_reason: finish } : {}) }] });
 const DONE = "data: [DONE]\n\n";
-async function collect(s: ReadableStream<Uint8Array>) { const out: string[] = []; for await (const c of parseSSEStream(s)) out.push(c.choices[0]?.delta.content ?? ""); return out; }
+async function collect(s: ReadableStream<Uint8Array>) { const out: string[] = []; for await (const c of parseSSEStream(s)) out.push((c.choices[0]?.delta?.content as string | undefined) ?? ""); return out; }
 
 describe("parseSSEStream chunk boundaries", () => {
   it("keeps an event whose blank-line terminator arrives in the next read", async () => {

@@ -59,7 +59,7 @@ describe("embeddings / images parameters", () => {
       req.signal.addEventListener("abort", () => { upstreamAborted = true; resolve(new Response("gone", { status: 499 })); });
     }));
     const client = new AbortController();
-    const pending = post(app(up.url), "/v1/embeddings", { model: "e", input: "x" }, { signal: client.signal }).catch(() => undefined);
+    const pending = Promise.resolve(post(app(up.url), "/v1/embeddings", { model: "e", input: "x" }, { signal: client.signal })).catch(() => undefined);
     await Bun.sleep(50);
     client.abort();
     await pending;

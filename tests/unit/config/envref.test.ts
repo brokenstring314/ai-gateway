@@ -9,22 +9,22 @@ import {
 
 describe("expandEnvRefs", () => {
   it("resolves a single ${VAR} reference", () => {
-    process.env._ENVREF_TEST_HOME = "/home/user";
+    process.env["_ENVREF_TEST_HOME"] = "/home/user";
     try {
       expect(expandEnvRefs("${_ENVREF_TEST_HOME}")).toBe("/home/user");
     } finally {
-      delete process.env._ENVREF_TEST_HOME;
+      delete process.env["_ENVREF_TEST_HOME"];
     }
   });
 
   it("resolves multiple references in one string", () => {
-    process.env._ENVREF_TEST_HOST = "localhost";
-    process.env._ENVREF_TEST_PORT = "8080";
+    process.env["_ENVREF_TEST_HOST"] = "localhost";
+    process.env["_ENVREF_TEST_PORT"] = "8080";
     try {
       expect(expandEnvRefs("${_ENVREF_TEST_HOST}:${_ENVREF_TEST_PORT}")).toBe("localhost:8080");
     } finally {
-      delete process.env._ENVREF_TEST_HOST;
-      delete process.env._ENVREF_TEST_PORT;
+      delete process.env["_ENVREF_TEST_HOST"];
+      delete process.env["_ENVREF_TEST_PORT"];
     }
   });
 
@@ -50,12 +50,12 @@ describe("expandEnvRefs", () => {
 
   it("throws EnvRefError for undefined variable", () => {
     // Ensure the variable does not exist
-    delete process.env._ENVREF_TEST_UNDEFINED_VAR;
+    delete process.env["_ENVREF_TEST_UNDEFINED_VAR"];
     expect(() => expandEnvRefs("${_ENVREF_TEST_UNDEFINED_VAR}")).toThrow(EnvRefError);
   });
 
   it("EnvRefError contains the variable name", () => {
-    delete process.env._ENVREF_TEST_MISSING_XYZ;
+    delete process.env["_ENVREF_TEST_MISSING_XYZ"];
     try {
       expandEnvRefs("${_ENVREF_TEST_MISSING_XYZ}");
     } catch (err) {
@@ -65,32 +65,32 @@ describe("expandEnvRefs", () => {
   });
 
   it("resolves inner braced reference in ${${VAR}} — outer braces become literal", () => {
-    process.env._ENVREF_TEST_OUTER = "resolved";
+    process.env["_ENVREF_TEST_OUTER"] = "resolved";
     try {
       // The regex matches ${_ENVREF_TEST_OUTER} inside the outer braces,
       // producing "${resolved}" — the outer braces are literal after inner expansion.
       // Go behaves the same: only ${VAR} is a reference, so the inner match resolves.
       expect(expandEnvRefs("${${_ENVREF_TEST_OUTER}}")).toBe("${resolved}");
     } finally {
-      delete process.env._ENVREF_TEST_OUTER;
+      delete process.env["_ENVREF_TEST_OUTER"];
     }
   });
 
   it("mixes literal text with references", () => {
-    process.env._ENVREF_TEST_KEY = "secret123";
+    process.env["_ENVREF_TEST_KEY"] = "secret123";
     try {
       expect(expandEnvRefs("Bearer ${_ENVREF_TEST_KEY}")).toBe("Bearer secret123");
     } finally {
-      delete process.env._ENVREF_TEST_KEY;
+      delete process.env["_ENVREF_TEST_KEY"];
     }
   });
 
   it("resolves reference with underscore and digits in name", () => {
-    process.env._ENVREF_TEST_VAR_2 = "value";
+    process.env["_ENVREF_TEST_VAR_2"] = "value";
     try {
       expect(expandEnvRefs("${_ENVREF_TEST_VAR_2}")).toBe("value");
     } finally {
-      delete process.env._ENVREF_TEST_VAR_2;
+      delete process.env["_ENVREF_TEST_VAR_2"];
     }
   });
 });
@@ -111,8 +111,8 @@ describe("templateForm", () => {
 
 describe("expandStringMap", () => {
   beforeEach(() => {
-    process.env._ENVREF_TEST_A = "alpha";
-    process.env._ENVREF_TEST_B = "beta";
+    process.env["_ENVREF_TEST_A"] = "alpha";
+    process.env["_ENVREF_TEST_B"] = "beta";
   });
 
   it("expands each value in the map", () => {
@@ -136,7 +136,7 @@ describe("expandStringMap", () => {
   });
 
   it("throws EnvRefError for undefined variable in any value", () => {
-    delete process.env._ENVREF_TEST_UNDEFINED;
+    delete process.env["_ENVREF_TEST_UNDEFINED"];
     expect(() =>
       expandStringMap({ ok: "${_ENVREF_TEST_A}", bad: "${_ENVREF_TEST_UNDEFINED}" }),
     ).toThrow(EnvRefError);
@@ -145,8 +145,8 @@ describe("expandStringMap", () => {
 
 describe("expandAnyMap", () => {
   beforeEach(() => {
-    process.env._ENVREF_TEST_X = "ex";
-    process.env._ENVREF_TEST_Y = "why";
+    process.env["_ENVREF_TEST_X"] = "ex";
+    process.env["_ENVREF_TEST_Y"] = "why";
   });
 
   it("expands strings in nested objects", () => {
@@ -199,7 +199,7 @@ describe("expandAnyMap", () => {
   });
 
   it("throws EnvRefError for undefined variable deep in structure", () => {
-    delete process.env._ENVREF_TEST_MISSING_DEEP;
+    delete process.env["_ENVREF_TEST_MISSING_DEEP"];
     const input = { nested: { key: "${_ENVREF_TEST_MISSING_DEEP}" } };
     expect(() => expandAnyMap(input)).toThrow(EnvRefError);
   });

@@ -12,6 +12,7 @@ import {
   passthroughTokenField,
 } from "@/core/surfaces/passthrough";
 import { attachWireRequestExtras } from "@/handlers/openai-wire";
+import type { ChatCompletionRequest } from "@/providers/types";
 import { normalizeWireUsage, pickExtras } from "@/providers/wire-extras";
 import { Gateway } from "@/gateway";
 import { createApp } from "@/app";
@@ -68,7 +69,7 @@ describe("wire pass-through allow-list (T3-9 fields, T3-11)", () => {
     });
   });
   it("request + message extras are re-attached after schema validation", () => {
-    const req = attachWireRequestExtras(
+    const req: ChatCompletionRequest = attachWireRequestExtras(
       { reasoning_effort: "low", messages: [{ role: "assistant", content: "a", reasoning_content: "r" }, { role: "user", content: "b" }] },
       { model: "m", messages: [{ role: "assistant" as const, content: "a" }, { role: "user" as const, content: "b" }] },
     );

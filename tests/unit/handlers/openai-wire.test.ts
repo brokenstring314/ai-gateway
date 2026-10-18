@@ -116,7 +116,7 @@ describe("OpenAI wire format — request (snake_case in)", () => {
     await res.text();
     const req = calls[0]!;
     expect(req.streamOptions).toEqual({ includeUsage: true });
-    const parts = req.messages[0]!.content as { imageUrl?: { url: string; detail?: string } }[];
+    const parts = req.messages[0]!.content as unknown as { imageUrl?: { url: string; detail?: string } }[];
     expect(parts[1]!.imageUrl).toEqual({ url: "https://x/y.png", detail: "low" });
     expect(req.messages[1]!.toolCalls?.[0]?.id).toBe("c1");
     expect(req.messages[1]!.content).toBeUndefined();

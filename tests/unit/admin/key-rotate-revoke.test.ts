@@ -46,7 +46,7 @@ describe("key revoke and rotate", () => {
     const app = createAdminApp(keyStore);
     const res = await app.request(`/keys/${created.id}/revoke`, { method: "POST" });
     expect(res.status).toBe(200);
-    const body = await res.json();
+    const body = (await res.json()) as TestJson;
     expect(body.revoked).toBe(true);
     const stored = keyStore.get(created.id);
     expect(stored?.active).toBe(false);
@@ -65,7 +65,7 @@ describe("key revoke and rotate", () => {
     const app = createAdminApp(keyStore);
     const res = await app.request(`/keys/${created.id}/rotate`, { method: "POST" });
     expect(res.status).toBe(200);
-    const body = await res.json();
+    const body = (await res.json()) as TestJson;
     expect(body.key.startsWith("fgw_")).toBe(true);
     expect(body.key).not.toBe(originalKey);
   });
@@ -82,7 +82,7 @@ describe("key revoke and rotate", () => {
     const created = keyStore.create("rot-key", ["admin"]);
     const app = createAdminApp(keyStore);
     const res = await app.request(`/keys/${created.id}/rotate`, { method: "POST" });
-    const body = await res.json();
+    const body = (await res.json()) as TestJson;
     const validated = keyStore.validateKey(body.key);
     expect(validated).not.toBeNull();
     expect(validated?.id).toBe(created.id);
@@ -104,10 +104,10 @@ describe("key revoke and rotate", () => {
     const app = createAdminApp(keyStore);
     const res = await app.request("/keys/usage");
     expect(res.status).toBe(200);
-    const body = await res.json();
+    const body = (await res.json()) as TestJson;
     expect(body.totalKeys).toBe(2);
     expect(body.totalUsageCount).toBe(3);
-    const byId = new Map(body.keys.map((k: { id: string; usageCount: number }) => [k.id, k]));
+    const byId = new Map<string, { id: string; name: string; usageCount: number }>(body.keys.map((k: { id: string; name: string; usageCount: number }) => [k.id, k]));
     expect(byId.get(a.id)?.usageCount).toBe(2);
     expect(byId.get(b.id)?.usageCount).toBe(1);
     expect(byId.get(a.id)?.name).toBe("key-a");

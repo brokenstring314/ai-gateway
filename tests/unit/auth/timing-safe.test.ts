@@ -1,6 +1,7 @@
 import { describe, it, expect, beforeEach, afterEach } from "bun:test";
 import { Database } from "bun:sqlite";
 import { Hono } from "hono";
+import type { AdminAppEnv } from "@/admin/handlers";
 import { timingSafeEqual } from "@/auth/key-hash";
 import {
   adminAuthMiddleware,
@@ -10,8 +11,8 @@ import {
 } from "@/middleware/auth";
 import { KeyStore } from "@/persistence/key-store";
 
-function createAuthApp(keyStore: KeyStore, opts: Partial<AuthMiddlewareOptions> = {}): Hono {
-  const app = new Hono();
+function createAuthApp(keyStore: KeyStore, opts: Partial<AuthMiddlewareOptions> = {}): Hono<AdminAppEnv> {
+  const app = new Hono<AdminAppEnv>();
   app.use("/protected", authMiddleware({ keyStore, ...opts }));
   app.get("/protected", (c) => c.json({ ok: true, keyScopes: c.get("keyScopes") }));
   return app;
@@ -60,7 +61,7 @@ describe("authMiddleware", () => {
     const app = createAuthApp(keyStore);
     const res = await app.request("/protected", { headers: bearer(created.key) });
     expect(res.status).toBe(200);
-    const body = await res.json();
+    const body = (await res.json()) as TestJson;
     expect(body.keyScopes).toEqual(["admin"]);
   });
 
@@ -68,7 +69,7 @@ describe("authMiddleware", () => {
     const app = createAuthApp(keyStore, { bootstrapKey: "boot-admin-123" });
     const res = await app.request("/protected", { headers: bearer("boot-admin-123") });
     expect(res.status).toBe(200);
-    const body = await res.json();
+    const body = (await res.json()) as TestJson;
     expect(body.keyScopes).toEqual(["admin"]);
   });
 
@@ -76,7 +77,7 @@ describe("authMiddleware", () => {
     const app = createAuthApp(keyStore, { bootstrapReadOnlyKey: "boot-ro-456" });
     const res = await app.request("/protected", { headers: bearer("boot-ro-456") });
     expect(res.status).toBe(200);
-    const body = await res.json();
+    const body = (await res.json()) as TestJson;
     expect(body.keyScopes).toEqual(["read_only"]);
   });
 
@@ -85,7 +86,7 @@ describe("authMiddleware", () => {
     const app = createAuthApp(keyStore, { bootstrapKey: "boot-admin-123" });
     const res = await app.request("/protected", { headers: bearer("boot-admin-123") });
     expect(res.status).toBe(401);
-    const body = await res.json();
+    const body = (await res.json()) as TestJson;
     expect(body.error.code).toBe("invalid_api_key");
   });
 
@@ -99,7 +100,7 @@ describe("authMiddleware", () => {
     const app = createAuthApp(keyStore);
     const res = await app.request("/protected");
     expect(res.status).toBe(401);
-    const body = await res.json();
+    const body = (await res.json()) as TestJson;
     expect(body.error.code).toBe("missing_authorization");
   });
 });

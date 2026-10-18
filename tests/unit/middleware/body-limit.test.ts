@@ -18,7 +18,7 @@ describe("bodyLimitMiddleware", () => {
       headers: { "Content-Length": "200" },
     });
     expect(res.status).toBe(413);
-    const body = await res.json();
+    const body = (await res.json()) as TestJson;
     expect(body.error.type).toBe("request_too_large");
   });
 

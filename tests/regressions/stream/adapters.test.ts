@@ -19,13 +19,13 @@ describe("T3-8 provider capability enforcement is dead: config.compatibility nev
   it("drop mode: unsupported snake/camel-mismatched fields are actually dropped", () => {
     const res = enforceUnsupportedParams("mistral", { model: "m", messages: [], streamOptions: { includeUsage: true }, seed: 1 } as never, "drop");
     expect(res.action).toBe("dropped");
-    const req = (res as { request: Record<string, unknown> }).request;
+    const req = (res as unknown as { request: Record<string, unknown> }).request;
     expect(req["seed"]).toBeUndefined();          // works (label == capability)
     expect(req["streamOptions"]).toBeUndefined(); // BUG: still present ("stream_options" never matches case "streamOptions")
   });
   it("drop mode on replicate: toolChoice/responseFormat/topLogprobs/maxCompletionTokens survive", () => {
     const res = enforceUnsupportedParams("replicate", { model: "m", messages: [], toolChoice: "auto", responseFormat: { type: "json_object" }, maxCompletionTokens: 5, presencePenalty: 1 } as never, "drop");
-    const req = (res as { request: Record<string, unknown> }).request;
+    const req = (res as unknown as { request: Record<string, unknown> }).request;
     expect([req["toolChoice"], req["responseFormat"], req["maxCompletionTokens"], req["presencePenalty"]]).toEqual([undefined, undefined, undefined, undefined]);
   });
 });

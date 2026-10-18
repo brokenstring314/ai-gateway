@@ -42,7 +42,7 @@ describe("T3-10 SSE parser robustness bugs", () => {
     const raw = ev("a") + 'data: {"id":"c","choices":[{"index":0,"delta":{"content":"LOST\n\n' + ev("b");
     let err: unknown = null;
     const out: string[] = [];
-    try { for await (const ch of parseSSEStream(bytesStream([enc.encode(raw)]))) out.push(ch.choices[0]?.delta?.content ?? ""); } catch (e) { err = e; }
+    try { for await (const ch of parseSSEStream(bytesStream([enc.encode(raw)]))) out.push((ch.choices[0]?.delta?.content as string | undefined) ?? ""); } catch (e) { err = e; }
     expect(err !== null || out.length === 3).toBe(true); // BUG: ["a","b"], content silently lost
   });
   it("choices:[null] (known) does not throw TypeError", async () => {
