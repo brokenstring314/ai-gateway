@@ -2,7 +2,7 @@ import { describe, it, expect } from "bun:test";
 import { setup, sse, chunk, post } from "./_h";
 
 describe("T3-7 /v1/completions drops snake_case params (max_tokens, top_p, ...) and answers in chat/camelCase shape", () => {
-  it.failing("max_tokens / top_p / presence_penalty reach upstream", async () => {
+  it("max_tokens / top_p / presence_penalty reach upstream", async () => {
     const s = setup(() => Response.json({ id: "x", object: "chat.completion", created: 1, model: "gpt-4o", choices: [{ index: 0, message: { role: "assistant", content: "ok" }, finish_reason: "length" }], usage: { prompt_tokens: 1, completion_tokens: 2, total_tokens: 3 } }));
     try {
       const r = await post(s.app, { prompt: "hi", messages: undefined, max_tokens: 5, top_p: 0.5, presence_penalty: 1 }, "/v1/completions");
@@ -12,7 +12,7 @@ describe("T3-7 /v1/completions drops snake_case params (max_tokens, top_p, ...) 
       expect(up["top_p"]).toBe(0.5);
     } finally { s.stop(); }
   });
-  it.failing("response is an OpenAI text_completion (choices[].text, finish_reason, usage.prompt_tokens)", async () => {
+  it("response is an OpenAI text_completion (choices[].text, finish_reason, usage.prompt_tokens)", async () => {
     const s = setup(() => Response.json({ id: "x", object: "chat.completion", created: 1, model: "gpt-4o", choices: [{ index: 0, message: { role: "assistant", content: "ok" }, finish_reason: "stop" }], usage: { prompt_tokens: 1, completion_tokens: 2, total_tokens: 3 } }));
     try {
       const r = await post(s.app, { prompt: "hi", messages: undefined }, "/v1/completions");
@@ -23,7 +23,7 @@ describe("T3-7 /v1/completions drops snake_case params (max_tokens, top_p, ...) 
       expect(j.usage.prompt_tokens).toBe(1);
     } finally { s.stop(); }
   });
-  it.failing("stream chunks are wire format (choices[].text / finish_reason), not internal camelCase", async () => {
+  it("stream chunks are wire format (choices[].text / finish_reason), not internal camelCase", async () => {
     const s = setup(() => sse([chunk("ok", "stop"), "data: [DONE]\n\n"]));
     try {
       const r = await post(s.app, { prompt: "hi", messages: undefined, stream: true }, "/v1/completions");

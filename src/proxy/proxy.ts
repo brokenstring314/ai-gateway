@@ -71,11 +71,17 @@ export interface ProxyHandlerOptions extends ProxyAuthOptions {
   resolveTarget: TargetResolver;
   fetchImpl?: typeof fetch;
   /**
+   * Method+path allow-list, checked after proxy auth. A route it rejects gets
+   * 403 `route_not_allowed` and is never forwarded. Omitted = everything.
+   */
+  isRouteAllowed?: (method: string, path: string) => boolean;
+  /**
    * Called after proxy auth and after the body is read, before anything is
    * forwarded. Returning a Response short-circuits the proxy with it (e.g. a
-   * plugin rejection); returning undefined continues.
+   * plugin rejection); returning `{ bodyText }` forwards that body instead
+   * (e.g. a capped token limit); returning undefined continues unchanged.
    */
-  beforeForward?: (c: Context, bodyText: string | undefined) => Promise<Response | undefined>;
+  beforeForward?: (c: Context, bodyText: string | undefined) => Promise<Response | { bodyText: string } | undefined>;
 }
 
 /** Minimal Hono env needed by the proxy handler (timeout signal). */
@@ -470,16 +476,26 @@ export function createProxyHandler(options: ProxyHandlerOptions): Handler<ProxyE
       return openAIErrorResponse(404, "not found", "invalid_request_error", "not_found");
     }
 
+    if (options.isRouteAllowed && !options.isRouteAllowed(c.req.method, url.pathname)) {
+      return openAIErrorResponse(
+        403,
+        `${c.req.method} ${url.pathname} is not allowed through the pass-through proxy (see passthroughProxy.routes)`,
+        "invalid_request_error",
+        "route_not_allowed",
+      );
+    }
+
     // Read the body once: forwarded byte-for-byte upstream, decoded only to
     // extract a top-level "model" when no X-Provider header was given.
     const raw = await c.req.arrayBuffer();
-    const bodyBuffer = raw.byteLength > 0 ? raw : undefined;
+    let bodyBuffer: ArrayBuffer | Uint8Array | undefined = raw.byteLength > 0 ? raw : undefined;
     const bodyText =
       bodyBuffer !== undefined ? new TextDecoder().decode(bodyBuffer) : undefined;
 
     if (options.beforeForward) {
-      const blocked = await options.beforeForward(c as unknown as Context, bodyText);
-      if (blocked !== undefined) return blocked;
+      const result = await options.beforeForward(c as unknown as Context, bodyText);
+      if (result instanceof Response) return result;
+      if (result !== undefined) bodyBuffer = new TextEncoder().encode(result.bodyText);
     }
 
     const resolution = resolveProvider(

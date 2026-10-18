@@ -24,8 +24,15 @@
  * and graceful abort via AbortSignal.
  */
 
-import type { StreamChunk, ChatMessage } from "./types.js";
+import type { StreamChunk, ChatMessage, Choice } from "./types.js";
 import { ProviderError } from "./openai-compat.js";
+import {
+  CHOICE_EXTRA_KEYS,
+  RESPONSE_EXTRA_KEYS,
+  RESPONSE_MESSAGE_EXTRA_KEYS,
+  normalizeWireUsage,
+  pickExtras,
+} from "./wire-extras.js";
 
 function isAbortError(err: unknown): boolean {
   return err !== null && typeof err === "object" && (err as { name?: unknown }).name === "AbortError";
@@ -383,32 +390,30 @@ function normalizeChunk(raw: Record<string, unknown>): StreamChunk {
     ? (rawChoices as unknown[]).flatMap((entry, i) => {
         if (typeof entry !== "object" || entry === null) return [];
         const c = entry as Record<string, unknown>;
-        return [{
+        const choice: Choice = {
           index: typeof c["index"] === "number" ? (c["index"] as number) : i,
           delta: normalizeDeltaMessage(c["delta"]),
           finishReason: normalizeFinishReason(String(c["finish_reason"] ?? "")),
-        }];
+        };
+        // Allow-listed pass-through (T3-11): logprobs and choice-level extras.
+        if (c["logprobs"] !== undefined && c["logprobs"] !== null) choice.logprobs = c["logprobs"];
+        const extra = pickExtras(c, CHOICE_EXTRA_KEYS);
+        if (extra) choice.extra = extra;
+        return [choice];
       })
     : [];
 
-  const usageRaw = typeof raw["usage"] === "object" && raw["usage"] !== null
-    ? (raw["usage"] as Record<string, number>)
-    : undefined;
-
-  return {
+  const chunk: StreamChunk = {
     id: String(raw["id"] ?? ""),
     object: String(raw["object"] ?? "chat.completion.chunk"),
     created: typeof raw["created"] === "number" ? (raw["created"] as number) : 0,
     model: String(raw["model"] ?? ""),
     choices,
-    usage: usageRaw
-      ? {
-          promptTokens: usageRaw["prompt_tokens"] ?? 0,
-          completionTokens: usageRaw["completion_tokens"] ?? 0,
-          totalTokens: usageRaw["total_tokens"] ?? 0,
-        }
-      : undefined,
+    usage: normalizeWireUsage(raw["usage"]),
   };
+  const extra = pickExtras(raw, RESPONSE_EXTRA_KEYS);
+  if (extra) chunk.extra = extra;
+  return chunk;
 }
 
 function normalizeDeltaMessage(raw: unknown): ChatMessage {
@@ -444,6 +449,8 @@ function normalizeDeltaMessage(raw: unknown): ChatMessage {
     }));
   }
 
+  const extra = pickExtras(r, RESPONSE_MESSAGE_EXTRA_KEYS);
+  if (extra) message.extra = extra;
   return message;
 }
 

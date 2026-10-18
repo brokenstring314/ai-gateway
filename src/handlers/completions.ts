@@ -1,47 +1,24 @@
 /**
  * Legacy completions handler — POST /v1/completions
  *
- * Wraps the legacy completions format into a chat completion request
- * and delegates to the Gateway.
+ * Maps the legacy completions wire format onto a chat completion request,
+ * delegates to the Gateway, and answers in the OpenAI `text_completion`
+ * shape (core/surfaces/completions.ts).
  */
 
-import { z } from "zod";
 import type { AppType } from "../app.js";
 import { respondError, respondInvalidJson, respondValidation } from "./error-response.js";
 import type { Gateway } from "../gateway.js";
-import type { ChatCompletionRequest, RequestContext, StreamChunk } from "../providers/types.js";
+import type { RequestContext, StreamChunk } from "../providers/types.js";
+import {
+  createTextCompletionStreamSerializer,
+  parseCompletionsRequest,
+  toTextCompletionResponse,
+} from "../core/surfaces/completions.js";
 import { mergeForwardedHeaders } from "../providers/response-headers.js";
 import { heartbeatIntervalMs } from "./sse-heartbeat.js";
 import { createSseStream, streamIdleTimeoutMs, streamMaxDurationMs } from "./sse-stream.js";
 import { linkAbortSignals } from "./abort.js";
-
-const CompletionsRequestSchema = z.object({
-  model: z.string().min(1),
-  prompt: z.union([z.string(), z.array(z.string())]),
-  temperature: z.number().min(0).max(2).optional(),
-  topP: z.number().min(0).max(1).optional(),
-  n: z.number().int().positive().optional(),
-  stream: z.boolean().optional(),
-  stop: z.union([z.string(), z.array(z.string())]).optional(),
-  maxTokens: z.number().int().positive().optional(),
-  presencePenalty: z.number().min(-2).max(2).optional(),
-  frequencyPenalty: z.number().min(-2).max(2).optional(),
-  logitBias: z.record(z.string(), z.number()).optional(),
-  user: z.string().optional(),
-  seed: z.number().int().optional(),
-  logprobs: z.boolean().optional(),
-  topLogprobs: z.number().int().min(0).max(20).optional(),
-});
-
-
-
-/** Convert legacy completions prompt to chat messages format. */
-function promptToMessages(prompt: string | string[]): { role: "user"; content: string }[] {
-  if (typeof prompt === "string") {
-    return [{ role: "user" as const, content: prompt }];
-  }
-  return prompt.map((p) => ({ role: "user" as const, content: p }));
-}
 
 export function registerCompletionsHandler(app: AppType, gateway: Gateway): void {
   app.post("/v1/completions", async (c) => {
@@ -52,31 +29,13 @@ export function registerCompletionsHandler(app: AppType, gateway: Gateway): void
       return respondInvalidJson(c);
     }
 
-    const parsed = CompletionsRequestSchema.safeParse(body);
-    if (!parsed.success) {
-      return respondValidation(c, parsed.error.issues);
+    // snake_case wire params (max_tokens, top_p …) mapped onto the chat
+    // request the pipeline runs; legacy-only options chat can't express → 400.
+    const parsed = parseCompletionsRequest(body);
+    if (!parsed.ok) {
+      return respondValidation(c, parsed.issues);
     }
-
-    const legacy = parsed.data;
-
-    // Convert to chat completion request
-    const chatReq: ChatCompletionRequest = {
-      model: legacy.model,
-      messages: promptToMessages(legacy.prompt),
-      temperature: legacy.temperature,
-      topP: legacy.topP,
-      n: legacy.n,
-      stream: legacy.stream,
-      stop: legacy.stop,
-      maxTokens: legacy.maxTokens,
-      presencePenalty: legacy.presencePenalty,
-      frequencyPenalty: legacy.frequencyPenalty,
-      logitBias: legacy.logitBias,
-      user: legacy.user,
-      seed: legacy.seed,
-      logprobs: legacy.logprobs,
-      topLogprobs: legacy.topLogprobs,
-    };
+    const chatReq = parsed.request;
 
     // Upstream work is cancelled when the request times out, the client
     // connection goes away, or the SSE response body is cancelled.
@@ -93,7 +52,7 @@ export function registerCompletionsHandler(app: AppType, gateway: Gateway): void
     };
 
     // Streaming path
-    if (legacy.stream) {
+    if (chatReq.stream) {
       try {
         const stream = gateway.routeStream(ctx, chatReq);
         const iterator = stream[Symbol.asyncIterator]();
@@ -117,7 +76,7 @@ export function registerCompletionsHandler(app: AppType, gateway: Gateway): void
           createSseStream<StreamChunk>({
             iterator,
             firstChunk,
-            serialize: (chunk) => chunk,
+            serialize: createTextCompletionStreamSerializer(),
             upstreamAbort,
             heartbeatMs: heartbeatIntervalMs(serverCfg?.sseHeartbeatSeconds),
             idleTimeoutMs: streamIdleTimeoutMs(serverCfg?.streamIdleTimeoutSeconds),
@@ -144,8 +103,7 @@ export function registerCompletionsHandler(app: AppType, gateway: Gateway): void
     // Non-streaming path
     try {
       const response = await gateway.route(ctx, chatReq);
-      const { upstreamHeaders, ...responseBody } = response;
-      return c.json(responseBody, 200, mergeForwardedHeaders({}, upstreamHeaders));
+      return c.json(toTextCompletionResponse(response), 200, mergeForwardedHeaders({}, response.upstreamHeaders));
     } catch (err) {
       return respondError(c, err);
     }

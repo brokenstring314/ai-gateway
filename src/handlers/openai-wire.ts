@@ -24,6 +24,12 @@ import type {
   StreamChunk,
   Usage,
 } from "../providers/types.js";
+import {
+  REQUEST_EXTRA_KEYS,
+  REQUEST_MESSAGE_EXTRA_KEYS,
+  applyExtras,
+  pickExtras,
+} from "../providers/wire-extras.js";
 
 type Json = Record<string, unknown>;
 
@@ -97,6 +103,29 @@ export function fromOpenAIWireChatRequest(body: unknown): unknown {
   return out;
 }
 
+/**
+ * Re-attach the allow-listed pass-through fields (providers/wire-extras.ts)
+ * of the raw wire body to a request the zod schema has already stripped.
+ * Applies to the request itself and to each message (by position).
+ */
+export function attachWireRequestExtras<T extends { messages: readonly ChatMessage[]; extra?: Json }>(
+  rawBody: unknown,
+  req: T,
+): T {
+  if (!isObject(rawBody)) return req;
+  const extra = pickExtras(rawBody, REQUEST_EXTRA_KEYS);
+  const rawMessages = Array.isArray(rawBody["messages"]) ? rawBody["messages"] : [];
+  let messages = req.messages;
+  if (rawMessages.some((m) => pickExtras(m, REQUEST_MESSAGE_EXTRA_KEYS) !== undefined)) {
+    messages = req.messages.map((m, i) => {
+      const me = pickExtras(rawMessages[i], REQUEST_MESSAGE_EXTRA_KEYS);
+      return me ? { ...m, extra: { ...m.extra, ...me } } : m;
+    });
+  }
+  if (!extra && messages === req.messages) return req;
+  return { ...req, messages, ...(extra ? { extra: { ...req.extra, ...extra } } : {}) };
+}
+
 /** Normalise an OpenAI images/generations request body (response_format). */
 export function fromOpenAIWireImageRequest(body: unknown): unknown {
   if (!isObject(body)) return body;
@@ -113,7 +142,7 @@ export function toOpenAIWireUsage(usage: Usage): Json {
   };
   if (usage.promptTokensDetails) out["prompt_tokens_details"] = usage.promptTokensDetails;
   if (usage.completionTokensDetails) out["completion_tokens_details"] = usage.completionTokensDetails;
-  return out;
+  return applyExtras(out, usage.extra);
 }
 
 function toWireToolCalls(msg: ChatMessage, isDelta = false): Json[] | undefined {
@@ -152,7 +181,7 @@ function toWireMessage(msg: ChatMessage | undefined): Json {
     out["tool_calls"] = toolCalls.map(({ index: _index, ...rest }) => rest);
   }
   if (m.toolCallId !== undefined) out["tool_call_id"] = m.toolCallId;
-  return out;
+  return applyExtras(out, m.extra);
 }
 
 function wireFinishReason(reason: string | null | undefined): string | null {
@@ -166,16 +195,18 @@ export function toOpenAIWireChatResponse(res: ChatCompletionResponse): Json {
     object: res.object || "chat.completion",
     created: res.created,
     model: res.model,
-    choices: res.choices.map((c) => ({
+    choices: res.choices.map((c) => applyExtras({
       index: c.index,
       message: toWireMessage(c.message),
-      logprobs: (c as { logprobs?: unknown }).logprobs ?? null,
+      logprobs: c.logprobs ?? null,
       finish_reason: wireFinishReason(c.finishReason),
-    })),
+    }, c.extra)),
     usage: toOpenAIWireUsage(res.usage),
   };
+  applyExtras(out, res.extra);
+  // Older embedders set the fingerprint through metadata.
   const fingerprint = res.metadata?.["system_fingerprint"];
-  if (fingerprint !== undefined) out["system_fingerprint"] = fingerprint;
+  if (fingerprint !== undefined && !("system_fingerprint" in out)) out["system_fingerprint"] = fingerprint;
   return out;
 }
 
@@ -203,17 +234,18 @@ export function createOpenAIWireStreamSerializer(): (chunk: StreamChunk) => Json
           if (src.content !== undefined) delta["content"] = src.content;
           const toolCalls = toWireToolCalls(src, true);
           if (toolCalls) delta["tool_calls"] = toolCalls;
+          applyExtras(delta, src.extra);
         }
-        return {
+        return applyExtras({
           index: c.index,
           delta,
-          logprobs: (c as { logprobs?: unknown }).logprobs ?? null,
+          logprobs: c.logprobs ?? null,
           finish_reason: wireFinishReason(c.finishReason),
-        };
+        }, c.extra);
       }),
     };
     if (chunk.usage) out["usage"] = toOpenAIWireUsage(chunk.usage);
-    return out;
+    return applyExtras(out, chunk.extra);
   };
 }
 

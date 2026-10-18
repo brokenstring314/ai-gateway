@@ -56,15 +56,15 @@ describe("chat (openai SDK)", () => {
     expect(call && "function" in call ? JSON.parse(call.function.arguments) : undefined).toEqual({ city: "SF" });
   });
 
-  // T3-11 (open): reasoning_content / logprobs are dropped.
-  it.failing("reasoning_content and logprobs pass through (non-stream)", async () => {
+  // T3-11 (fixed in 2.6): reasoning_content / logprobs pass through.
+  it("reasoning_content and logprobs pass through (non-stream)", async () => {
     up.enqueue("reasoning");
     const r: any = await gw.client().chat.completions.create({ model: "gpt-4o", messages, logprobs: true });
     expect(r.choices[0].message.reasoning_content).toBe("think");
     expect(r.choices[0].logprobs?.content?.[0]?.token).toBe("ok");
   });
 
-  it.failing("reasoning_content and logprobs pass through (stream)", async () => {
+  it("reasoning_content and logprobs pass through (stream)", async () => {
     up.enqueue("reasoning");
     const s = await gw.client().chat.completions.create({ model: "gpt-4o", messages, stream: true, logprobs: true });
     let reasoning = "";

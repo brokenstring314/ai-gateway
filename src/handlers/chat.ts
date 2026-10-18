@@ -16,6 +16,7 @@ import { linkAbortSignals } from "./abort.js";
 import { createSseStream, streamIdleTimeoutMs, streamMaxDurationMs } from "./sse-stream.js";
 import {
   createOpenAIWireStreamSerializer,
+  attachWireRequestExtras,
   fromOpenAIWireChatRequest,
   toOpenAIWireChatResponse,
 } from "./openai-wire.js";
@@ -59,6 +60,7 @@ const ChatCompletionRequestSchema = z.object({
       name: z.string(),
       description: z.string().optional(),
       parameters: z.record(z.string(), z.unknown()).optional(),
+      strict: z.boolean().optional(),
     }),
   })).optional(),
   toolChoice: z.union([
@@ -94,7 +96,9 @@ export function registerChatHandler(app: AppType, gateway: Gateway): void {
       return respondValidation(c, parsed.error.issues);
     }
 
-    const req = parsed.data as ChatCompletionRequest;
+    // Allow-listed fields the schema does not model (reasoning_effort, store,
+    // message reasoning_content …) are forwarded upstream verbatim (T3-11).
+    const req = attachWireRequestExtras(body, parsed.data as ChatCompletionRequest);
     // Upstream work is cancelled when the request times out, the client
     // connection goes away, or the SSE response body is cancelled.
     const upstreamAbort = new AbortController();

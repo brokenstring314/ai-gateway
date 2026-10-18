@@ -20,7 +20,7 @@ function makeConfig(): GatewayConfig {
     }],
     adminSecret: "test-admin-secret-1234",
     server: { port: 3199, host: "127.0.0.1" },
-    passthroughProxy: { enabled: true },
+    passthroughProxy: { enabled: true, routes: ["POST /v1/files"] },
   };
 }
 

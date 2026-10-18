@@ -205,7 +205,8 @@ describe("Integration: Full HTTP lifecycle", () => {
     });
     expect(res.status).toBe(200);
     const body = await res.json();
-    expect(body.object).toBe("chat.completion");
+    expect(body.object).toBe("text_completion");
+    expect(typeof body.choices[0].text).toBe("string");
   });
 });
 

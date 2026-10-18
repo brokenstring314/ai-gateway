@@ -142,6 +142,30 @@
   429 `gateway_overloaded` (it used to wait for a slot, call upstream with an
   aborted signal, answer 504 and count as a breaker failure — C3-3).
 
+- **`/v1/completions` speaks the OpenAI legacy wire format** (T3-7). Snake_case
+  parameters (`max_tokens`, `top_p`, `presence_penalty`, …) were silently
+  dropped (so `max_tokens` never reached the upstream and max-token could not
+  cap it) and the response was the internal camelCase chat object. Responses
+  and stream chunks are now `text_completion` (`choices[].text`,
+  `finish_reason`, legacy `logprobs`, snake_case `usage`). `echo: true`,
+  non-empty `suffix`, `best_of` > 1 and batched prompts are rejected with 400
+  (they were ignored, or an array prompt became several user messages).
+- **Pass-through proxy forwards only allow-listed routes** (S3-6). New
+  `passthroughProxy.routes` (`"METHOD /v1/path"`, `/*` suffix for sub-paths);
+  default `POST /v1/responses`, `POST /v1/moderations`, `POST /v1/audio/*`.
+  Other `/v1/*` routes get 403 `route_not_allowed` instead of being forwarded
+  with the operator's upstream key (any client could list / read / delete the
+  upstream account's files, stored completions, responses, batches…).
+  Non-allowed methods on gateway routes (`GET /v1/chat/completions`, …) now
+  answer 405 with `Allow`, proxy on or off.
+  *Migration:* list any extra routes you proxy (e.g. `POST /v1/files`) in
+  `passthroughProxy.routes`; add stateful routes only for single-tenant use.
+- **max-token injects its cap when a request sets no limit** (T3-11). A request
+  without `max_tokens` / `max_completion_tokens` used to run to the model
+  default; it now gets `max_tokens: <maxTokens>`. The cap also applies to
+  proxied bodies (`max_output_tokens` / `max_tokens` /
+  `max_completion_tokens`, injected as `max_output_tokens` on `/v1/responses`).
+
 ### Security
 
 - **`ADMIN_BOOTSTRAP_KEY` / `ADMIN_BOOTSTRAP_READ_ONLY_KEY` are retired once a
@@ -167,6 +191,14 @@
 
 ### Added
 
+- **Allow-listed wire pass-through** (T3-11, T3-9 fields), stream and
+  non-stream: request `reasoning_effort`, `store`, `metadata`, `modalities`,
+  `tools[].function.strict`, provider knobs (`top_k`, `thinking`, …) and
+  message `reasoning_content`; response `reasoning_content` / `refusal` /
+  `annotations`, `choices[].logprobs` (was always null), usage
+  `*_tokens_details` and `cost`, and top-level `system_fingerprint`,
+  `service_tier`, Perplexity `citations` / `search_results`. Full lists in
+  `src/providers/wire-extras.ts`; unknown keys are still dropped.
 - **Docker image** (`Dockerfile`): non-root (uid 1000), `tini` as PID 1,
   `HEALTHCHECK` on `/livez`, config at `/config/config.yaml`, data in `/data`.
   CI builds it and runs `scripts/docker-smoke.sh`.

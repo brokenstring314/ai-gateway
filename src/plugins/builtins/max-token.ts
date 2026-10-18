@@ -42,6 +42,13 @@ export class MaxTokenPlugin implements IPlugin {
       );
     }
 
+    // Neither limit given: the upstream would run to the model's default
+    // (often the full context), bypassing the cap (T3-11). Inject the cap.
+    if (req.maxTokens === undefined && req.maxCompletionTokens === undefined) {
+      newMaxTokens = this.config.maxTokens;
+      modified = true;
+    }
+
     if (!modified) {
       return { action: "continue" };
     }

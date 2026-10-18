@@ -3,6 +3,7 @@
  * Schema = validation + type + documentation, single source of truth.
  */
 
+import { PASSTHROUGH_ROUTE_PATTERN } from "../core/surfaces/passthrough.js";
 import { z } from "zod";
 import type { StrategyMode } from "../routing/types.js";
 import { configReferenceIssues } from "./validate.js";
@@ -282,7 +283,10 @@ export const GatewayConfigSchema = strictObject({
     })
     .optional(),
   // Opt-in pass-through proxy for other /v1/* routes (see config/types.ts).
-  passthroughProxy: strictObject({ enabled: z.boolean().optional() }).optional(),
+  passthroughProxy: strictObject({
+    enabled: z.boolean().optional(),
+    routes: z.array(z.string().regex(PASSTHROUGH_ROUTE_PATTERN, 'expected "METHOD /v1/path" or "METHOD /v1/prefix/*"')).optional(),
+  }).optional(),
   adminSecret: z.string().min(8).optional(),
   auth: strictObject({
       // No default: client auth is disabled ONLY when enabled === false is set

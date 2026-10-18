@@ -78,7 +78,7 @@ describe("N8 pass-through proxy", () => {
   it("when enabled, key-scoped rate limit applies, including to non-JSON bodies", async () => {
     const { app } = setup([{ name: "rate-limit", config: { keyRpm: 1 } }], true);
     const s: number[] = [];
-    for (let i = 0; i < 3; i++) s.push((await post(app, "/v1/files", "not json", { "X-Provider": "openai" })).status);
+    for (let i = 0; i < 3; i++) s.push((await post(app, "/v1/audio/transcriptions", "not json", { "X-Provider": "openai" })).status);
     expect(s).toEqual([200, 429, 429]);
     expect(fetchSpy).toHaveBeenCalledTimes(1);
   });

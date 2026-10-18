@@ -8,6 +8,7 @@
  * routeStream() — streaming request flow with fallback
  */
 
+import { applyPassthroughMaxTokens, passthroughMaxTokens, passthroughTokenField } from "./core/surfaces/passthrough.js";
 import type {
   IProvider,
   IEmbeddingProvider,
@@ -633,8 +634,12 @@ export class Gateway {
    * Because an arbitrary body cannot be rewritten faithfully, a plugin that
    * modifies the message content (e.g. word-filter redact) or short-circuits
    * causes a rejection instead of forwarding the original text.
+   * The body's output token limit (`max_output_tokens` / `max_tokens` /
+   * `max_completion_tokens`) is the plugin view's `maxTokens`; when a plugin
+   * caps it (max-token) the rewritten body text is returned and must be
+   * forwarded instead of the original (S3-6). Otherwise returns undefined.
    */
-  async runPassthroughBeforePlugins(ctx: RequestContext, bodyText: string | undefined): Promise<void> {
+  async runPassthroughBeforePlugins(ctx: RequestContext, bodyText: string | undefined, path = ""): Promise<string | undefined> {
     let body: unknown;
     try {
       body = bodyText !== undefined && bodyText !== "" ? JSON.parse(bodyText) : undefined;
@@ -644,9 +649,13 @@ export class Gateway {
     const obj = body !== null && typeof body === "object" && !Array.isArray(body)
       ? body as Record<string, unknown>
       : {};
+    const isJsonObject = body !== null && typeof body === "object" && !Array.isArray(body);
+    const tokenField = isJsonObject ? passthroughTokenField(path, obj) : undefined;
+    const maxTokens = passthroughMaxTokens(obj, tokenField);
     const request: ChatCompletionRequest = {
       model: typeof obj["model"] === "string" ? obj["model"] : "",
       messages: extractPassthroughMessages(obj),
+      ...(maxTokens !== undefined ? { maxTokens } : {}),
     };
     const resolved = this.resolveAlias(request);
     const pluginCtx = createPluginContext(resolved, ctx);
@@ -671,6 +680,8 @@ export class Gateway {
       this.recordPluginBlocked(ctx, request.model, "passthrough", startTime, rejection);
       throw rejection;
     }
+    const view = pluginCtx.request;
+    return applyPassthroughMaxTokens(obj, tokenField, view.maxTokens ?? view.maxCompletionTokens);
   }
 
   /** runBefore(), recording a plugin rejection in the request log / metrics before rethrowing it. */
