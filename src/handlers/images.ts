@@ -7,6 +7,7 @@ import type { AppType } from "../app.js";
 import { respondError, respondInvalidJson, respondValidation } from "./error-response.js";
 import type { Gateway } from "../gateway.js";
 import { toOpenAIWireImageResponse, fromOpenAIWireImageRequest } from "./openai-wire.js";
+import { linkAbortSignals } from "./abort.js";
 
 const ImageRequestSchema = z.object({
   model: z.string().min(1),
@@ -14,6 +15,8 @@ const ImageRequestSchema = z.object({
   n: z.number().int().positive().max(10).optional(),
   size: z.string().optional(),
   responseFormat: z.enum(["url", "b64_json"]).optional(),
+  quality: z.string().min(1).optional(),
+  style: z.string().min(1).optional(),
   user: z.string().optional(),
 });
 
@@ -33,7 +36,8 @@ export function registerImagesHandler(app: AppType, gateway: Gateway): void {
     }
 
     const req = parsed.data;
-    const signal = c.get("abortController")?.signal;
+    // Upstream work stops when the request times out or the client goes away.
+    const signal = linkAbortSignals(new AbortController(), [c.get("abortController")?.signal, c.req.raw.signal]);
     const apiKey = c.get("apiKey");
     const ctx = {
       signal,
@@ -48,6 +52,8 @@ export function registerImagesHandler(app: AppType, gateway: Gateway): void {
         n: req.n,
         size: req.size,
         responseFormat: req.responseFormat,
+        quality: req.quality,
+        style: req.style,
         user: req.user,
       });
       return c.json(toOpenAIWireImageResponse(response), 200);

@@ -193,6 +193,8 @@ export interface EmbeddingRequest {
   model: string;
   input: string | readonly string[];
   dimensions?: number;
+  /** OpenAI `encoding_format`: "base64" returns each embedding as a base64 string. */
+  encodingFormat?: "float" | "base64";
   user?: string;
 }
 
@@ -200,7 +202,8 @@ export interface EmbeddingResponse {
   object: string;
   model: string;
   provider: string;
-  data: readonly { object: string; embedding: readonly number[]; index: number }[];
+  /** `embedding` is a base64 string when the request asked for encoding_format "base64". */
+  data: readonly { object: string; embedding: readonly number[] | string; index: number }[];
   usage: Usage;
 }
 
@@ -212,6 +215,10 @@ export interface ImageRequest {
   n?: number;
   size?: string;
   responseFormat?: "url" | "b64_json";
+  /** OpenAI `quality` (e.g. "standard" | "hd" for dall-e-3; "low" | "medium" | "high" | "auto" for gpt-image-1). */
+  quality?: string;
+  /** OpenAI `style` ("vivid" | "natural", dall-e-3). */
+  style?: string;
   user?: string;
 }
 

@@ -112,6 +112,7 @@ export function createOpenAICompatProvider(opts: OpenAiCompatOptions): OpenAICom
     async embed(ctx: RequestContext, req: EmbeddingRequest): Promise<EmbeddingResponse> {
       const body: Record<string, unknown> = { model: req.model, input: req.input };
       setIfDefined(body, "dimensions", req.dimensions);
+      setIfDefined(body, "encoding_format", req.encodingFormat);
       setIfDefined(body, "user", req.user);
       const { raw } = await postJSON(ctx, "/embeddings", body);
       return normalizeEmbeddingResponse(opts.name, req.model, raw);
@@ -122,6 +123,8 @@ export function createOpenAICompatProvider(opts: OpenAiCompatOptions): OpenAICom
       setIfDefined(body, "n", req.n);
       setIfDefined(body, "size", req.size);
       setIfDefined(body, "response_format", req.responseFormat);
+      setIfDefined(body, "quality", req.quality);
+      setIfDefined(body, "style", req.style);
       setIfDefined(body, "user", req.user);
       const { raw } = await postJSON(ctx, "/images/generations", body);
       return normalizeImageResponse(opts.name, raw);
@@ -425,7 +428,8 @@ function normalizeEmbeddingResponse(
     provider: providerName,
     data: rawData.map((d, i) => ({
       object: String(d["object"] ?? "embedding"),
-      embedding: Array.isArray(d["embedding"]) ? (d["embedding"] as number[]) : [],
+      // encoding_format "base64": the embedding is a base64 string, passed through as-is.
+      embedding: Array.isArray(d["embedding"]) ? (d["embedding"] as number[]) : typeof d["embedding"] === "string" ? d["embedding"] : [],
       index: typeof d["index"] === "number" ? (d["index"] as number) : i,
     })),
     usage: {
