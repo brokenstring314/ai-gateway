@@ -77,12 +77,6 @@ export interface PluginConfig {
   config?: Record<string, unknown>;
 }
 
-export interface ExporterConfig {
-  name: string;
-  enabled?: boolean;
-  config?: Record<string, unknown>;
-}
-
 export interface ObservabilityConfig {
   tracing?: {
     enabled?: boolean;
@@ -98,7 +92,6 @@ export interface ObservabilityConfig {
     enabled?: boolean;
     port?: number;
   };
-  exporters?: ExporterConfig[];
 }
 
 export interface CompatibilityConfig {
@@ -107,8 +100,8 @@ export interface CompatibilityConfig {
 
 export interface McpServerConfig {
   name: string;
-  /** Transport; inferred from command/url when omitted. */
-  type?: "stdio" | "http";
+  /** Transport: stdio only. */
+  type?: "stdio";
   command?: string;
   args?: string[];
   env?: Record<string, string>;
@@ -118,8 +111,6 @@ export interface McpServerConfig {
    * names; `true` passes the whole environment (secrets included).
    */
   inheritEnv?: boolean | string[];
-  url?: string;
-  headers?: Record<string, string>;
   allowedTools?: string[];
   maxCallDepth?: number;
   timeoutSeconds?: number;

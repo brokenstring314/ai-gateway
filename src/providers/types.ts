@@ -30,11 +30,6 @@ export interface IImageProvider extends IProvider {
   generateImage(ctx: RequestContext, req: ImageRequest): Promise<ImageResponse>;
 }
 
-/** Optional model discovery interface. */
-export interface IDiscoveryProvider extends IProvider {
-  discoverModels(ctx: RequestContext): Promise<readonly ModelInfo[]>;
-}
-
 /** Read-only view over registered providers. */
 export interface IProviderSource {
   get(name: string): IProvider | undefined;

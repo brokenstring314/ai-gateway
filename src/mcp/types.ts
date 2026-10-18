@@ -49,11 +49,8 @@ export interface JsonRpcResponse {
   error?: { code: number; message: string; data?: unknown };
 }
 
-/**
- * MCP transport, inferred from the server config (`command` => stdio, `url` => http)
- * rather than depending on the legacy `type` field.
- */
-export type McpTransport = "stdio" | "http";
+/** MCP transport. Only stdio is supported (http was removed in 0.2.0). */
+export type McpTransport = "stdio";
 
 /**
  * Readiness of an MCP server connection:

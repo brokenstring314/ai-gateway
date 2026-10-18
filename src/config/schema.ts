@@ -138,12 +138,6 @@ export const PluginConfigSchema = z.object({
   config: z.record(z.string(), z.unknown()).optional(),
 });
 
-export const ExporterConfigSchema = z.object({
-  name: z.string().min(1),
-  enabled: z.boolean().optional().default(false),
-  config: z.record(z.string(), z.unknown()).optional().default({}),
-});
-
 export const ObservabilityConfigSchema = z.object({
   tracing: z
     .object({
@@ -163,36 +157,41 @@ export const ObservabilityConfigSchema = z.object({
       port: z.number().int().positive().optional().default(9090),
     })
     .optional(),
-  exporters: z.array(ExporterConfigSchema).optional(),
 });
 
 export const CompatibilityConfigSchema = z.object({
   onUnsupportedParam: z.enum(["warn", "drop", "reject"]).optional().default("warn"),
 });
 
+const MCP_HTTP_REMOVED =
+  "MCP http transport is not supported (removed in 0.2.0; it was never implemented): use a stdio server (command/args)";
+
 export const McpServerConfigSchema = z
   .object({
     name: z.string().min(1),
-    type: z.enum(["stdio", "http"]).optional(),
+    type: z.string().optional(),
     command: z.string().optional(),
     args: z.array(z.string()).optional(),
     env: z.record(z.string(), z.string()).optional(),
     inheritEnv: z.union([z.boolean(), z.array(z.string())]).optional(),
-    url: z.string().url().optional(),
-    headers: z.record(z.string(), z.string()).optional(),
+    url: z.unknown().optional(),
+    headers: z.unknown().optional(),
     allowedTools: z.array(z.string()).optional(),
     maxCallDepth: z.number().int().positive().optional().default(5),
     timeoutSeconds: z.number().int().positive().optional().default(30),
     required: z.boolean().optional().default(false),
   })
   .superRefine((val, ctx) => {
-    if (!val.command && !val.url) {
-      ctx.addIssue({
-        code: "custom",
-        message: "mcp server requires either a command (stdio) or a url (http)",
-      });
+    if (val.type === "http" || val.url !== undefined || val.headers !== undefined) {
+      ctx.addIssue({ code: "custom", path: [val.type === "http" ? "type" : val.url !== undefined ? "url" : "headers"], message: MCP_HTTP_REMOVED });
+    } else if (val.type !== undefined && val.type !== "stdio") {
+      ctx.addIssue({ code: "custom", path: ["type"], message: `unknown MCP transport "${val.type}"; only stdio is supported` });
     }
-  });
+    if (!val.command) {
+      ctx.addIssue({ code: "custom", path: ["command"], message: "mcp server requires a command (stdio)" });
+    }
+  })
+  .transform(({ url: _url, headers: _headers, type: _type, ...rest }) => ({ ...rest, type: "stdio" as const }));
 
 export const GatewayConfigSchema = z.object({
   apiVersion: z.string().optional().default("v1"),

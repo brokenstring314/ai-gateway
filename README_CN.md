@@ -2,7 +2,7 @@
 
 基于 TypeScript + Bun + Hono 的高性能 OpenAI 兼容 API 网关。
 
-通过统一的端点将请求路由到 20+ 个 LLM 提供商，支持 8 种路由策略、6 个内置插件、熔断器、指数退避重试、MCP 智能体工具调用和完整的可观测性。
+通过统一的端点将请求路由到 20+ 个 LLM 提供商，支持 4 种路由策略、5 个内置插件、熔断器、指数退避重试、MCP 智能体工具调用和完整的可观测性。
 
 ---
 
@@ -194,8 +194,6 @@ plugins:
       dailyBudget: 100
       costPer1kInput: 0.01
       costPer1kOutput: 0.03
-  - name: logger
-    stage: after_request
 
 compatibility:
   onUnsupportedParam: warn      # warn | drop | reject
@@ -204,12 +202,7 @@ mcpServers:
   - name: my-tools
     type: stdio
     command: "node"
-    args: ["my-mcp-server.js"]
-  - name: remote-tools
-    type: http
-    url: "https://mcp.example.com/sse"
-    headers:
-      Authorization: "Bearer sk-..."
+    args: ["my-mcp-server.js"]        # 只支持 stdio 传输
 
 observability:
   tracing:
@@ -424,10 +417,11 @@ GET /metrics
 
 Prometheus 格式的指标，包括：
 
-- `ai_gateway_requests_total{provider, model}` — 请求计数
-- `ai_gateway_tokens_input_total{provider, model}` — 输入 token 计数
-- `ai_gateway_tokens_output_total{provider, model}` — 输出 token 计数
-- `ai_gateway_request_duration_ms{provider, model}` — 延迟直方图
+- `ai_gateway_requests_total{method, status, provider}` — HTTP 请求计数
+- `ai_gateway_request_duration_seconds{method, status, provider}` — 延迟直方图
+- `ai_gateway_tokens_input_total{provider, model}` — 输入 token 计数（chat）
+- `ai_gateway_tokens_output_total{provider, model}` — 输出 token 计数（chat）
+- `ai_gateway_plugin_blocked_total{plugin, outcome, surface}` — 被 before-request 插件结束的请求
 
 ### 管理 API
 
@@ -718,17 +712,9 @@ plugins:
       costPer1kOutput: 0.03    # 每 1K 输出 token 的成本
 ```
 
-#### 日志（Logger）
+#### 日志（Logger，0.2.0 已移除）
 
-结构化请求/响应日志。
-
-```yaml
-plugins:
-  - name: logger
-    stage: after_request
-    config:
-      logBody: false            # 是否记录请求/响应体（默认：false）
-```
+`logger` 插件与网关自带的请求日志（每个请求一行 JSON，见“结构化日志”）重复。`plugins` 里的 `logger` 条目会被忽略并在启动时告警，请删除。
 
 ### 插件错误策略
 
@@ -752,12 +738,9 @@ mcpServers:
     type: stdio
     command: "npx"
     args: ["-y", "@modelcontextprotocol/server-filesystem", "/tmp"]
-  - name: remote-tools
-    type: http
-    url: "https://mcp.example.com/sse"
-    headers:
-      Authorization: "Bearer sk-..."
 ```
+
+只支持 stdio 传输。`type: http` / `url` / `headers`（从未实现）已在 0.2.0 从 schema 中移除，校验时直接报错。
 
 **智能体循环：**
 
@@ -808,10 +791,11 @@ observability:
 
 | 指标                               | 类型        | 标签                  |
 | -------------------------------- | --------- | ------------------- |
-| `ai_gateway_requests_total`      | counter   | `provider`, `model` |
+| `ai_gateway_requests_total`      | counter   | `method`, `status`, `provider` |
+| `ai_gateway_request_duration_seconds` | histogram | `method`, `status`, `provider` |
 | `ai_gateway_tokens_input_total`  | counter   | `provider`, `model` |
 | `ai_gateway_tokens_output_total` | counter   | `provider`, `model` |
-| `ai_gateway_request_duration_ms` | histogram | `provider`, `model` |
+| `ai_gateway_plugin_blocked_total` | counter  | `plugin`, `outcome`, `surface` |
 
 ### 结构化日志
 
@@ -1081,10 +1065,9 @@ src/
 │   ├── manager.ts             # 插件执行（故障开放/关闭）
 │   ├── context.ts             # PluginContext
 │   ├── error.ts               # PluginRejectionError
-│   └── builtins/              # 6 个内置插件
+│   └── builtins/              # 5 个内置插件
 │       ├── rate-limit.ts      # 限流
 │       ├── cache.ts           # 响应缓存
-│       ├── logger.ts          # 日志
 │       ├── word-filter.ts     # 词过滤
 │       ├── max-token.ts       # Token 限制
 │       └── budget.ts          # 预算控制
@@ -1108,13 +1091,12 @@ src/
 │
 ├── mcp/
 │   ├── types.ts               # MCP 协议类型
-│   ├── client.ts              # MCP 客户端（stdio/HTTP，带超时）
+│   ├── client.ts              # MCP 客户端（stdio，带超时）
 │   ├── registry.ts            # MCP 服务器注册表
 │   └── executor.ts            # 智能体工具调用循环
 │
 ├── observability/
-│   ├── tracing.ts             # OpenTelemetry 链路追踪
-│   ├── metrics.ts             # Prometheus 指标
+│   ├── tracing.ts             # 链路追踪门面（OpenTelemetry 桥接）
 │   └── request-log.ts         # 结构化 JSON 日志
 │
 └── admin/

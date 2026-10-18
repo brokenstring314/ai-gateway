@@ -36,8 +36,8 @@ import type { IPlugin, Stage } from "./plugins/types.js";
 import { buildPluginsFromConfig } from "./plugins/builtins/from-config.js";
 import type { GatewayConfig, TargetConfig } from "./config/types.js";
 import { expandTargetEnvRefs } from "./config/envref.js";
-import { getMetrics } from "./observability/metrics.js";
-import { getTracer } from "./observability/tracing.js";
+import { getMetrics } from "./metrics/metrics.js";
+import { getTracer } from "./observability/otel-tracer.js";
 import { getRequestLogger } from "./observability/request-log.js";
 import { McpRegistry } from "./mcp/registry.js";
 import { McpExecutor } from "./mcp/executor.js";
@@ -475,7 +475,9 @@ export class Gateway {
 
     const durationMs = Date.now() - startTime;
     const provider = response.provider;
-    metrics.recordRequest(provider, response.model, durationMs, response.usage);
+    if (response.usage) {
+      metrics.recordTokens(provider, response.model, response.usage.promptTokens, response.usage.completionTokens);
+    }
 
     void logger.logRequest({
       timestamp: new Date().toISOString(),
@@ -635,7 +637,7 @@ export class Gateway {
     }
     await this.pluginManager.runAfter(pluginCtx);
 
-    metrics.recordRequest(provider, acc.model, durationMs, usage);
+    if (usage) metrics.recordTokens(provider, acc.model, usage.promptTokens, usage.completionTokens);
     void logger.logRequest({
       timestamp: new Date().toISOString(),
       requestId: ctx.traceId ?? "",
@@ -860,7 +862,6 @@ export class Gateway {
     const outcome = rejected ? "plugin_rejected" : "plugin_short_circuit";
     const durationMs = Date.now() - startTime;
     const metrics = getMetrics();
-    metrics.recordRequest(NO_UPSTREAM_PROVIDER, model, durationMs);
     metrics.recordPluginBlocked(plugin, outcome, surface);
     void getRequestLogger().logRequest({
       timestamp: new Date().toISOString(),

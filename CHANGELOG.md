@@ -40,6 +40,22 @@
 - **Load balance weight 0 now drains a target** (it was treated as weight 1).
   A drained target gets no traffic, not even as a failover candidate; negative
   weights and an all-zero pool are rejected. (Closes C3-9.)
+- **Dead code removed** (no behaviour existed behind it):
+  - the `logger` plugin: a `logger` entry in `plugins` is ignored with one
+    startup warning (the gateway already writes one request-log line per
+    request);
+  - MCP `type: http` / `url` / `headers`: never implemented (connect threw);
+    now a validation error with a hint. stdio is the only transport;
+  - `observability.exporters` and the exporter registry (no exporter ever
+    existed); use `observability.tracing` (OTLP);
+  - the built-in `Tracer` / OTLP-JSON exporter and `initTracing()` (spans
+    already went through the OpenTelemetry bridge; `getTracer()` stays);
+  - the second in-memory metrics registry (`observability/metrics.ts`, which
+    `/metrics` never served and which stored every duration sample). Plugin
+    rejections/short-circuits are now `ai_gateway_plugin_blocked_total`, and
+    chat token usage is exported as `ai_gateway_tokens_{input,output}_total`;
+  - `IDiscoveryProvider` (no implementation), and `scrubConfigJson` (only
+    used by the removed config history).
 
 ### Security
 

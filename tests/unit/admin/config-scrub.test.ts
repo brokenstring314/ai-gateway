@@ -1,5 +1,5 @@
 import { describe, it, expect } from "bun:test";
-import { scrubConfig, scrubConfigJson } from "@/admin/config-scrub";
+import { scrubConfig } from "@/admin/config-scrub";
 import type { GatewayConfig } from "@/config/types";
 
 function makeConfig(overrides: Partial<GatewayConfig> = {}): GatewayConfig {
@@ -20,9 +20,8 @@ function makeConfig(overrides: Partial<GatewayConfig> = {}): GatewayConfig {
     mcpServers: [
       {
         name: "files",
-        type: "http",
-        url: "https://mcp.example.com",
-        headers: { Authorization: "Bearer mcp-token", "X-Custom": "keep-me" },
+        type: "stdio",
+        command: "mcp-files",
         env: { TOKEN: "env-secret-value", MODE: "prod" },
       },
     ],
@@ -53,12 +52,6 @@ describe("scrubConfig", () => {
     expect(scrubConfig(config).adminSecret).toBeUndefined();
   });
 
-  it("redacts MCP headers Authorization but keeps other headers", () => {
-    const scrubbed = scrubConfig(makeConfig());
-    expect(scrubbed.mcpServers![0]!.headers!["Authorization"]).toBe("***");
-    expect(scrubbed.mcpServers![0]!.headers!["X-Custom"]).toBe("keep-me");
-  });
-
   it("redacts all MCP env values but keeps keys", () => {
     const scrubbed = scrubConfig(makeConfig());
     expect(scrubbed.mcpServers![0]!.env).toEqual({ TOKEN: "***", MODE: "***" });
@@ -72,7 +65,7 @@ describe("scrubConfig", () => {
     expect(scrubbed.targets[0]!.name).toBe("primary");
     expect(scrubbed.targets[0]!.baseURL).toBe("https://api.openai.com/v1");
     expect(scrubbed.targets[0]!.weight).toBe(1);
-    expect(scrubbed.mcpServers![0]!.url).toBe("https://mcp.example.com");
+    expect(scrubbed.mcpServers![0]!.command).toBe("mcp-files");
   });
 
   it("does not mutate the input config", () => {
@@ -80,17 +73,15 @@ describe("scrubConfig", () => {
     scrubConfig(original);
     expect(original.targets[0]!.apiKey).toBe("sk-plaintext-secret");
     expect(original.adminSecret).toBe("super-secret-admin");
-    expect(original.mcpServers![0]!.headers!["Authorization"]).toBe("Bearer mcp-token");
     expect(original.mcpServers![0]!.env!["TOKEN"]).toBe("env-secret-value");
   });
 
-  it("handles missing mcpServers and empty env/headers", () => {
+  it("handles missing mcpServers and empty env", () => {
     const config = makeConfig({
-      mcpServers: [{ name: "stdio", type: "stdio", command: "npx", env: {}, headers: {} }],
+      mcpServers: [{ name: "stdio", type: "stdio", command: "npx", env: {} }],
     });
     const scrubbed = scrubConfig(config);
     expect(scrubbed.mcpServers![0]!.env).toEqual({});
-    expect(scrubbed.mcpServers![0]!.headers).toEqual({});
   });
 
   it("preserves nested structures (plugins, aliases, retry)", () => {
@@ -107,19 +98,6 @@ describe("scrubConfig", () => {
     expect(scrubbed.targets[0]!.retry).toEqual({ attempts: 3, onStatusCodes: [429] });
   });
 
-  it("scrubConfigJson round-trips through scrubConfig", () => {
-    const original = makeConfig();
-    const roundTripped = JSON.parse(scrubConfigJson(JSON.stringify(original))) as GatewayConfig;
-    expect(roundTripped).toEqual(scrubConfig(original));
-  });
-
-  it("scrubConfigJson never contains plaintext secrets", () => {
-    const json = scrubConfigJson(JSON.stringify(makeConfig()));
-    expect(json).not.toContain("sk-plaintext-secret");
-    expect(json).not.toContain("super-secret-admin");
-    expect(json).not.toContain("env-secret-value");
-    expect(json).toContain("***");
-  });
 });
 
 describe("scrubConfig — extended secret coverage", () => {
@@ -127,15 +105,14 @@ describe("scrubConfig — extended secret coverage", () => {
     auth: { enabled: true, keys: ["sk-gateway-client-key-PLAINTEXT", "${CLIENT_KEY}"] },
     observability: {
       tracing: { enabled: false, headers: { Authorization: "Bearer otlp-SECRET", "x-honeycomb-team": "hc-SECRET" } },
-      exporters: [{ name: "langfuse", config: { host: "https://lf.example", secretKey: "lf-SECRET", publicKey: "pk-SECRET" } }],
     },
     plugins: [{ name: "webhook", stage: "before_request", config: { url: "https://hook.example", nested: { apiToken: "plug-SECRET", Cookie: "c-SECRET" }, rps: 5 } }],
-    mcpServers: [{ name: "m", url: "https://mcp.example", headers: { authorization: "Bearer mcp-lower-SECRET", "X-Api-Key": "mcp-xkey-SECRET", "X-Trace": "keep" } }],
+    mcpServers: [{ name: "m", command: "mcp", env: { API_KEY: "mcp-env-SECRET" } }],
   });
 
-  it("redacts auth.keys, OTLP headers, MCP headers (any case), exporter and plugin secrets", () => {
+  it("redacts auth.keys, OTLP headers, MCP env and plugin secrets", () => {
     const out = JSON.stringify(scrubConfig(cfg));
-    for (const s of ["PLAINTEXT", "otlp-SECRET", "hc-SECRET", "mcp-lower-SECRET", "mcp-xkey-SECRET", "lf-SECRET", "pk-SECRET", "plug-SECRET", "c-SECRET"]) {
+    for (const s of ["PLAINTEXT", "otlp-SECRET", "hc-SECRET", "mcp-env-SECRET", "plug-SECRET", "c-SECRET"]) {
       expect(out).not.toContain(s);
     }
   });
@@ -144,16 +121,7 @@ describe("scrubConfig — extended secret coverage", () => {
     const s = scrubConfig(cfg);
     expect(s.auth!.keys).toEqual(["***", "${CLIENT_KEY}"]);
     expect(s.auth!.enabled).toBe(true);
-    expect(s.mcpServers![0]!.headers!["X-Trace"]).toBe("keep");
-    expect(s.observability!.exporters![0]!.config!["host"]).toBe("https://lf.example");
     expect(s.plugins![0]!.config!["url"]).toBe("https://hook.example");
     expect(s.plugins![0]!.config!["rps"]).toBe(5);
-  });
-
-  it("scrubConfigJson (history) never contains these secrets", () => {
-    const json = scrubConfigJson(JSON.stringify(cfg));
-    expect(json).not.toContain("PLAINTEXT");
-    expect(json).not.toContain("mcp-lower-SECRET");
-    expect(json).not.toContain("otlp-SECRET");
   });
 });

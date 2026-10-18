@@ -5,7 +5,6 @@ export type { IPlugin, IPluginManager, PluginContext, PluginResult, Stage } from
 export {
   RateLimitPlugin,
   CachePlugin,
-  LoggerPlugin,
   WordFilterPlugin,
   MaxTokenPlugin,
   BudgetPlugin,
@@ -15,7 +14,6 @@ export {
 export type {
   RateLimitConfig,
   CacheConfig,
-  LoggerConfig,
   WordFilterConfig,
   MaxTokenConfig,
   BudgetConfig,

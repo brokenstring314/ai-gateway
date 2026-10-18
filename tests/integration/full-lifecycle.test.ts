@@ -428,7 +428,7 @@ describe("Integration: Metrics endpoint", () => {
 
 describe("Integration: Gateway with observability", () => {
   it("records metrics after route()", async () => {
-    const { getMetrics } = await import("../../src/observability/metrics.js");
+    const { getMetrics } = await import("../../src/metrics/metrics.js");
     const metrics = getMetrics();
     metrics.reset();
 
@@ -445,8 +445,8 @@ describe("Integration: Gateway with observability", () => {
       { model: "gpt-4", messages: [{ role: "user", content: "test" }] },
     );
 
-    const formatted = metrics.format();
-    expect(formatted).toContain("ai_gateway_requests_total");
+    const formatted = await metrics.format();
+    expect(formatted).toContain("ai_gateway_tokens_input_total");
     expect(formatted).toContain('provider="obs-test"');
     metrics.reset();
   });
