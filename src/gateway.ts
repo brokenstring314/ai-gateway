@@ -456,12 +456,15 @@ export class Gateway {
       await this.pluginManager.runBefore(pluginCtx);
     } catch (err) {
       tracer.endSpan(span);
-      if (err instanceof PluginRejectionError) throw err;
+      if (err instanceof PluginRejectionError) {
+        this.recordPluginBlocked(ctx, req.model, "chat", startTime, err);
+      }
       throw err;
     }
 
     if (pluginCtx._shortCircuited && pluginCtx.response) {
       tracer.endSpan(span);
+      this.recordPluginBlocked(ctx, req.model, "chat", startTime, pluginCtx);
       return pluginCtx.response;
     }
 
@@ -531,6 +534,7 @@ export class Gateway {
   ): AsyncGenerator<StreamChunk> {
     const tracer = getTracer();
     const span = tracer.startSpan("gateway.routeStream", { "request.model": req.model });
+    const beforeStart = Date.now();
 
     const resolved = this.resolveAlias(req);
 
@@ -539,16 +543,21 @@ export class Gateway {
       await this.pluginManager.runBefore(pluginCtx);
     } catch (err) {
       tracer.endSpan(span);
-      if (err instanceof PluginRejectionError) throw err;
+      if (err instanceof PluginRejectionError) {
+        this.recordPluginBlocked(ctx, req.model, "chat_stream", beforeStart, err);
+      }
       throw err;
     }
 
     if (pluginCtx._shortCircuited) {
       tracer.endSpan(span);
-      throw new PluginRejectionError(
+      const rejection = new PluginRejectionError(
         "before_request",
         "Plugin short-circuited during streaming request; short-circuit is not supported for streaming",
+        pluginCtx._shortCircuitedBy,
       );
+      this.recordPluginBlocked(ctx, req.model, "chat_stream", beforeStart, rejection);
+      throw rejection;
     }
 
     // MCP tools are NOT injected on the streaming path: there is no agentic
@@ -695,16 +704,23 @@ export class Gateway {
       messages: items.map((text) => ({ role: "user" as const, content: text })),
     }, ctx);
     pluginCtx.metadata["_surface"] = "embedding";
+    const startTime = Date.now();
 
-    await this.pluginManager.runBefore(pluginCtx);
+    await this.runBeforeRecordingRejection(pluginCtx, ctx, req.model, "embedding", startTime);
 
     if (pluginCtx._shortCircuited) {
       const supplied = pluginCtx.metadata["_embeddingResponse"];
-      if (isEmbeddingResponse(supplied)) return supplied;
-      throw new PluginRejectionError(
+      if (isEmbeddingResponse(supplied)) {
+        this.recordPluginBlocked(ctx, req.model, "embedding", startTime, pluginCtx);
+        return supplied;
+      }
+      const rejection = new PluginRejectionError(
         "before_request",
         "Plugin short-circuited an embedding request without supplying an embedding response",
+        pluginCtx._shortCircuitedBy,
       );
+      this.recordPluginBlocked(ctx, req.model, "embedding", startTime, rejection);
+      throw rejection;
     }
 
     const texts = pluginCtx.request.messages.map((m) => messageText(m.content));
@@ -754,16 +770,23 @@ export class Gateway {
       messages: [{ role: "user", content: req.prompt }],
     }, ctx);
     pluginCtx.metadata["_surface"] = "image";
+    const startTime = Date.now();
 
-    await this.pluginManager.runBefore(pluginCtx);
+    await this.runBeforeRecordingRejection(pluginCtx, ctx, req.model, "image", startTime);
 
     if (pluginCtx._shortCircuited) {
       const supplied = pluginCtx.metadata["_imageResponse"];
-      if (isImageResponse(supplied)) return supplied;
-      throw new PluginRejectionError(
+      if (isImageResponse(supplied)) {
+        this.recordPluginBlocked(ctx, req.model, "image", startTime, pluginCtx);
+        return supplied;
+      }
+      const rejection = new PluginRejectionError(
         "before_request",
         "Plugin short-circuited an image request without supplying an image response",
+        pluginCtx._shortCircuitedBy,
       );
+      this.recordPluginBlocked(ctx, req.model, "image", startTime, rejection);
+      throw rejection;
     }
 
     const upstreamReq: ImageRequest = {
@@ -813,16 +836,79 @@ export class Gateway {
     const resolved = this.resolveAlias(request);
     const pluginCtx = createPluginContext(resolved, ctx);
     pluginCtx.metadata["_surface"] = "passthrough";
-    await this.pluginManager.runBefore(pluginCtx);
+    const startTime = Date.now();
+    await this.runBeforeRecordingRejection(pluginCtx, ctx, request.model, "passthrough", startTime);
+    let rejection: PluginRejectionError | undefined;
     if (pluginCtx._shortCircuited) {
-      throw new PluginRejectionError("before_request", "Plugin short-circuit is not supported on pass-through proxy routes");
-    }
-    if (JSON.stringify(pluginCtx.request.messages) !== JSON.stringify(resolved.messages)) {
-      throw new PluginRejectionError(
+      rejection = new PluginRejectionError(
+        "before_request",
+        "Plugin short-circuit is not supported on pass-through proxy routes",
+        pluginCtx._shortCircuitedBy,
+      );
+    } else if (JSON.stringify(pluginCtx.request.messages) !== JSON.stringify(resolved.messages)) {
+      rejection = new PluginRejectionError(
         "before_request",
         "Request content was modified by a plugin; pass-through proxy routes cannot forward modified content",
+        pluginCtx._modifiedBy?.join(","),
       );
     }
+    if (rejection) {
+      this.recordPluginBlocked(ctx, request.model, "passthrough", startTime, rejection);
+      throw rejection;
+    }
+  }
+
+  /** runBefore(), recording a plugin rejection in the request log / metrics before rethrowing it. */
+  private async runBeforeRecordingRejection(
+    pluginCtx: ReturnType<typeof createPluginContext>,
+    ctx: RequestContext,
+    model: string,
+    surface: string,
+    startTime: number,
+  ): Promise<void> {
+    try {
+      await this.pluginManager.runBefore(pluginCtx);
+    } catch (err) {
+      if (err instanceof PluginRejectionError) {
+        this.recordPluginBlocked(ctx, model, surface, startTime, err);
+      }
+      throw err;
+    }
+  }
+
+  /**
+   * Request-log entry and metrics for a request that a before-request plugin
+   * ended without any upstream call: rejected (answered 403) or
+   * short-circuited with the plugin's own response (answered 200). Called
+   * exactly once per such request; provider is "none" (no upstream target).
+   */
+  private recordPluginBlocked(
+    ctx: RequestContext,
+    model: string,
+    surface: string,
+    startTime: number,
+    cause: PluginRejectionError | ReturnType<typeof createPluginContext>,
+  ): void {
+    const rejected = cause instanceof PluginRejectionError;
+    const plugin = (rejected ? cause.plugin : cause._shortCircuitedBy) ?? "unknown";
+    const outcome = rejected ? "plugin_rejected" : "plugin_short_circuit";
+    const durationMs = Date.now() - startTime;
+    const metrics = getMetrics();
+    metrics.recordRequest(NO_UPSTREAM_PROVIDER, model, durationMs);
+    metrics.recordPluginBlocked(plugin, outcome, surface);
+    void getRequestLogger().logRequest({
+      timestamp: new Date().toISOString(),
+      requestId: ctx.traceId ?? "",
+      model,
+      provider: NO_UPSTREAM_PROVIDER,
+      strategy: this.config.strategy.mode,
+      durationMs,
+      status: rejected ? PLUGIN_REJECTION_STATUS : 200,
+      plugin,
+      surface,
+      outcome,
+      ...(rejected ? { error: cause.reason } : {}),
+    });
   }
 
   /** Embedding request — find provider and call embed(). */
@@ -1192,6 +1278,11 @@ export class Gateway {
     return req;
   }
 }
+
+/** Provider label for requests that never reached an upstream target. */
+const NO_UPSTREAM_PROVIDER = "none";
+/** HTTP status every handler answers a PluginRejectionError with. */
+const PLUGIN_REJECTION_STATUS = 403;
 
 function timeoutError(target: string): ProviderError {
   return new ProviderError(target, 504, `upstream "${target}" timed out (gateway request timeout)`);
