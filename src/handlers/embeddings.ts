@@ -10,6 +10,7 @@ import type { Gateway } from "../gateway.js";
 import { toOpenAIWireEmbeddingResponse } from "./openai-wire.js";
 import { ProviderError } from "../providers/openai-compat.js";
 import { PluginRejectionError } from "../plugins/error.js";
+import { isTimeoutAbort, isTimeoutError } from "../routing/outcome.js";
 
 const EmbeddingRequestSchema = z.object({
   model: z.string().min(1),
@@ -57,6 +58,11 @@ export function registerEmbeddingsHandler(app: AppType, gateway: Gateway): void 
       });
       return c.json(toOpenAIWireEmbeddingResponse(response), 200);
     } catch (err) {
+      // The gateway's own request timeout fired (AbortError, TimeoutError or
+      // any error the provider surfaced after the abort): 504, like chat.
+      if (isTimeoutAbort(signal) || isTimeoutError(err)) {
+        return errorResponse(c, 504, "Upstream request timed out", "timeout_error", "gateway_timeout");
+      }
       if (err instanceof PluginRejectionError) {
         return errorResponse(c, 403, err.reason, "plugin_rejection", "plugin_rejected");
       }
