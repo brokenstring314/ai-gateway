@@ -56,3 +56,12 @@
   to pass through, or `true` for the old full inheritance.
   *Migration:* a server that relied on an inherited variable needs it in `env`
   or `inheritEnv`.
+
+### Fixes
+
+- **MCP stdio servers are restarted after a crash** (B3-10). A server that
+  fails to start or exits is reconnected with exponential backoff
+  (1 s → 60 s), and each disconnect / attempt / recovery is logged. A
+  `required` server that fails 5 consecutive attempts makes `/livez` return
+  503. Failed servers now show up as `unready` in `/readyz` `mcpServers`
+  instead of being missing.

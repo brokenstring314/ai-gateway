@@ -110,8 +110,9 @@ export class McpClient {
   private buffer = "";
   private initialized = false;
   private toolsCache: McpTool[] = [];
-  private reading = false;
   private state: McpServerReadiness = "unready";
+  private closed = false;
+  private disconnectListener: ((reason: string) => void) | null = null;
   private readonly allowedTools: ReadonlySet<string> | null;
   private readonly timeoutMs: number;
 
@@ -137,11 +138,13 @@ export class McpClient {
     }
 
     this.state = "unready";
+    this.closed = false;
+    this.buffer = "";
     try {
       this.subprocess = this.spawn(this.config);
 
       this.state = "connected";
-      this.startReading();
+      this.startReading(this.subprocess);
 
       await this.sendRequest<McpInitializeResult>(
         "initialize",
@@ -222,7 +225,17 @@ export class McpClient {
     return text;
   }
 
+  /**
+   * Called when an established (or handshaking) connection drops on its own:
+   * the process exited or its stdout closed. Not called for close() or for a
+   * connect() that throws (the caller sees the error).
+   */
+  setDisconnectListener(listener: ((reason: string) => void) | null): void {
+    this.disconnectListener = listener;
+  }
+
   close(): void {
+    this.closed = true;
     if (this.subprocess) {
       this.subprocess.kill();
       this.subprocess = null;
@@ -256,12 +269,6 @@ export class McpClient {
   private get stdinPipe(): { write(data: string): void } | undefined {
     const stdin = this.subprocess?.stdin;
     if (stdin && typeof stdin !== "number") return stdin;
-    return undefined;
-  }
-
-  private get stdoutPipe(): ReadableStream<Uint8Array> | undefined {
-    const stdout = this.subprocess?.stdout;
-    if (stdout && typeof stdout !== "number") return stdout;
     return undefined;
   }
 
@@ -338,29 +345,33 @@ export class McpClient {
     }
   }
 
-  private startReading(): void {
-    const stream = this.stdoutPipe;
-    if (this.reading || !stream) return;
-    this.reading = true;
+  private startReading(proc: McpSubprocess): void {
+    const stream = typeof proc.stdout !== "number" ? proc.stdout : undefined;
+    if (!stream) return;
 
     const reader = stream.getReader();
+    const decoder = new TextDecoder();
+    // Each pump belongs to one subprocess: a late EOF from a killed process
+    // must not tear down a newer connection after a reconnect.
+    const isCurrent = (): boolean => this.subprocess === proc;
 
     const pump = async (): Promise<void> => {
       try {
-        // eslint-disable-next-line no-constant-condition
         while (true) {
           const { done, value } = await reader.read();
-          if (done) break;
+          if (done || !isCurrent()) break;
 
-          this.buffer += new TextDecoder().decode(value);
+          this.buffer += decoder.decode(value, { stream: true });
           this.processBuffer();
         }
       } catch {
-        // stream error — handled by handleDisconnect below
-      } finally {
-        this.reading = false;
+        // stream error — handled below
       }
+      if (!isCurrent()) return;
+      const wasUp = this.state !== "unready";
+      this.subprocess = null;
       this.handleDisconnect("stdio stream ended");
+      if (wasUp && !this.closed) this.disconnectListener?.("process exited or closed stdout");
     };
 
     void pump();

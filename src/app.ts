@@ -161,7 +161,7 @@ export function createApp(
 
   // ── Handlers ──
   registerHealthHandler(app);
-  registerLivenessHandler(app);
+  registerLivenessHandler(app, gateway);
   registerReadinessHandler(app, gateway, [keyStore, options?.logStore], () => options?.inFlightTracker?.draining ?? false);
   registerCapabilitiesHandler(app, gateway);
   registerChatHandler(app, gateway);
