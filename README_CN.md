@@ -335,6 +335,8 @@ POST /v1/chat/completions
 - `stream_options.include_usage` 在最终 chunk 中包含用量
 - `max_tokens` / `max_completion_tokens`
 - `parallel_tool_calls`
+- `tools[].function.strict`
+- 网关不建模的字段按白名单双向透传。请求：`reasoning_effort`、`verbosity`、`store`、`metadata`、`modalities`、`audio`、`prediction`、`service_tier`、`web_search_options`、`prompt_cache_key`、`safety_identifier` 以及常见厂商参数（`top_k`、`min_p`、`repetition_penalty`、`reasoning`、`thinking`、`enable_thinking`、`chat_template_kwargs`、Perplexity 的 `search_*` / `return_*`）；消息上的 `reasoning_content` / `reasoning` / `refusal` / `audio` / `prefix`。响应与流式 chunk：`system_fingerprint`、`service_tier`、`citations`、`search_results`；`choices[].logprobs`；message / delta 上的 `reasoning_content`、`reasoning`、`refusal`、`annotations`、`audio`；usage 的 `prompt_tokens_details`、`completion_tokens_details`、`cost`。其他未知字段仍会丢弃。
 
 **请求：**
 
@@ -359,24 +361,24 @@ POST /v1/chat/completions
   "object": "chat.completion",
   "created": 1700000000,
   "model": "gpt-4o",
-  "provider": "openai-main",
   "choices": [{
     "index": 0,
     "message": {"role": "assistant", "content": "你好！有什么可以帮你的？"},
-    "finishReason": "stop"
+    "logprobs": null,
+    "finish_reason": "stop"
   }],
-  "usage": {"promptTokens": 15, "completionTokens": 8, "totalTokens": 23}
+  "usage": {"prompt_tokens": 15, "completion_tokens": 8, "total_tokens": 23}
 }
 ```
 
 **流式响应**（`"stream": true`）：
 
 ```
-data: {"id":"chatcmpl-abc","object":"chat.completion.chunk","model":"gpt-4o","choices":[{"index":0,"delta":{"role":"assistant","content":"你好"},"finishReason":""}]}
+data: {"id":"chatcmpl-abc","object":"chat.completion.chunk","model":"gpt-4o","choices":[{"index":0,"delta":{"role":"assistant","content":"你好"},"logprobs":null,"finish_reason":null}]}
 
-data: {"id":"chatcmpl-abc","object":"chat.completion.chunk","model":"gpt-4o","choices":[{"index":0,"delta":{"content":"！"},"finishReason":""}]}
+data: {"id":"chatcmpl-abc","object":"chat.completion.chunk","model":"gpt-4o","choices":[{"index":0,"delta":{"content":"！"},"logprobs":null,"finish_reason":"stop"}]}
 
-data: {"id":"chatcmpl-abc","object":"chat.completion.chunk","model":"gpt-4o","choices":[{"index":0,"delta":{"role":"assistant"},"finishReason":"stop"}],"usage":{"promptTokens":15,"completionTokens":2,"totalTokens":17}}
+data: {"id":"chatcmpl-abc","object":"chat.completion.chunk","model":"gpt-4o","choices":[],"usage":{"prompt_tokens":15,"completion_tokens":2,"total_tokens":17}}
 
 data: [DONE]
 ```
@@ -387,7 +389,7 @@ data: [DONE]
 POST /v1/completions
 ```
 
-兼容旧版 `/v1/completions` 端点。Prompt 会在内部转换为单条用户消息。
+OpenAI 旧版 completions 线上格式。Prompt 转成单条用户消息，走 chat 管线（插件、路由、回退）。支持标准 snake_case 参数（`max_tokens`、`top_p`、`presence_penalty`、`frequency_penalty`、`logit_bias`、`stop`、`n`、`seed`、`user`、`stream_options`；整数 `logprobs` 映射为 chat 的 `top_logprobs`）。响应是 `text_completion`（`choices[].text`、`finish_reason`、旧版 `logprobs`：`tokens` / `token_logprobs` / `top_logprobs` / `text_offset`，snake_case 的 `usage`），流式 chunk 同形。chat 无法表达的选项返回 400 `validation_failed`：`echo: true`、非空 `suffix`、`best_of` > 1、批量 prompt（多于一个元素的数组）。
 
 ### Embeddings
 
@@ -447,14 +449,22 @@ GET /v1/capabilities
 
 路由前会先规范化路径：重复斜杠、末尾斜杠、`%2F` 以及上述路由的大小写变体（如 `/v1/chat/completions/`、`/v1//chat/completions`、`/V1/Chat/Completions`）都会进入真正的处理器，因此始终经过插件、熔断和回退。
 
+对上述路由使用其他方法（如 `GET /v1/chat/completions`、`DELETE /v1/completions`）返回 **405** `method_not_allowed`，带 `Allow` 头，绝不透传。
+
 其他 `/v1/*` 路由（如 `/v1/responses`、`/v1/files`）默认返回 **404**，除非开启透传代理：
 
 ```yaml
 passthroughProxy:
   enabled: true   # 默认 false
+  routes:         # 方法+路径白名单；以下即默认值
+    - POST /v1/responses
+    - POST /v1/moderations
+    - POST /v1/audio/*       # /* = 任意子路径
 ```
 
-开启后，请求会先运行 **before-request 插件**（限流、预算检查、对 `messages` / `input` / `prompt` / `instructions` 的敏感词过滤），再按 `X-Provider` 头或请求体顶层 `model` 原样转发。由于请求体结构未知，需要改写内容的插件（word-filter `redact`）或短路会直接返回 403。透传请求**没有**熔断、回退、after-request 插件和预算累计，因此默认关闭。
+只转发白名单内的路由，其他一律 **403** `route_not_allowed`。默认只放无状态的 POST：所有透传请求都使用 target 唯一的上游密钥，列出/读取/删除已存对象的路由（`GET /v1/files`、`DELETE /v1/files/{id}`、`GET /v1/responses/{id}`、batches、vector stores、已存的 chat completions）会让一个客户端访问到所有其他客户端的数据。只有网关只服务单一租户时才应加入这类路由。条目格式为 `"METHOD /v1/path"` 或 `"METHOD /v1/prefix/*"`（方法写 `*` 表示任意方法）；含编码斜杠的路径永不转发。
+
+开启后，请求会先运行 **before-request 插件**（限流、预算检查、对 `messages` / `input` / `prompt` / `instructions` 的敏感词过滤；max-token 作用于 `max_output_tokens` / `max_tokens` / `max_completion_tokens`，`/v1/responses` 未设置时注入 `max_output_tokens`），再按 `X-Provider` 头或请求体顶层 `model` 原样转发。由于请求体结构未知，需要改写内容的插件（word-filter `redact`）或短路会直接返回 403；被封顶的 token 上限会写入转发的请求体。透传请求**没有**熔断、回退、after-request 插件和预算累计，因此默认关闭。
 
 ### 健康探针
 
@@ -773,7 +783,7 @@ plugins:
   - name: max-token
     stage: before_request
     config:
-      maxTokens: 4096           # 每个请求的最大 token 数（默认：4096）
+      maxTokens: 4096           # 每个请求的最大输出 token 数；请求未设置时注入（默认：4096）
       maxMessages: 100          # 对话中的最大消息数（默认：100）
 ```
 

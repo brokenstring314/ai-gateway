@@ -83,6 +83,13 @@ export interface ChatCompletionRequest {
   topLogprobs?: number;
   streamOptions?: StreamOptions;
   parallelToolCalls?: boolean;
+  /**
+   * Allow-listed wire fields the gateway does not model (reasoning_effort,
+   * store, metadata, provider knobs such as top_k …), keyed by their OpenAI
+   * wire (snake_case) name and forwarded upstream verbatim. Typed fields win.
+   * See providers/wire-extras.ts.
+   */
+  extra?: Record<string, unknown>;
 }
 
 export interface ChatMessage {
@@ -91,6 +98,8 @@ export interface ChatMessage {
   name?: string;
   toolCalls?: readonly ToolCall[];
   toolCallId?: string;
+  /** Allow-listed wire fields on a message (reasoning_content, refusal, annotations …), snake_case. */
+  extra?: Record<string, unknown>;
 }
 
 export interface ContentPart {
@@ -105,6 +114,8 @@ export interface ToolDefinition {
     name: string;
     description?: string;
     parameters?: Record<string, unknown>;
+    /** Structured-outputs strict mode for this function's arguments. */
+    strict?: boolean;
   };
 }
 
@@ -140,6 +151,8 @@ export interface ChatCompletionResponse {
   metadata?: Record<string, unknown>;
   /** Forwardable upstream HTTP response headers (whitelist-filtered). */
   upstreamHeaders?: Readonly<Record<string, string>>;
+  /** Allow-listed top-level wire fields (system_fingerprint, service_tier, citations …), snake_case. */
+  extra?: Record<string, unknown>;
 }
 
 export interface Choice {
@@ -147,6 +160,10 @@ export interface Choice {
   message?: ChatMessage;
   delta?: ChatMessage;
   finishReason: string;
+  /** Upstream `logprobs` object, forwarded as-is (null/absent when not requested). */
+  logprobs?: unknown;
+  /** Allow-listed choice-level wire fields (content_filter_results …), snake_case. */
+  extra?: Record<string, unknown>;
 }
 
 export interface Usage {
@@ -155,6 +172,8 @@ export interface Usage {
   totalTokens: number;
   promptTokensDetails?: Record<string, number>;
   completionTokensDetails?: Record<string, number>;
+  /** Allow-listed usage wire fields (cost, prompt_cache_hit_tokens …), snake_case. */
+  extra?: Record<string, unknown>;
 }
 
 export interface StreamChunk {
@@ -164,6 +183,8 @@ export interface StreamChunk {
   model: string;
   choices: readonly Choice[];
   usage?: Usage;
+  /** Allow-listed top-level wire fields (system_fingerprint, citations …), snake_case. */
+  extra?: Record<string, unknown>;
 }
 
 // --- Embeddings ---

@@ -28,6 +28,14 @@ import type { CompatibilityConfig } from "../config/types.js";
 import { enforceUnsupportedParams } from "./capabilities.js";
 import { chunkFromJsonResponse, parseSSEStream } from "./sse-parser.js";
 import { extractForwardableHeaders } from "./response-headers.js";
+import {
+  CHOICE_EXTRA_KEYS,
+  RESPONSE_EXTRA_KEYS,
+  RESPONSE_MESSAGE_EXTRA_KEYS,
+  applyExtras,
+  normalizeWireUsage,
+  pickExtras,
+} from "./wire-extras.js";
 
 export interface OpenAiCompatOptions {
   /** Target name (errors, metrics, served-by). */
@@ -279,6 +287,7 @@ function buildRequestBody(req: ChatCompletionRequest): Record<string, unknown> {
       const fn: Record<string, unknown> = { name: t.function.name };
       if (t.function.description !== undefined) fn["description"] = t.function.description;
       if (t.function.parameters !== undefined) fn["parameters"] = t.function.parameters;
+      if (t.function.strict !== undefined) fn["strict"] = t.function.strict;
       return { type: t.type, function: fn };
     });
   }
@@ -301,7 +310,8 @@ function buildRequestBody(req: ChatCompletionRequest): Record<string, unknown> {
     body["stream"] = req.stream;
   }
 
-  return body;
+  // Allow-listed pass-through fields (reasoning_effort, store, top_k …); typed fields win.
+  return applyExtras(body, req.extra);
 }
 
 function serializeMessage(msg: ChatMessage): Record<string, unknown> {
@@ -333,7 +343,7 @@ function serializeMessage(msg: ChatMessage): Record<string, unknown> {
 
   if (msg.toolCallId !== undefined) m["tool_call_id"] = msg.toolCallId;
 
-  return m;
+  return applyExtras(m, msg.extra);
 }
 
 function serializeToolChoice(tc: ToolChoice): unknown {
@@ -363,15 +373,17 @@ function normalizeResponse(
   const rawChoices = raw["choices"];
   if (Array.isArray(rawChoices)) {
     for (const c of rawChoices as Record<string, unknown>[]) {
-      choices.push({
+      const choice: Choice = {
         index: typeof c["index"] === "number" ? (c["index"] as number) : 0,
         message: normalizeChoiceMessage(c["message"]),
         finishReason: normalizeFinishReason(String(c["finish_reason"] ?? "")),
-      });
+      };
+      if (c["logprobs"] !== undefined && c["logprobs"] !== null) choice.logprobs = c["logprobs"];
+      const choiceExtra = pickExtras(c, CHOICE_EXTRA_KEYS);
+      if (choiceExtra) choice.extra = choiceExtra;
+      choices.push(choice);
     }
   }
-
-  const usageRaw = raw["usage"] as Record<string, number> | undefined;
 
   const metadata: Record<string, unknown> = {};
   if (extraFields) {
@@ -383,23 +395,20 @@ function normalizeResponse(
   }
 
   const model = String(raw["model"] ?? "");
+  const extra = pickExtras(raw, extraFields ? [...RESPONSE_EXTRA_KEYS, ...extraFields] : RESPONSE_EXTRA_KEYS);
 
-  return {
+  const response: ChatCompletionResponse = {
     id: String(raw["id"] ?? ""),
     object: String(raw["object"] ?? "chat.completion"),
     created: typeof raw["created"] === "number" ? (raw["created"] as number) : 0,
     model,
     provider: providerName,
     choices,
-    usage: usageRaw
-      ? {
-          promptTokens: usageRaw["prompt_tokens"] ?? 0,
-          completionTokens: usageRaw["completion_tokens"] ?? 0,
-          totalTokens: usageRaw["total_tokens"] ?? 0,
-        }
-      : { promptTokens: 0, completionTokens: 0, totalTokens: 0 },
+    usage: normalizeWireUsage(raw["usage"]) ?? { promptTokens: 0, completionTokens: 0, totalTokens: 0 },
     metadata: Object.keys(metadata).length > 0 ? metadata : undefined,
   };
+  if (extra) response.extra = extra;
+  return response;
 }
 
 function normalizeEmbeddingResponse(
@@ -472,6 +481,8 @@ function normalizeChoiceMessage(raw: unknown): Choice["message"] {
     });
   }
 
+  const extra = pickExtras(m, RESPONSE_MESSAGE_EXTRA_KEYS);
+  if (extra) message.extra = extra;
   return message;
 }
 

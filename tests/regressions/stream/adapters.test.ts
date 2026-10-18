@@ -31,14 +31,14 @@ describe("T3-8 provider capability enforcement is dead: config.compatibility nev
 });
 
 describe("T3-9 provider-specific response fields / headers lost (definitions/*.ts unused by the gateway)", () => {
-  it.failing("perplexity citations reach the client (non-stream)", async () => {
+  it("perplexity citations reach the client (non-stream)", async () => {
     const s = setup(() => completion({ citations: ["https://a.example"], search_results: [{ url: "https://a.example" }] }), {}, { provider: "perplexity" });
     try {
       const j = await (await post(s.app, {})).json() as Record<string, unknown>;
       expect(j["citations"]).toEqual(["https://a.example"]); // BUG: undefined
     } finally { s.stop(); }
   });
-  it.failing("system_fingerprint / service_tier are preserved (non-stream)", async () => {
+  it("system_fingerprint / service_tier are preserved (non-stream)", async () => {
     const s = setup(() => completion({ system_fingerprint: "fp_1", service_tier: "default" }));
     try {
       const j = await (await post(s.app, {})).json() as Record<string, unknown>;
@@ -56,7 +56,7 @@ describe("T3-9 provider-specific response fields / headers lost (definitions/*.t
 });
 
 describe("T3-11 (known, still reproduces) protocol fields dropped", () => {
-  it.failing("non-stream: reasoning_content / refusal / logprobs / usage details preserved", async () => {
+  it("non-stream: reasoning_content / refusal / logprobs / usage details preserved", async () => {
     const s = setup(() => Response.json({
       id: "x", object: "chat.completion", created: 1, model: "gpt-4o",
       choices: [{ index: 0, message: { role: "assistant", content: "ok", reasoning_content: "think", refusal: null }, logprobs: { content: [{ token: "ok", logprob: -0.1, bytes: [111, 107], top_logprobs: [] }] }, finish_reason: "stop" }],
@@ -71,7 +71,7 @@ describe("T3-11 (known, still reproduces) protocol fields dropped", () => {
       expect(got.ptd).toEqual({ cached_tokens: 1 });
     } finally { s.stop(); }
   });
-  it.failing("stream: delta.reasoning_content and choice logprobs forwarded", async () => {
+  it("stream: delta.reasoning_content and choice logprobs forwarded", async () => {
     const s = setup(() => sse([
       `data: ${JSON.stringify({ id: "c", object: "chat.completion.chunk", created: 1, model: "gpt-4o", choices: [{ index: 0, delta: { role: "assistant", reasoning_content: "thinking..." }, finish_reason: null }] })}\n\n`,
       `data: ${JSON.stringify({ id: "c", object: "chat.completion.chunk", created: 1, model: "gpt-4o", choices: [{ index: 0, delta: { content: "ok" }, logprobs: { content: [{ token: "ok", logprob: -0.1 }] }, finish_reason: "stop" }] })}\n\n`,
@@ -84,7 +84,7 @@ describe("T3-11 (known, still reproduces) protocol fields dropped", () => {
       expect(t).toContain("reasoning_tokens"); // BUG: usage details dropped on stream
     } finally { s.stop(); }
   });
-  it.failing("request: tools[].function.strict, reasoning_effort, metadata, store, modalities forwarded", async () => {
+  it("request: tools[].function.strict, reasoning_effort, metadata, store, modalities forwarded", async () => {
     const s = setup(() => completion());
     try {
       await post(s.app, { reasoning_effort: "high", store: true, metadata: { a: "b" }, tools: [{ type: "function", function: { name: "f", strict: true, parameters: { type: "object" } } }] });
@@ -94,7 +94,7 @@ describe("T3-11 (known, still reproduces) protocol fields dropped", () => {
       expect(up.tools[0].function.strict).toBe(true);
     } finally { s.stop(); }
   });
-  it.failing("max-token plugin: request that omits max_tokens is not capped (bypass)", async () => {
+  it("max-token plugin: request that omits max_tokens is not capped (bypass)", async () => {
     const s = setup(() => completion(), { plugins: [{ name: "max-token", stage: "before_request", config: { maxTokens: 100 } }] } as never);
     try {
       await post(s.app, {});

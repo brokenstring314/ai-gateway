@@ -30,18 +30,18 @@ async function setup() {
 }
 
 describe("S3-6 pass-through exposes shared upstream state", () => {
-  it.failing("GET /v1/chat/completions (list stored completions) must not be proxied with the operator key", async () => {
+  it("GET /v1/chat/completions (list stored completions) must not be proxied with the operator key", async () => {
     const { app, tenantB } = await setup();
     const r = await app.request("/v1/chat/completions?limit=100", { method: "GET", headers: { authorization: `Bearer ${tenantB}`, "x-provider": "t" } });
     expect(calls.filter((c) => c.method === "GET" && c.url.includes("/v1/chat/completions") && c.auth === "Bearer sk-OPERATOR-SECRET")).toEqual([]); // FAILS
     expect(r.status).not.toBe(200);
   });
-  it.failing("DELETE /v1/files/<other tenant's file> must not be proxied with the operator key", async () => {
+  it("DELETE /v1/files/<other tenant's file> must not be proxied with the operator key", async () => {
     const { app, tenantB } = await setup();
     await app.request("/v1/files/file-of-tenant-a", { method: "DELETE", headers: { authorization: `Bearer ${tenantB}`, "x-provider": "t" } });
     expect(calls.filter((c) => c.method === "DELETE")).toEqual([]); // FAILS
   });
-  it.failing("max-token cap must apply to proxied /v1/responses bodies", async () => {
+  it("max-token cap must apply to proxied /v1/responses bodies", async () => {
     const { app, tenantB } = await setup();
     await app.request("/v1/responses", { method: "POST", headers: { authorization: `Bearer ${tenantB}`, "content-type": "application/json" }, body: JSON.stringify({ model: "gpt-4o", input: "hi", max_output_tokens: 100000 }) });
     const sent = calls.find((c) => c.url.endsWith("/v1/responses"));

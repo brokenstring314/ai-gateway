@@ -346,6 +346,19 @@ Full OpenAI Chat Completions API compatibility, including:
 - `stream_options.include_usage` for usage in final chunk
 - `max_tokens` / `max_completion_tokens`
 - `parallel_tool_calls`
+- `tools[].function.strict`
+- Allow-listed pass-through of fields the gateway does not model, in both
+  directions. Request: `reasoning_effort`, `verbosity`, `store`, `metadata`,
+  `modalities`, `audio`, `prediction`, `service_tier`, `web_search_options`,
+  `prompt_cache_key`, `safety_identifier` and common provider knobs (`top_k`,
+  `min_p`, `repetition_penalty`, `reasoning`, `thinking`, `enable_thinking`,
+  `chat_template_kwargs`, Perplexity `search_*` / `return_*`); message
+  `reasoning_content` / `reasoning` / `refusal` / `audio` / `prefix`.
+  Response and stream chunks: `system_fingerprint`, `service_tier`,
+  `citations`, `search_results`; `choices[].logprobs`; message / delta
+  `reasoning_content`, `reasoning`, `refusal`, `annotations`, `audio`; usage
+  `prompt_tokens_details`, `completion_tokens_details`, `cost`. Other unknown
+  keys are dropped.
 
 **Request:**
 
@@ -370,24 +383,24 @@ Full OpenAI Chat Completions API compatibility, including:
   "object": "chat.completion",
   "created": 1700000000,
   "model": "gpt-4o",
-  "provider": "openai-main",
   "choices": [{
     "index": 0,
     "message": {"role": "assistant", "content": "Hello! How can I help?"},
-    "finishReason": "stop"
+    "logprobs": null,
+    "finish_reason": "stop"
   }],
-  "usage": {"promptTokens": 15, "completionTokens": 8, "totalTokens": 23}
+  "usage": {"prompt_tokens": 15, "completion_tokens": 8, "total_tokens": 23}
 }
 ```
 
 **Streaming response** (`"stream": true`):
 
 ```
-data: {"id":"chatcmpl-abc","object":"chat.completion.chunk","model":"gpt-4o","choices":[{"index":0,"delta":{"role":"assistant","content":"Hello"},"finishReason":""}]}
+data: {"id":"chatcmpl-abc","object":"chat.completion.chunk","model":"gpt-4o","choices":[{"index":0,"delta":{"role":"assistant","content":"Hello"},"logprobs":null,"finish_reason":null}]}
 
-data: {"id":"chatcmpl-abc","object":"chat.completion.chunk","model":"gpt-4o","choices":[{"index":0,"delta":{"content":"!"},"finishReason":""}]}
+data: {"id":"chatcmpl-abc","object":"chat.completion.chunk","model":"gpt-4o","choices":[{"index":0,"delta":{"content":"!"},"logprobs":null,"finish_reason":"stop"}]}
 
-data: {"id":"chatcmpl-abc","object":"chat.completion.chunk","model":"gpt-4o","choices":[{"index":0,"delta":{"role":"assistant"},"finishReason":"stop"}],"usage":{"promptTokens":15,"completionTokens":2,"totalTokens":17}}
+data: {"id":"chatcmpl-abc","object":"chat.completion.chunk","model":"gpt-4o","choices":[],"usage":{"prompt_tokens":15,"completion_tokens":2,"total_tokens":17}}
 
 data: [DONE]
 ```
@@ -398,7 +411,23 @@ data: [DONE]
 POST /v1/completions
 ```
 
-Compatible with the legacy `/v1/completions` endpoint. Prompts are converted to a single user message internally.
+OpenAI legacy completions wire format. The prompt becomes a single user
+message and runs through the chat pipeline (plugins, routing, fallback). The
+standard snake_case parameters are honoured (`max_tokens`, `top_p`,
+`presence_penalty`, `frequency_penalty`, `logit_bias`, `stop`, `n`, `seed`,
+`user`, `stream_options`; integer `logprobs` maps to chat `top_logprobs`).
+The response is a `text_completion` (`choices[].text`, `finish_reason`,
+legacy `logprobs` with `tokens` / `token_logprobs` / `top_logprobs` /
+`text_offset`, snake_case `usage`); stream chunks have the same shape.
+Options chat cannot express are rejected with 400 `validation_failed`:
+`echo: true`, a non-empty `suffix`, `best_of` > 1, and batched prompts (an
+array of more than one prompt).
+
+```json
+{"id":"cmpl-1","object":"text_completion","created":1700000000,"model":"gpt-3.5-turbo-instruct",
+ "choices":[{"text":"Hello!","index":0,"logprobs":null,"finish_reason":"stop"}],
+ "usage":{"prompt_tokens":2,"completion_tokens":2,"total_tokens":4}}
+```
 
 ### Embeddings
 
@@ -461,20 +490,41 @@ and case variants of the routes above (e.g. `/v1/chat/completions/`,
 `/v1//chat/completions`, `/V1/Chat/Completions`) are served by the real
 handlers, so they always get plugins, circuit breakers and fallback.
 
+Another method on one of these routes (e.g. `GET /v1/chat/completions`,
+`DELETE /v1/completions`) answers **405** `method_not_allowed` with an `Allow`
+header; it is never proxied.
+
 Any other `/v1/*` route (e.g. `/v1/responses`, `/v1/files`) returns **404**
 unless the pass-through proxy is enabled:
 
 ```yaml
 passthroughProxy:
   enabled: true   # default: false
+  routes:         # method+path allow-list; this is the default
+    - POST /v1/responses
+    - POST /v1/moderations
+    - POST /v1/audio/*       # /* = any sub-path
 ```
+
+Only allow-listed routes are forwarded; anything else gets **403**
+`route_not_allowed`. The default allows only stateless POST endpoints: every
+proxied request uses the target's single upstream key, so routes that list,
+read or delete stored objects (`GET /v1/files`, `DELETE /v1/files/{id}`,
+`GET /v1/responses/{id}`, batches, vector stores, stored chat completions)
+would let one client reach every other client's data. Add such routes only
+when the gateway serves a single tenant. Entries are `"METHOD /v1/path"` or
+`"METHOD /v1/prefix/*"` (`*` as method = any method); paths with encoded
+slashes are never forwarded.
 
 When enabled, the request is forwarded verbatim to the target chosen by the
 `X-Provider` header or the body's top-level `model`, after the
 **before-request plugins** run on it (rate-limit, budget check, word-filter on
-`messages` / `input` / `prompt` / `instructions`). Because the body shape is
-unknown, a plugin that would rewrite content (word-filter `redact`) or
-short-circuit causes a 403 instead. Proxied requests do **not** get circuit
+`messages` / `input` / `prompt` / `instructions`; max-token on
+`max_output_tokens` / `max_tokens` / `max_completion_tokens`, injecting
+`max_output_tokens` on `/v1/responses` when the client omitted it). Because
+the body shape is unknown, a plugin that would rewrite content (word-filter
+`redact`) or short-circuit causes a 403 instead; a capped token limit is
+written into the forwarded body. Proxied requests do **not** get circuit
 breakers, fallback, after-request plugins or budget accrual, which is why the
 proxy is off by default.
 
@@ -822,7 +872,7 @@ plugins:
   - name: max-token
     stage: before_request
     config:
-      maxTokens: 4096           # Max tokens per request (default: 4096)
+      maxTokens: 4096           # Max output tokens per request; injected when the request sets none (default: 4096)
       maxMessages: 100          # Max messages in conversation (default: 100)
 ```
 

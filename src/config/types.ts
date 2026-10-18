@@ -156,6 +156,12 @@ export interface GatewayConfig {
    */
   passthroughProxy?: {
     enabled?: boolean;
+    /**
+     * Method+path allow-list of forwarded routes ("POST /v1/responses",
+     * "POST /v1/audio/*"). Default: POST /v1/responses, /v1/moderations,
+     * /v1/audio/*. Anything else gets 403 route_not_allowed.
+     */
+    routes?: string[];
   };
   adminSecret?: string;
   auth?: {
