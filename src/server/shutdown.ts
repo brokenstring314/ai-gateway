@@ -39,6 +39,9 @@ export class ShutdownManager {
       return;
     }
     this.shuttingDownFlag = true;
+    // Flip readiness to 503 and reject new requests before draining, so the
+    // load balancer stops sending traffic while in-flight requests finish.
+    this.inFlightTracker.startDraining();
     this.logger(`shutdown started: ${reason ?? "unknown reason"}`);
     await this.inFlightTracker.drain(this.graceMs);
     for (const component of this.components) {
@@ -65,6 +68,16 @@ export class ShutdownManager {
 
 export class InFlightTracker {
   private count = 0;
+  private drainingFlag = false;
+
+  /** True once shutdown began: /readyz answers 503 and new requests are rejected. */
+  get draining(): boolean {
+    return this.drainingFlag;
+  }
+
+  startDraining(): void {
+    this.drainingFlag = true;
+  }
 
   get pending(): number {
     return this.count;

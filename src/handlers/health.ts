@@ -18,10 +18,29 @@ export function registerLivenessHandler(app: AppType): void {
   });
 }
 
+/**
+ * GET /readyz — Kubernetes / load-balancer readiness.
+ *
+ * Ready = config loaded with at least one provider, config store reachable,
+ * required MCP servers initialized, and the process is not draining.
+ *
+ * Upstream circuit-breaker state deliberately does NOT affect readiness:
+ * every replica talks to the same upstreams, so an upstream outage opens the
+ * same breakers on every pod at once. Failing readiness on it would pull the
+ * whole fleet out of the load balancer and turn a partial (or even fully
+ * failed-over) upstream outage into a total gateway outage, while removing a
+ * pod can never fix an upstream. Breaker states and whether any target is
+ * still usable are reported in the body (`circuitBreakers`,
+ * `upstreamAvailable`) for dashboards and alerts instead.
+ *
+ * While draining after SIGTERM/SIGINT, /readyz answers 503 immediately so the
+ * load balancer stops routing new traffic to this pod.
+ */
 export function registerReadinessHandler(
   app: AppType,
   gateway: Gateway,
   configStore?: ConfigStore,
+  isDraining?: () => boolean,
 ): void {
   app.get("/readyz", (c) => {
     const registry = gateway.getRegistry();
@@ -37,18 +56,21 @@ export function registerReadinessHandler(
     const providerReady = Boolean(config && registry.size > 0);
     const gatewayReadiness = gateway as unknown as {
       isMcpReady?: () => boolean;
-      hasOpenCircuitBreaker?: () => boolean;
       mcpReadiness?: () => Readonly<Record<string, string>>;
+      circuitBreakerStates?: () => Readonly<Record<string, string>>;
+      hasUsableTarget?: () => boolean;
     };
     const mcpReady = gatewayReadiness.isMcpReady?.() ?? true;
-    const breakerReady = !(gatewayReadiness.hasOpenCircuitBreaker?.() ?? false);
-    const ready = providerReady && storeReady && mcpReady && breakerReady;
+    const draining = isDraining?.() ?? false;
+    const ready = providerReady && storeReady && mcpReady && !draining;
     return c.json({
-      status: ready ? "ok" : "not ready",
+      status: draining ? "draining" : ready ? "ok" : "not ready",
       providers: providerReady,
       configStore: storeReady,
       mcpServers: gatewayReadiness.mcpReadiness?.() ?? {},
-      circuitBreakers: breakerReady,
+      circuitBreakers: gatewayReadiness.circuitBreakerStates?.() ?? {},
+      upstreamAvailable: gatewayReadiness.hasUsableTarget?.() ?? true,
+      draining,
     }, ready ? 200 : 503);
   });
 }

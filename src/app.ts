@@ -57,6 +57,9 @@ export interface CreateAppOptions extends AdminAppOptions {
   inFlightTracker?: InFlightTracker;
 }
 
+/** Probe endpoints that keep answering while the server drains. */
+const DRAIN_EXEMPT_PATHS: ReadonlySet<string> = new Set(["/health", "/livez", "/readyz", "/metrics"]);
+
 export function createApp(
   gateway: Gateway,
   config: GatewayConfig,
@@ -86,7 +89,15 @@ export function createApp(
   });
 
   if (options?.inFlightTracker) {
-    app.use("*", async (_c, next) => {
+    const tracker = options.inFlightTracker;
+    app.use("*", async (c, next) => {
+      // Draining after SIGTERM: probes still answer (readyz says 503), new
+      // work is refused so the in-flight count can reach zero.
+      if (tracker.draining && !DRAIN_EXEMPT_PATHS.has(c.req.path)) {
+        c.header("Connection", "close");
+        c.header("Retry-After", "1");
+        return c.json({ error: { message: "Server is shutting down", type: "unavailable", code: "shutting_down" } }, 503);
+      }
       options.inFlightTracker?.increment();
       try {
         await next();
@@ -139,7 +150,7 @@ export function createApp(
   // ── Handlers ──
   registerHealthHandler(app);
   registerLivenessHandler(app);
-  registerReadinessHandler(app, gateway, options?.configStore);
+  registerReadinessHandler(app, gateway, options?.configStore, () => options?.inFlightTracker?.draining ?? false);
   registerCapabilitiesHandler(app, gateway);
   registerChatHandler(app, gateway);
   registerCompletionsHandler(app, gateway);

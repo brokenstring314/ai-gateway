@@ -436,7 +436,7 @@ proxy is off by default.
 | ------------- | -------------------------------------------- | ------------ |
 | `GET /health` | General health check                         | 200          |
 | `GET /livez`  | Process liveness (Kubernetes liveness probe) | 200          |
-| `GET /readyz` | Readiness (config + providers loaded)        | 200 / 503    |
+| `GET /readyz` | Readiness: config + providers loaded, config store and required MCP servers up, not draining. Upstream circuit-breaker state does **not** affect readiness (every replica shares the same upstreams; failing readiness would pull the whole fleet); it is reported in the body as `circuitBreakers` / `upstreamAvailable`. Returns 503 immediately once SIGTERM/SIGINT drain starts, and new requests are refused with 503 during the drain | 200 / 503    |
 
 ### Metrics
 
