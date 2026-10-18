@@ -8,7 +8,7 @@
  * routeStream() — streaming request flow with fallback
  */
 
-import { applyPassthroughMaxTokens, passthroughMaxTokens, passthroughTokenField } from "./core/surfaces/passthrough.js";
+import { runPassthroughBefore } from "./core/surfaces/passthrough.js";
 import type {
   IProvider,
   RequestContext,
@@ -29,7 +29,6 @@ import { resolveStrategyMode } from "./config/removed.js";
 import { assertConfigReferences } from "./config/validate.js";
 import type { StrategyConfig as RoutingStrategyConfig } from "./routing/strategy-factory.js";
 import { PluginManager } from "./plugins/manager.js";
-import { PluginRejectionError } from "./plugins/error.js";
 import type { IPlugin, Stage } from "./plugins/types.js";
 import { buildPluginsFromConfig } from "./plugins/builtins/from-config.js";
 import type { GatewayConfig, RetryConfig, TargetConfig } from "./config/types.js";
@@ -46,7 +45,6 @@ import { chatSurface } from "./core/surfaces/chat.js";
 import { embeddingsSurface } from "./core/surfaces/embeddings.js";
 import { imagesSurface } from "./core/surfaces/images.js";
 import type { Result, Surface } from "./core/types.js";
-import { settlePluginContext } from "./plugins/context.js";
 import { toGatewayError } from "./core/errors.js";
 
 type McpServerRuntimeConfig = GatewayConfig["mcpServers"] extends readonly (infer T)[]
@@ -342,29 +340,7 @@ export class Gateway {
    * forwarded instead of the original (S3-6). Otherwise returns undefined.
    */
   async runPassthroughBeforePlugins(ctx: RequestContext, bodyText: string | undefined, path = ""): Promise<string | undefined> {
-    let body: unknown;
-    try {
-      body = bodyText !== undefined && bodyText !== "" ? JSON.parse(bodyText) : undefined;
-    } catch {
-      body = undefined;
-    }
-    const obj = body !== null && typeof body === "object" && !Array.isArray(body)
-      ? body as Record<string, unknown>
-      : {};
-    const isJsonObject = body !== null && typeof body === "object" && !Array.isArray(body);
-    const tokenField = isJsonObject ? passthroughTokenField(path, obj) : undefined;
-    const maxTokens = passthroughMaxTokens(obj, tokenField);
-    const request: ChatCompletionRequest = {
-      model: typeof obj["model"] === "string" ? obj["model"] : "",
-      messages: extractPassthroughMessages(obj),
-      ...(maxTokens !== undefined ? { maxTokens } : {}),
-    };
-    const begun = await this.pipeline.begin(passthroughSurface, request, ctx);
-    // Forwarded by the proxy: nothing more to account here, but release
-    // whatever the before plugins reserved (budget).
-    settlePluginContext(begun.run.pluginCtx);
-    const view = begun.run.pluginCtx.request;
-    return applyPassthroughMaxTokens(obj, tokenField, view.maxTokens ?? view.maxCompletionTokens);
+    return runPassthroughBefore(this.pipeline, ctx, bodyText, path);
   }
 
   /**
@@ -427,80 +403,4 @@ export class Gateway {
     return this.concurrencyLimiters;
   }
 
-}
-
-/**
- * Pass-through proxy routes: an arbitrary body cannot be rewritten
- * faithfully, so a plugin that modifies the message content (e.g.
- * word-filter redact) or short-circuits causes a rejection instead of
- * forwarding the original text.
- */
-const passthroughSurface: Surface<ChatCompletionRequest, never> = {
-  name: "passthrough",
-  capability: "raw",
-  logLabel: "passthrough",
-  pluginSurfaceTag: "passthrough",
-  candidates: "strategy",
-  model: (req) => req.model,
-  withModel: (req, model) => (model === req.model ? req : { ...req, model }),
-  toPluginView: (req) => req,
-  applyPluginView: (req, view) => {
-    if (JSON.stringify(view.messages) !== JSON.stringify(req.messages)) {
-      throw new PluginRejectionError(
-        "before_request",
-        "Request content was modified by a plugin; pass-through proxy routes cannot forward modified content",
-        undefined,
-      );
-    }
-    return req;
-  },
-  supports: () => false,
-  call: () => Promise.reject(new Error("pass-through requests are forwarded by the proxy")),
-  usage: () => undefined,
-  toPluginResponse: () => undefined,
-  fromShortCircuit: () => undefined,
-  shortCircuitUnsupported: "Plugin short-circuit is not supported on pass-through proxy routes",
-};
-
-type PassthroughMessage = ChatCompletionRequest["messages"][number];
-
-/** Best-effort text extraction from an unknown OpenAI-style request body. */
-function extractPassthroughMessages(body: Record<string, unknown>): PassthroughMessage[] {
-  const out: PassthroughMessage[] = [];
-  const pushText = (text: unknown, role: unknown = "user") => {
-    const t = textOf(text);
-    if (t !== undefined) out.push({ role: (typeof role === "string" ? role : "user") as PassthroughMessage["role"], content: t });
-  };
-  const fromItems = (items: unknown) => {
-    if (typeof items === "string") return pushText(items);
-    if (!Array.isArray(items)) return;
-    for (const item of items) {
-      if (typeof item === "string") pushText(item);
-      else if (item !== null && typeof item === "object") {
-        const rec = item as Record<string, unknown>;
-        pushText(rec["content"] ?? rec["text"], rec["role"]);
-      }
-    }
-  };
-  fromItems(body["messages"]);
-  fromItems(body["input"]);
-  fromItems(body["prompt"]);
-  pushText(body["instructions"], "system");
-  return out;
-}
-
-function textOf(v: unknown): string | undefined {
-  if (typeof v === "string") return v;
-  if (Array.isArray(v)) {
-    const parts = v.map((p) => {
-      if (typeof p === "string") return p;
-      if (p !== null && typeof p === "object") {
-        const t = (p as Record<string, unknown>)["text"];
-        return typeof t === "string" ? t : "";
-      }
-      return "";
-    }).filter((t) => t !== "");
-    return parts.length > 0 ? parts.join("\n") : undefined;
-  }
-  return undefined;
 }
