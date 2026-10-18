@@ -95,10 +95,10 @@ describe("graceful shutdown (one request in flight)", () => {
     expect(g.proc.exitCode).toBeNull(); // still draining the in-flight request
   });
 
-  // Open (found by this suite, C3-7/B3-9 area): the process keeps running past
-  // the grace until the hung request hits requestTimeout (likely because the
-  // http component closes with a non-forced server.stop()).
-  it.failing("process exits within the drain grace even with a hung request", async () => {
+  // Found by this suite (C3-7/B3-9 area): the process kept running past the
+  // grace until the hung request hit requestTimeout. Fixed: forced
+  // server.stop(true) once the grace expires, then exit.
+  it("process exits within the drain grace even with a hung request", async () => {
     const exited = await Promise.race([g.proc.exited.then(() => true), Bun.sleep(6000).then(() => false)]);
     expect(exited).toBe(true);
     expect(Date.now() - sigtermAt).toBeLessThan(6000);

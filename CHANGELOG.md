@@ -193,6 +193,15 @@
   buckets. *Migration:* deployments that relied on the implicit 20 rps / 40
   burst must set it explicitly. README now documents every operational
   environment variable and the contents of the data directory.
+- **SIGTERM exits within the shutdown grace even with a hung request.**
+  The process used to keep running until the hung request hit
+  `requestTimeout`: the HTTP listener was closed with a non-forced
+  `server.stop()` and nothing exited the process. Now the non-forced stop
+  still runs first (streams can finish within `SHUTDOWN_GRACE_MS`), connections
+  left when the grace expires are force-closed (`server.stop(true)`), and the
+  process exits once components are closed (a watchdog exits with code 1 if
+  shutdown is still running grace + 5 s after the signal). Found by the e2e
+  suite.
 - **Shutdown stops accepting connections before draining** (C3-7 / B3-9,
   remaining part; readiness 503 + refusing new work landed in 989c3ad).
   SIGTERM now flips readiness, calls `server.stop(false)` so no new

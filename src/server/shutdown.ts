@@ -16,6 +16,7 @@ export class ShutdownManager {
   private readonly logger: (msg: string) => void;
   private shuttingDownFlag = false;
   private stopAcceptingHook: (() => unknown) | null = null;
+  private forceCloseHook: (() => unknown) | null = null;
 
   constructor(opts: ShutdownManagerOptions = {}) {
     this.graceMs = opts.shutdownGraceMs ?? 10_000;
@@ -38,6 +39,20 @@ export class ShutdownManager {
    */
   setStopAccepting(hook: () => unknown): void {
     this.stopAcceptingHook = hook;
+  }
+
+  /**
+   * Called when the grace period runs out with requests still in flight:
+   * force-close the remaining connections (e.g. `server.stop(true)`), so a
+   * hung request cannot keep the process alive until its requestTimeout.
+   * Errors are logged, never thrown.
+   */
+  setForceClose(hook: () => unknown): void {
+    this.forceCloseHook = hook;
+  }
+
+  get shutdownGraceMs(): number {
+    return this.graceMs;
   }
 
   register(component: Shutdownable): void {
@@ -67,7 +82,20 @@ export class ShutdownManager {
     }
     const drained = await this.inFlightTracker.drain(this.graceMs);
     if (!drained) {
-      this.logger(`grace period of ${this.graceMs}ms elapsed with ${this.inFlightTracker.pending} request(s) in flight; closing anyway`);
+      this.logger(
+        `grace period of ${this.graceMs}ms elapsed with ${this.inFlightTracker.pending} request(s) in flight; force-closing connections`,
+      );
+      if (this.forceCloseHook !== null) {
+        try {
+          // Not awaited for long: a forced stop must not itself hang shutdown.
+          await Promise.race([
+            Promise.resolve(this.forceCloseHook()),
+            new Promise<void>((resolve) => setTimeout(resolve, 1000).unref?.()),
+          ]);
+        } catch (err) {
+          this.logger(`failed to force-close connections: ${String(err)}`);
+        }
+      }
     }
     for (const component of this.components) {
       try {
@@ -78,9 +106,32 @@ export class ShutdownManager {
     }
   }
 
-  installSignalHandlers(): () => void {
+  /**
+   * SIGTERM/SIGINT run shutdown() and then exit the process (code 0; 1 if
+   * shutdown threw). A watchdog exits with code 1 if shutdown is still
+   * running `grace + 5s` after the signal, so nothing (a hung upstream fetch,
+   * a component close that never settles) keeps the process alive.
+   * `exit` is injectable for tests.
+   */
+  installSignalHandlers(exit: (code: number) => void = (code) => process.exit(code)): () => void {
     const handler = (): void => {
-      void this.shutdown("signal received");
+      if (this.shuttingDownFlag) return;
+      const watchdog = setTimeout(() => {
+        this.logger(`shutdown did not finish within ${this.graceMs + 5000}ms; exiting`);
+        exit(1);
+      }, this.graceMs + 5000);
+      watchdog.unref?.();
+      this.shutdown("signal received").then(
+        () => {
+          clearTimeout(watchdog);
+          exit(0);
+        },
+        (err: unknown) => {
+          clearTimeout(watchdog);
+          this.logger(`shutdown failed: ${String(err)}`);
+          exit(1);
+        },
+      );
     };
     // SIGHUP is the conventional "reload" signal. There is no hot reload
     // (removed in 0.2.0), and Bun's default action would kill the process
