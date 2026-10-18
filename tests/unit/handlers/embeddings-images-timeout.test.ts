@@ -34,7 +34,7 @@ function hungProvider(errName: "AbortError" | "reason"): IProvider {
 function setup(errName: "AbortError" | "reason") {
   const cfg = {
     requestTimeout: "1s",
-    strategy: { mode: "single", targets: ["mock"] },
+    auth: { enabled: false }, strategy: { mode: "single", targets: ["mock"] },
     targets: [{ name: "mock", provider: "openai", apiKey: "k", baseURL: "http://127.0.0.1:1/v1", models: ["m"] }],
   } as unknown as GatewayConfig;
   const gw = new Gateway(cfg);

@@ -15,7 +15,7 @@ const body = (stream = false) => JSON.stringify({ model: "m", stream, messages: 
 
 function mkCfg(port: number, extra: any = {}): GatewayConfig {
   return {
-    strategy: { mode: "single", targets: ["a"] },
+    auth: { enabled: false }, strategy: { mode: "single", targets: ["a"] },
     targets: [{ name: "a", provider: "openai", apiKey: "k", baseURL: `http://127.0.0.1:${port}/v1`, models: ["m"], circuitBreaker: { failureThreshold: 2, timeoutMs: 60000 } }],
     ...extra,
   } as any;

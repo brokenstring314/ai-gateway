@@ -18,7 +18,12 @@ const SCOPE_READ_ONLY = "read_only";
 const DEFAULT_SKIP_PATHS = ["/health", "/metrics"];
 
 export interface AuthMiddlewareOptions {
-  keyStore: KeyStore;
+  /**
+   * Optional. Without a KeyStore only configKeys are accepted (embedded mode,
+   * `createApp(gateway, config)`). With neither a store nor any config key,
+   * every request is rejected (fail closed).
+   */
+  keyStore?: KeyStore;
   bootstrapKey?: string;
   bootstrapReadOnlyKey?: string;
   skipPaths?: string[];
@@ -69,7 +74,7 @@ export function authMiddleware(opts: AuthMiddlewareOptions): MiddlewareHandler {
       );
     }
 
-    const apiKey = keyStore.validateKey(token);
+    const apiKey = keyStore?.validateKey(token) ?? null;
     if (apiKey !== null) {
       c.set("apiKey", token);
       c.set("keyScopes", apiKey.scopes);
@@ -92,8 +97,9 @@ export function authMiddleware(opts: AuthMiddlewareOptions): MiddlewareHandler {
       return;
     }
 
-    // Bootstrap keys are honored only while the store has no keys at all.
-    if (keyStore.isEmpty()) {
+    // Bootstrap keys are honored only while the store has no keys at all
+    // (and never without a store).
+    if (keyStore !== undefined && keyStore.isEmpty()) {
       if (opts.bootstrapKey !== undefined && timingSafeEqual(token, opts.bootstrapKey)) {
         c.set("apiKey", token);
         c.set("keyScopes", [SCOPE_ADMIN]);

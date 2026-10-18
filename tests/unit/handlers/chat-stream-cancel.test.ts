@@ -9,7 +9,7 @@ import type { RequestContext, ChatCompletionRequest, StreamChunk } from "@/provi
 // client abort must surface as AbortError (not ProviderError(0)).
 
 const cfg = {
-  strategy: { mode: "single", targets: ["mock"] },
+  auth: { enabled: false }, strategy: { mode: "single", targets: ["mock"] },
   targets: [{ name: "mock", provider: "openai", apiKey: "sk", baseURL: "https://up.example/v1", models: ["gpt-4o"] }],
 } as GatewayConfig;
 

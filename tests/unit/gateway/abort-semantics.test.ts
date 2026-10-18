@@ -10,7 +10,7 @@ describe("abort semantics", () => {
   it("S5: request timeout against hung upstream returns 504 (not 500 internal_error)", async () => {
     const server = Bun.serve({ port: 0, fetch: async () => { await Bun.sleep(3000); return new Response("{}"); } });
     try {
-      const cfg = { requestTimeout: "1s", strategy: { mode: "single", targets: ["a"] }, targets: [{ name: "a", provider: "openai", apiKey: "k", baseURL: `http://127.0.0.1:${server.port}/v1`, models: ["m"] }] } as any as GatewayConfig;
+      const cfg = { requestTimeout: "1s", auth: { enabled: false }, strategy: { mode: "single", targets: ["a"] }, targets: [{ name: "a", provider: "openai", apiKey: "k", baseURL: `http://127.0.0.1:${server.port}/v1`, models: ["m"] }] } as any as GatewayConfig;
       const app = createApp(new Gateway(cfg), cfg);
       const r = await app.request("/v1/chat/completions", { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ model: "m", messages: [{ role: "user", content: "hi" }] }) });
       expect(r.status).toBe(504);

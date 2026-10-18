@@ -4,6 +4,8 @@ import type { ChatCompletionRequest, ChatCompletionResponse, IProvider, RequestC
 
 export function cfg(extra: Partial<GatewayConfig> = {}): GatewayConfig {
   return {
+    // These app-level tests exercise routing/plugins, not client auth.
+    auth: { enabled: false },
     strategy: { mode: "single", targets: ["mock"] },
     targets: [{ name: "mock", provider: "openai", apiKey: "sk", baseURL: "https://up.example/v1", models: ["gpt-4o"] }],
     ...extra,

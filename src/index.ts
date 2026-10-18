@@ -131,7 +131,20 @@ async function validateConfig(configPath: string): Promise<void> {
   }
 }
 
-async function serve(configPath: string): Promise<void> {
+export interface ServeOverrides {
+  /** Overrides config.server.port (CLI -p). */
+  port?: number;
+  /** Overrides config.server.host (CLI -h). */
+  host?: string;
+}
+
+/**
+ * Full server bootstrap: config (file, then persisted override), stores
+ * (keys, config, logs), production-safety checks, auth, observability and
+ * graceful shutdown. Both `bun src/index.ts serve` and the `ai-gateway serve`
+ * CLI (src/cli/index.ts) go through here so they enforce the same auth.
+ */
+export async function serve(configPath: string, overrides: ServeOverrides = {}): Promise<void> {
   let config: GatewayConfig;
   try {
     config = loadConfigFromPath(configPath);
@@ -245,14 +258,20 @@ async function serve(configPath: string): Promise<void> {
     inFlightTracker: shutdown.inFlight,
   });
 
-  const port = config.server?.port ?? 3000;
-  const host = config.server?.host ?? "0.0.0.0";
+  const port = overrides.port ?? config.server?.port ?? 3000;
+  const host = overrides.host ?? config.server?.host ?? "0.0.0.0";
 
   console.log(`AI Gateway starting on ${host}:${port}`);
   const exposureWarning = authExposureWarning(config.auth, host);
   if (exposureWarning) {
     console.warn("!".repeat(80));
     console.warn(exposureWarning);
+    console.warn("!".repeat(80));
+  }
+  const credentialWarning = clientCredentialWarning(config, keyStore, process.env["ADMIN_BOOTSTRAP_KEY"]);
+  if (credentialWarning) {
+    console.warn("!".repeat(80));
+    console.warn(credentialWarning);
     console.warn("!".repeat(80));
   }
   console.log(`Strategy: ${config.strategy.mode}`);
@@ -279,6 +298,35 @@ async function serve(configPath: string): Promise<void> {
   shutdown.installSignalHandlers();
 }
 
+/**
+ * Startup warnings about client credentials: auth on but nothing can
+ * authenticate yet, or the bootstrap admin key is live because the key store
+ * is still empty (it stays valid until the first store key is created).
+ */
+export function clientCredentialWarning(
+  config: GatewayConfig,
+  keyStore: Pick<KeyStore, "isEmpty">,
+  bootstrapKey: string | undefined,
+): string | undefined {
+  if (!isClientAuthEnabled(config.auth) || !keyStore.isEmpty()) return undefined;
+  const hasConfigKeys = (config.auth?.keys ?? []).some((k) => typeof k === "string" && k !== "");
+  if (bootstrapKey !== undefined && bootstrapKey !== "") {
+    return (
+      "WARNING: ADMIN_BOOTSTRAP_KEY is active because the API key store is empty" +
+      (hasConfigKeys ? " (auth.keys do not count)" : "") +
+      ". It is a full admin credential until the first key is created via POST /admin/keys; " +
+      "create one and then remove ADMIN_BOOTSTRAP_KEY from the environment."
+    );
+  }
+  if (!hasConfigKeys) {
+    return (
+      "WARNING: client auth is enabled but no client keys exist (no auth.keys, empty key store): " +
+      "every /v1/* request will be rejected with 401 until a key is created via the admin API."
+    );
+  }
+  return undefined;
+}
+
 /** Bun.serve idleTimeout in seconds: configured value clamped to 0..255, default 255 (Bun's max). */
 export function resolveIdleTimeout(configured: number | undefined): number {
   if (configured === undefined || !Number.isFinite(configured)) return 255;
@@ -291,9 +339,9 @@ function parseEnvNumber(value: string | undefined): number | undefined {
   return Number.isFinite(parsed) ? parsed : undefined;
 }
 
-// Run CLI if called directly
-const isMainModule = process.argv[1]?.endsWith("index.ts") || process.argv[1]?.endsWith("index.js");
-if (isMainModule) {
+// Run CLI only when this file is the entry point (not when imported, e.g. by
+// src/cli/index.ts, whose path also ends in index.ts).
+if (import.meta.main) {
   main().catch((err) => {
     console.error("Fatal error:", err);
     process.exit(1);

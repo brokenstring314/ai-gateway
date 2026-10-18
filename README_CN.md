@@ -868,6 +868,8 @@ auth:
 
 客户端必须发送 `Authorization: Bearer <密钥>`。`/health`、`/livez`、`/readyz`、`/metrics` 和 `/admin/*` 路径跳过认证。
 
+**除非显式设置 `auth.enabled: false`，客户端认证始终开启**（省略 `auth` 或 `enabled` 均视为开启），并且 `bun src/index.ts serve`、`ai-gateway serve` CLI（复用同一启动流程，包括 API 密钥库）以及嵌入式 `createApp(gateway, config)` 的行为一致。可用凭据为 `auth.keys`，以及传入密钥库时库中的密钥。认证开启但没有任何凭据时，所有 `/v1/*` 请求返回 401（默认拒绝），启动时会打印警告。
+
 API 密钥比较使用常量时间相等性比较，防止时序攻击。
 
 ### 管理员认证
@@ -970,7 +972,9 @@ const response = await gateway.route(
 
 // 或创建 HTTP 应用
 const app = createApp(gateway, config);
-// 配合任何 Hono 兼容的服务器使用
+// 配合任何 Hono 兼容的服务器使用。
+// 这里同样执行客户端认证：/v1/* 需要 auth.keys 中的 Bearer 密钥
+// （认证开启且 auth.keys 为空时一律 401）。如需无认证的进程内应用，请显式设置 auth.enabled: false。
 
 // 清理
 gateway.close();

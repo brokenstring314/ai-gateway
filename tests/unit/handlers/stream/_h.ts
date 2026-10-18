@@ -16,6 +16,7 @@ export function setup(handler: Handler, extra: Partial<GatewayConfig> = {}, targ
     },
   });
   const config = {
+    auth: { enabled: false },
     strategy: { mode: "single", targets: ["up"] },
     targets: [{ name: "up", provider: "openai", apiKey: "sk", baseURL: `http://127.0.0.1:${up.port}/v1`, models: ["gpt-4o"], ...target }],
     ...extra,
