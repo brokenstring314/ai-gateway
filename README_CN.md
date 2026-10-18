@@ -2,7 +2,7 @@
 
 基于 TypeScript + Bun + Hono 的高性能 OpenAI 兼容 API 网关。
 
-通过统一的端点将请求路由到 20+ 个 LLM 提供商，支持 4 种路由策略、5 个内置插件、熔断器、指数退避重试、MCP 智能体工具调用和完整的可观测性。
+通过统一的端点将请求路由到 20+ 个 LLM 提供商，支持 4 种路由策略、6 个内置插件（含 PII 与密钥防护）、熔断器、指数退避重试、MCP 智能体工具调用和完整的可观测性。
 
 ---
 
@@ -578,6 +578,7 @@ HTML 页面和 `/admin/static/console.{js,css}` 不需要认证，因为它们�
 | JSON 无效 / 校验失败 | 400 | `invalid_json` / `validation_failed` |
 | 没有目标支持该模型 | 404 | `model_not_found` |
 | 插件拒绝（word-filter 等） | 403 | `plugin_rejected` |
+| `pii-secret-guard` 拦截（请求 / 响应） | 400 / 422 | `secret_detected` / `pii_detected` |
 | `rate-limit` / `budget` 插件拒绝 | 429（rate-limit 带 `Retry-After`） | `plugin_rejected` |
 | 上游 4xx（400、404、413、422 等） | 原状态码 | 上游 `code`；上游 `message`/`type`/`param` 原样保留 |
 | 上游 429 | 429，透传上游 `Retry-After` | 上游 `code`（默认 `rate_limit_exceeded`） |
@@ -792,6 +793,49 @@ plugins:
 ```
 
 匹配在 Unicode NFKC 规范化后的文本上进行且不区分大小写，因此兼容字符变体（开尔文符号 `K`、全角 `ｋｉｌｌ`、长 `ſ`）也能识别。`mode: redact` 时命中的词替换为 `***`（被改写的文本以 NFKC 形式转发）；如果检测到但无法替换，则直接拒绝请求。它只是粗粒度的子串过滤：零宽字符和其他文字系统的形近字仍可绕过。
+
+#### 敏感信息与密钥防护（PII & Secret Guard）
+
+检测个人信息（PII）和凭据（密钥），并按配置**拦截**、**脱敏**或**仅记录**。
+
+```yaml
+plugins:
+  - name: pii-secret-guard
+    stage: before_request
+    type: guardrail
+    config:
+      action: block                 # 所有检测的默认动作：block | redact | log（默认 block）
+      categories:                   # 可选，按类别覆盖 action
+        secret: block
+        pii: redact
+      entityActions:                # 可选，按实体覆盖；在此列出的实体会被自动启用
+        ipv4: log
+        phone: log
+      # entities: [email, phone, credit_card]   # 可选：只扫描这些内置实体（默认：除 ipv4 外全部）
+      allowlist: ["@example\\.com$"] # 正则，作用于每个匹配到的“值”；命中则忽略
+      patterns:                     # 可选：自定义检测器
+        - { name: employee_id, pattern: "EMP-\\d{6}", category: pii, action: redact }
+      surfaces: [chat, completions, embeddings, passthrough]   # 默认全部四个
+      roles: [system, user, assistant, tool, developer]        # 默认全部
+      direction: request            # request（默认）| response | both
+      scanToolArguments: true       # 扫描 assistant 的工具调用参数（默认 true）
+      entropyThreshold: 3.5         # 通用 `api_key=` / `password=` 赋值的熵阈值（比特/字符，默认 3.5）
+```
+
+| 类别 | 实体 |
+| --- | --- |
+| `secret` | `private_key`（PEM 私钥块）、`anthropic_key`（`sk-ant-…`）、`openai_key`（`sk-…`，含 DeepSeek 等 OpenAI 兼容厂商）、`aws_access_key`（`AKIA`/`ASIA`）、`aws_secret_key`（`aws…secret… =` 赋值中）、`github_token`（`ghp_`/`gho_`/`ghu_`/`ghs_`/`ghr_`/`github_pat_`）、`slack_token`（`xox*-`、`xapp-`）、`google_api_key`（`AIza…`）、`stripe_key`（`sk_/rk_` `live/test`）、`jwt`、`generic_secret`（`api_key=` / `password:` / `client_secret=` 等，值的熵高于阈值） |
+| `pii` | `email`、`phone`（中国大陆手机号 `1[3-9]x`，可带 `+86`；E.164；带分隔的国际号码；美国号码）、`cn_id`（18 位居民身份证，GB 11643 校验位 + 合法日期）、`credit_card`（Luhn + 发卡行前缀）、`iban`（mod-97）、`ssn`（美国，`123-45-6789` 形式）、`ipv4`（需显式启用） |
+
+- **扫描范围：** `roles` 中角色的每条消息——字符串内容、每个文本 content part，以及（除非 `scanToolArguments: false`）assistant 的工具调用参数。`/v1/completions` 的 `prompt` 和 `/v1/embeddings` 的 `input` 按 user 消息扫描；透传路由扫描代理提取出的文本（`messages` / `input` / `prompt` / `instructions`）。文本先做 Unicode NFKC 规范化（与 word-filter 相同）并去除零宽和双向控制字符，因此全角数字、`s\u200Bk-…` 也能检出。校验器（Luhn、身份证校验位、IBAN mod-97、JWT 头、熵）用于降低误报；重叠时更具体的实体优先（`api_key=sk-…` 记为 `openai_key`）。
+- **block：** 返回 `400`，`code` 为 `secret_detected` 或 `pii_detected`（`type: "invalid_request_error"`）；消息只包含实体类型，绝不回显匹配到的值。同一请求中只要有一个 block，就优先于 redact/log。
+- **redact：** 将值替换为类型化占位符——`[EMAIL]`、`[PHONE]`、`[CN_ID]`、`[CREDIT_CARD]`、`[SECRET:github_token]`、`[CUSTOM:employee_id]`——并以 NFKC 形式转发。工具调用参数保持为合法 JSON（若脱敏会破坏 JSON 则改为拦截）。透传路由无法转发改写后的请求体，因此在透传路由上 redact 会改为**拦截**。
+- **log：** 原样转发，只记录检测结果。
+- **响应扫描**（`direction: response | both`）：扫描非流式 chat 和 completions 响应（消息内容和工具调用参数）；block 返回 `422`（错误码同上），redact 改写客户端收到的响应。**流式响应不扫描**：数据块一旦发给客户端就无法撤回，而安全的跨块扫描需要缓冲输出。流式请求的请求方向扫描照常生效。请把本插件放在 `cache` 之前，这样缓存的是脱敏后的响应。
+- **可观测性：** 请求日志增加 `guardrail: [{plugin, direction, action, entities}]`（只有实体类型，绝无匹配文本）；`ai_gateway_guardrail_detections_total{entity,category,action,direction}` 统计检测次数；拦截会计入 `ai_gateway_plugin_blocked_total`（请求为 `outcome="plugin_rejected"`，响应为 `"response_rejected"`）。
+- 配置使用严格 schema：未知的键、实体、动作、surface、角色或非法正则都会让 `ai-gateway validate` 和启动失败。
+
+设计参考 ferro-labs/ai-gateway 的 `pii-redact` 与 `secret-scan` 插件（Apache-2.0），详见 NOTICE。
 
 #### Token 限制（Max Token）
 
@@ -1209,7 +1253,7 @@ src/
 │   ├── manager.ts             # 插件执行（故障开放/关闭）
 │   ├── context.ts             # PluginContext
 │   ├── error.ts               # PluginRejectionError
-│   └── builtins/              # 5 个内置插件
+│   └── builtins/              # 6 个内置插件
 │       ├── rate-limit.ts      # 限流
 │       ├── cache.ts           # 响应缓存
 │       ├── word-filter.ts     # 词过滤

@@ -58,10 +58,20 @@ plugins:
       maxAge: 300
       maxEntries: 1000
 
-  - name: logger
-    stage: after_request
+  # PII & secret guardrail (see README "PII & Secret Guard"). Keep it before cache.
+  - name: pii-secret-guard
+    stage: before_request
+    type: guardrail
     config:
-      logBody: false
+      action: block              # block | redact | log
+      categories:
+        secret: block            # credentials never leave the gateway
+        pii: redact              # [EMAIL], [PHONE], [CN_ID], [CREDIT_CARD], ...
+      entityActions:
+        ipv4: log                # opt-in entity, observe only
+      allowlist: ["@example\\.com$"]
+      surfaces: [chat, completions, embeddings, passthrough]
+      direction: request         # request | response | both (non-streaming responses only)
 
 maxRequestBytes: 10485760
 requestTimeout: "30s"

@@ -5,6 +5,7 @@
  */
 
 import { baseURLProblem } from "../core/provider-presets.js";
+import { piiSecretGuardConfigIssues } from "../plugins/builtins/pii-secret-guard/config.js";
 import type { GatewayConfig } from "./types.js";
 
 export interface ConfigIssue {
@@ -34,6 +35,14 @@ export function configReferenceIssues(cfg: CheckedConfig): ConfigIssue[] {
     names.add(t.name);
     const problem = baseURLProblem(t);
     if (problem !== undefined) issues.push({ path: ["targets", i, "baseURL"], message: problem });
+  });
+
+  // pii-secret-guard has a strict config schema of its own.
+  (cfg.plugins ?? []).forEach((p, i) => {
+    if (p.enabled === false || p.name.trim().toLowerCase().replace(/_/g, "-") !== "pii-secret-guard") return;
+    for (const issue of piiSecretGuardConfigIssues(p.config ?? {})) {
+      issues.push({ path: ["plugins", i, "config", ...issue.path], message: `pii-secret-guard: ${issue.message}` });
+    }
   });
 
   // A budget without any cost rate charges $0 per request and never enforces (C3-5).
