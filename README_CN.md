@@ -498,7 +498,9 @@ Prometheus 格式的指标，包括：
 | GET    | `/admin/keys`          | 列出 API 密钥（脱敏）     |
 | POST   | `/admin/keys`          | 添加新的 API 密钥       |
 | DELETE | `/admin/keys/:id`      | 按索引删除 API 密钥      |
-| GET    | `/admin/logs`          | 查看最近的日志条目         |
+| GET    | `/admin/logs`          | 请求日志（新的在前）；`limit`（≤200）、`offset`，过滤 `stage`（surface）、`model`、`provider`（target）、`since`、`status=error\|ok` |
+| GET    | `/admin/logs/stats`    | 按 surface/target/model 计数、错误数、token（同样的过滤） |
+| GET    | `/admin/status`        | 控制台概览：调用方 `scopes`、各 target 的 `circuitBreakers`、`upstreamAvailable`、`mcpServers`、本进程请求摘要（数量、4xx/5xx、错误率、延迟 mean/p50/p95） |
 
 运行时配置只读：没有热重载，也没有配置写接口（0.2.0 起移除；旧的写接口返回 `410 config_api_removed`）。改配置 = 改文件 + 重启（负载均衡后面滚动重启）。收到 `SIGHUP` 只打日志，不做任何事。
 
@@ -535,6 +537,23 @@ curl -X POST \
 - 配置了 `auth.keys`。
 
 只有 inference 或 `read_only` 权限的密钥不会让它们失效（否则先创建客户端密钥会把你锁在管理 API 之外）。每个请求都会重新检查，因此创建第一个 admin 密钥后 bootstrap 密钥立即失效。bootstrap 密钥有效期间启动时会打印警告；被拒绝时（启动时或运行中）会记录日志 `[auth] ADMIN_BOOTSTRAP_KEY / ADMIN_BOOTSTRAP_READ_ONLY_KEY disabled: <原因>`。拿到管理员凭据后请把这两个变量从环境中删除。没有密钥库时（嵌入式 `createApp(gateway, config)`）它们永远不被接受。
+
+### 管理控制台
+
+内置一个小型 Web 控制台，地址 **`/admin/dashboard`**（无构建步骤、无框架、不加载外部资源）：
+
+| 页面 | 内容 | 数据来源 |
+| ---- | ---- | -------- |
+| 概览（`/admin/dashboard`） | 就绪状态、各 target 熔断器状态、`upstreamAvailable`、MCP 服务器状态、请求数 / 错误率 / 延迟、按 surface、target、model 的请求数；每 15 秒刷新 | `/readyz`、`/admin/status`、`/admin/logs/stats` |
+| API 密钥（`/admin/dashboard/keys`） | 密钥列表（scope、状态、过期时间、使用量）。admin 可创建密钥（scope `inference` / `read_only` / `admin`，可选过期时间；新密钥只显示一次）、轮换、吊销。`read_only` 只能查看列表 | `/admin/keys` |
+| 请求日志（`/admin/dashboard/logs`） | 分页（每页 50 条），可按 surface、target、model、状态（ok/error）和时间过滤 | `/admin/logs` |
+| 配置（`/admin/dashboard/config`） | 当前运行配置，已脱敏，只读 | `/admin/config` |
+
+在 `/admin/dashboard/login` **登录**：输入密钥库中带 `admin` 或 `read_only` scope 的密钥（或 `adminSecret`）。密钥只保存在当前标签页的 `sessionStorage` 中，以 `Authorization: Bearer` 发送，不使用 cookie；关闭标签页或点"Sign out"即清除。仅有 inference scope 的密钥会被拒绝（403）。
+
+HTML 页面和 `/admin/static/console.{js,css}` 不需要认证，因为它们不含任何数据（浏览器导航无法携带 Bearer 头）；页面上的所有数据都来自上面需要认证的管理 API。页面带严格 CSP（`default-src 'none'; script-src 'self'; style-src 'self'; connect-src 'self'; frame-ancestors 'none'`，无内联脚本），脚本只把 API 数据作为文本插入，从不作为 HTML 解析。与其他管理 API 一样，`/admin/*` 只应暴露在可信网络中。
+
+概览页的请求数字有两个来源："Logged requests" 和按 surface 的表格来自请求日志库（重启后仍在）；"Upstream-served" 和延迟来自本进程启动以来的 Prometheus 注册表（延迟分位数是直方图桶的上界）。历史数据请看 `/metrics`。
 
 ### 响应头
 
@@ -1267,7 +1286,7 @@ bun run test:watch
 | `ferrogw serve`                     | `ai-gateway serve -c config.yaml` |
 | 29 个提供商（含 Anthropic/Gemini/Bedrock） | 20+ 个 OpenAI 兼容提供商                |
 | 非 OpenAI 线路协议翻译                     | 不支持（设计决策）                         |
-| Dashboard UI                        | 不包含                               |
+| Dashboard UI                        | 精简管理控制台（`/admin/dashboard`） |
 | `NonOpenAIWireProvider` 代理拒绝        | 带 `baseURL` 的通用回退                 |
 | `sync.Pool` 上下文池                    | 标准 JS 模式                          |
 | `httputil.ReverseProxy` 透传代理        | 不包含                               |

@@ -88,7 +88,7 @@ describe("bootstrap admin key retirement", () => {
     const { get } = await setup({ auth: { keys: ["client-key-1"] } });
     expect((await get(BOOT)).status).toBe(401);
     expect((await get(BOOT, "/v1/models")).status).toBe(401);
-    expect((await get(BOOT, "/admin/dashboard")).status).toBe(401);
+    expect((await get(BOOT, "/admin/status")).status).toBe(401);
     expect((await get("client-key-1", "/v1/models")).status).toBe(200);
   });
 

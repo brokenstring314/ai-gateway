@@ -31,6 +31,7 @@ import {
   getKeysHandler,
   addKeyHandler,
 } from "./key-handlers.js";
+import { getStatusHandler } from "./status-handlers.js";
 import { type LogHandlerState, getLogsHandler, getLogsStatsHandler, deleteLogsHandler } from "./log-handlers.js";
 
 export interface AdminAppOptions {
@@ -52,7 +53,7 @@ export type AdminAppEnv = {
 
 /** Create the admin Hono sub-app with all routes mounted. */
 export function createAdminApp(
-  _gateway: Gateway,
+  gateway: Gateway,
   config: GatewayConfig,
   configPath?: string,
   options?: AdminAppOptions,
@@ -106,6 +107,9 @@ export function createAdminApp(
   const logState: LogHandlerState = { logStore: options?.logStore ?? null };
   const configState: ConfigState = { config, configPath };
 
+  // Console overview (scopes, breakers, MCP, request summary)
+  app.get("/status", getStatusHandler(gateway));
+
   // Config (read-only; the write API was removed in 0.2.0)
   app.get("/config", getConfigHandler(configState));
   app.put("/config", removedConfigWriteHandler());
@@ -117,7 +121,8 @@ export function createAdminApp(
   // Key management
   if (keyStore) {
     const keyState: KeyHandlerState = { keyStore };
-    app.get("/keys", requireScope(SCOPE_ADMIN), listKeysHandler(keyState));
+    // Listing never returns plaintext; read_only may read it like every other GET.
+    app.get("/keys", listKeysHandler(keyState));
     app.get("/keys/usage", keyUsageHandler(keyState));
     app.get("/keys/:id", getKeyHandler(keyState));
     app.post("/keys", requireScope(SCOPE_ADMIN), createKeyHandler(keyState));

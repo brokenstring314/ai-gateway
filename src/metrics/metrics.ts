@@ -43,6 +43,16 @@ export interface RequestLabels {
   provider: string;
 }
 
+/** See `Metrics.requestSummary`. Latencies are null when there is no sample (or p95 is above the last bucket). */
+export interface RequestSummary {
+  total: number;
+  clientErrors: number;
+  serverErrors: number;
+  /** 5xx / total. */
+  errorRate: number;
+  latencyMs: { mean: number | null; p50: number | null; p95: number | null };
+}
+
 /** Circuit breaker states as reported by the routing layer. */
 export type CircuitBreakerState = "CLOSED" | "HALF_OPEN" | "OPEN";
 
@@ -268,6 +278,62 @@ export class Metrics {
    */
   async format(): Promise<string> {
     return this.registry.metrics();
+  }
+
+  /**
+   * In-process summary of requests an upstream target answered (provider
+   * label set), since this process started or the last reset: counts by
+   * status class, error rate and latency (mean and histogram-bucket p50/p95,
+   * i.e. the upper bound of the bucket holding that rank). Used by the admin
+   * console; Prometheus remains the source of truth for history.
+   */
+  async requestSummary(): Promise<RequestSummary> {
+    const counts = await this.requestsTotal.get();
+    let total = 0;
+    let clientErrors = 0;
+    let serverErrors = 0;
+    for (const v of counts.values) {
+      if (v.labels["provider"] === UNKNOWN || v.labels["provider"] === undefined) continue;
+      const status = Number(v.labels["status"]);
+      total += v.value;
+      if (status >= 500) serverErrors += v.value;
+      else if (status >= 400) clientErrors += v.value;
+    }
+    const hist = await this.requestDurationSeconds.get();
+    let sum = 0;
+    let count = 0;
+    const buckets = new Map<number, number>();
+    for (const v of hist.values) {
+      if (v.labels["provider"] === UNKNOWN || v.labels["provider"] === undefined) continue;
+      const name = (v as { metricName?: string }).metricName ?? "";
+      if (name.endsWith("_sum")) sum += v.value;
+      else if (name.endsWith("_count")) count += v.value;
+      else if (name.endsWith("_bucket")) {
+        const le = v.labels["le"];
+        const bound = le === "+Inf" ? Number.POSITIVE_INFINITY : Number(le);
+        buckets.set(bound, (buckets.get(bound) ?? 0) + v.value);
+      }
+    }
+    const sorted = [...buckets.entries()].sort((a, b) => a[0] - b[0]);
+    const quantile = (q: number): number | null => {
+      if (count === 0) return null;
+      const rank = q * count;
+      for (const [bound, cumulative] of sorted) {
+        if (cumulative >= rank) return Number.isFinite(bound) ? Math.round(bound * 1000) : null;
+      }
+      return null;
+    };
+    return {
+      total,
+      clientErrors,
+      serverErrors,
+      errorRate: total > 0 ? serverErrors / total : 0,
+      latencyMs: {
+        mean: count > 0 ? Math.round((sum / count) * 1000) : null,
+        p50: quantile(0.5),
+        p95: quantile(0.95),
+      },
+    };
   }
 
   /** Reset every metric value back to its initial (empty) state. */

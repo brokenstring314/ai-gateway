@@ -11,7 +11,7 @@
  */
 
 import { Hono } from "hono";
-import type { Context, MiddlewareHandler } from "hono";
+import type { Context } from "hono";
 import { respondError } from "./handlers/error-response.js";
 import type { Gateway } from "./gateway.js";
 import type { GatewayConfig } from "./config/types.js";
@@ -23,7 +23,6 @@ import { authMiddleware } from "./middleware/auth.js";
 import { getNormalizedPath } from "./server/route-path.js";
 import { PluginRejectionError } from "./plugins/error.js";
 import { isClientAuthEnabled } from "./config/production-safety.js";
-import { adminAuthMiddleware } from "./middleware/auth.js";
 import { createBootstrapGate, type BootstrapGate } from "./auth/bootstrap.js";
 import type { KeyStore } from "./persistence/key-store.js";
 import { perIpRateLimitMiddleware, requestRemoteAddress } from "./middleware/per-ip-rate-limit.js";
@@ -313,6 +312,12 @@ export function createApp(
     );
   }
 
+  // ── Admin console (page shells + static assets) ──
+  // Registered before the admin API so its auth middleware does not apply:
+  // the shells carry no data (a browser navigation cannot send a Bearer
+  // header); console.js loads everything from the authenticated /admin API.
+  app.route("/", createDashboardApp());
+
   // ── Admin API ──
   const adminApp = createAdminApp(gateway, config, configPath, {
     keyStore,
@@ -323,35 +328,6 @@ export function createApp(
     bootstrap,
   });
   app.route("/admin", adminApp);
-
-  const dashboardApp = createDashboardApp();
-  if (keyStore) {
-    const dashboardAuth = adminAuthMiddleware({
-      keyStore,
-      adminSecret: options?.adminSecret ?? config.adminSecret,
-      bootstrapKey: options?.bootstrapKey,
-      bootstrapReadOnlyKey: options?.bootstrapReadOnlyKey,
-      bootstrap,
-    });
-    app.use("/admin/dashboard", dashboardAuth);
-    app.use("/admin/dashboard/*", dashboardAuth);
-  } else if (config.adminSecret) {
-    const legacyDashboardAuth: MiddlewareHandler = async (c, next) => {
-      const supplied = c.req.header("X-Admin-Secret") ?? c.req.header("Authorization")?.replace(/^Bearer\s+/i, "");
-      if (supplied !== config.adminSecret) {
-        return c.json(
-          {
-            error: { message: "Invalid admin credentials", type: "authentication_error", code: "invalid_admin_secret" },
-          },
-          401,
-        );
-      }
-      await next();
-    };
-    app.use("/admin/dashboard", legacyDashboardAuth);
-    app.use("/admin/dashboard/*", legacyDashboardAuth);
-  }
-  app.route("/", dashboardApp);
 
   // ── Prometheus metrics endpoint ──
   if ((options?.metrics ?? metricsPlacement(config, config.server?.port ?? 3000)) === "main") {
