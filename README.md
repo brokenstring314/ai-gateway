@@ -457,13 +457,13 @@ All admin endpoints require the `X-Admin-Secret` header (or `Authorization: Bear
 
 | Method | Path                   | Description                            |
 | ------ | ---------------------- | -------------------------------------- |
-| GET    | `/admin/config`        | Get current config (API keys redacted) |
-| PUT    | `/admin/config`        | Replace config (validated with Zod)    |
-| POST   | `/admin/config/reload` | Reload config from file                |
+| GET    | `/admin/config`        | Get current config (secrets redacted)  |
 | GET    | `/admin/keys`          | List API keys (redacted)               |
 | POST   | `/admin/keys`          | Add a new API key                      |
 | DELETE | `/admin/keys/:id`      | Delete an API key by index             |
 | GET    | `/admin/logs`          | View recent log entries                |
+
+The config is read-only at runtime: there is no hot reload and no config write API (removed in 0.2.0; the old write routes answer `410 config_api_removed`). To change config, edit the file and restart (rolling restart behind a load balancer). `SIGHUP` is logged and ignored.
 
 **Example:**
 
@@ -1040,7 +1040,6 @@ gateway.close();
 | `listModels()`                       | List all models                            |
 | `registerProvider(provider)`         | Add a provider at runtime                  |
 | `registerPlugin(stage, plugin)`      | Add a plugin at runtime                    |
-| `reloadConfig(config)`               | Hot-reload configuration                   |
 | `getConfig()`                        | Get current config (read-only)             |
 | `close()`                            | Graceful shutdown                          |
 
@@ -1236,4 +1235,4 @@ bun run test:watch
 | `httputil.ReverseProxy` pass-through          | Not included                           |
 | Per-target concurrency limiter                | Not included (use circuit breaker)     |
 | Model catalog / discovery                     | Static config only                     |
-| Config file watcher                           | Admin API reload (`PUT /admin/config`) |
+| Config file watcher                           | Not supported: edit the file and restart |

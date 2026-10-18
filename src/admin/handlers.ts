@@ -12,18 +12,12 @@ import { Hono } from "hono";
 import type { Gateway } from "../gateway.js";
 import type { GatewayConfig } from "../config/types.js";
 import type { KeyStore } from "../persistence/key-store.js";
-import type { ConfigStore } from "../persistence/config-store.js";
 import type { RequestLogStore } from "../persistence/request-log-store.js";
 import { adminAuthMiddleware } from "../middleware/auth.js";
 import {
-  type ConfigHandlerState,
   type ConfigState,
   getConfigHandler,
-  putConfigHandler,
-  reloadConfigHandler,
-  deleteConfigHandler,
-  getConfigHistoryHandler,
-  rollbackConfigHandler,
+  removedConfigWriteHandler,
 } from "./config-handlers.js";
 import {
   type KeyHandlerState,
@@ -49,7 +43,6 @@ import {
 
 export interface AdminAppOptions {
   keyStore?: KeyStore;
-  configStore?: ConfigStore;
   logStore?: RequestLogStore;
   adminSecret?: string;
   bootstrapKey?: string;
@@ -98,21 +91,16 @@ export function createAdminApp(
     });
   }
 
-  const configState: ConfigHandlerState = {
-    configStore: options?.configStore ?? null,
-    currentConfig: config,
-    configPath,
-  };
   const logState: LogHandlerState = { logStore: options?.logStore ?? null };
-  const legacyConfigState: ConfigState = { config: config, configPath };
+  const configState: ConfigState = { config, configPath };
 
-  // Config management
+  // Config (read-only; the write API was removed in 0.2.0)
   app.get("/config", getConfigHandler(configState));
-  app.put("/config", requireScope(SCOPE_ADMIN), putConfigHandler(configState));
-  app.post("/config/reload", requireScope(SCOPE_ADMIN), reloadConfigHandler(configState));
-  app.delete("/config", requireScope(SCOPE_ADMIN), deleteConfigHandler(configState));
-  app.get("/config/history", getConfigHistoryHandler(configState));
-  app.post("/config/rollback/:version", requireScope(SCOPE_ADMIN), rollbackConfigHandler(configState));
+  app.put("/config", removedConfigWriteHandler());
+  app.delete("/config", removedConfigWriteHandler());
+  app.post("/config/reload", removedConfigWriteHandler());
+  app.get("/config/history", removedConfigWriteHandler());
+  app.post("/config/rollback/:version", removedConfigWriteHandler());
 
   // Key management
   if (keyStore) {
@@ -126,9 +114,9 @@ export function createAdminApp(
     app.post("/keys/:id/revoke", requireScope(SCOPE_ADMIN), revokeKeyHandler(keyState));
     app.post("/keys/:id/rotate", requireScope(SCOPE_ADMIN), rotateKeyHandler(keyState));
   } else {
-    app.get("/keys", getKeysHandler(legacyConfigState));
-    app.post("/keys", requireScope(SCOPE_ADMIN), addKeyHandler(legacyConfigState));
-    app.delete("/keys/:id", requireScope(SCOPE_ADMIN), deleteKeyHandler(legacyConfigState));
+    app.get("/keys", getKeysHandler(configState));
+    app.post("/keys", requireScope(SCOPE_ADMIN), addKeyHandler(configState));
+    app.delete("/keys/:id", requireScope(SCOPE_ADMIN), deleteKeyHandler(configState));
   }
 
   // Log management

@@ -41,7 +41,7 @@ import { PluginManager } from "./plugins/manager.js";
 import { createPluginContext } from "./plugins/context.js";
 import { PluginRejectionError } from "./plugins/error.js";
 import type { IPlugin, Stage } from "./plugins/types.js";
-import { buildPluginsFromConfig, type PluginRegistration } from "./plugins/builtins/from-config.js";
+import { buildPluginsFromConfig } from "./plugins/builtins/from-config.js";
 import type { GatewayConfig, TargetConfig } from "./config/types.js";
 import { expandTargetEnvRefs } from "./config/envref.js";
 import { getMetrics } from "./observability/metrics.js";
@@ -355,7 +355,6 @@ export class Gateway {
   private mcpExecutor: McpExecutor | null;
   private circuitBreakers: CircuitBreakerRegistry;
   private concurrencyLimiters: ConcurrencyLimiterRegistry;
-  private configPlugins: PluginRegistration[] = [];
   /** Target that produced each in-flight stream (see tagStreamProvider). */
   private readonly streamServedBy = new WeakMap<RequestContext, string>();
 
@@ -364,7 +363,9 @@ export class Gateway {
     this.aliases = config.aliases ?? {};
     this.registry = new ProviderRegistry();
     this.pluginManager = new PluginManager();
-    this.applyConfigPlugins(buildPluginsFromConfig(config.plugins));
+    for (const { stage, plugin } of buildPluginsFromConfig(config.plugins)) {
+      this.pluginManager.register(stage, plugin);
+    }
     this.mcpRegistry = new McpRegistry();
     this.mcpExecutor = null;
     this.circuitBreakers = new CircuitBreakerRegistry();
@@ -1028,42 +1029,6 @@ export class Gateway {
   /** Add a plugin at a specific stage. */
   registerPlugin(stage: Stage, plugin: IPlugin): void {
     this.pluginManager.register(stage, plugin);
-  }
-
-  /** Swap the plugins built from config.plugins; programmatic registrations are kept. */
-  private applyConfigPlugins(next: PluginRegistration[]): void {
-    for (const { stage, plugin } of this.configPlugins) {
-      this.pluginManager.unregister(stage, plugin);
-    }
-    for (const { stage, plugin } of next) {
-      this.pluginManager.register(stage, plugin);
-    }
-    this.configPlugins = next;
-  }
-
-  reloadConfig(config: GatewayConfig): void {
-    // Build first so an invalid plugin config fails before any state changes.
-    const plugins = buildPluginsFromConfig(config.plugins);
-    this.applyConfigPlugins(plugins);
-    this.config = config;
-    this.aliases = config.aliases ?? {};
-
-    this.registry = new ProviderRegistry();
-    this.circuitBreakers = new CircuitBreakerRegistry();
-    this.concurrencyLimiters = new ConcurrencyLimiterRegistry();
-    for (const target of config.targets) {
-      const provider = createProviderFromTarget(target);
-      this.registry.register(provider);
-      if (target.circuitBreaker) {
-        this.circuitBreakers.getOrCreate(target.name, target.circuitBreaker);
-      }
-      this.ensureConcurrencyLimiter(target);
-    }
-
-    const { mode, config: strategyConfig } = buildStrategyConfig(config);
-    this.strategy = createStrategy(mode, strategyConfig, (name: string) =>
-      this.tagStreamProvider(name, this.guardProvider(name, this.limitProvider(name, this.registry.get(name)))),
-    );
   }
 
   close(): void {

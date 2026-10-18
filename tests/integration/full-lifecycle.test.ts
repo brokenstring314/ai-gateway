@@ -471,27 +471,6 @@ describe("Integration: Model aliases", () => {
   });
 });
 
-describe("Integration: Config reload", () => {
-  it("reloadConfig rebuilds strategy and providers", () => {
-    const config: GatewayConfig = {
-      strategy: { mode: "single", targets: ["old"] },
-      targets: [{ name: "old", provider: "openai", apiKey: "key", baseURL: "http://localhost:9999/v1", models: ["gpt-3.5-turbo"] }],
-    };
-    const gateway = new Gateway(config);
-
-    const newConfig: GatewayConfig = {
-      strategy: { mode: "fallback", targets: ["new1", "new2"] },
-      targets: [
-        { name: "new1", provider: "deepseek", apiKey: "key2", baseURL: "http://localhost:9998/v1", models: ["deepseek-chat"] },
-        { name: "new2", provider: "groq", apiKey: "key3", baseURL: "http://localhost:9997/v1", models: ["llama3"] },
-      ],
-    };
-    gateway.reloadConfig(newConfig);
-    expect(gateway.getConfig().strategy.mode).toBe("fallback");
-    expect(gateway.listModels().map((m) => m.id)).toEqual(expect.arrayContaining(["deepseek-chat", "llama3"]));
-  });
-});
-
 describe("Integration: Plugin chain in gateway", () => {
   it("before_request plugin can modify request", async () => {
     const config: GatewayConfig = {
