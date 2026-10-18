@@ -441,6 +441,27 @@ export class Gateway {
     return false;
   }
 
+  /** Current state of every configured circuit breaker, by target name. */
+  circuitBreakerStates(): Readonly<Record<string, string>> {
+    const states: Record<string, string> = {};
+    for (const [name, breaker] of this.circuitBreakers.all()) {
+      states[name] = breaker.getState();
+    }
+    return states;
+  }
+
+  /**
+   * Whether at least one registered target is not behind an OPEN breaker,
+   * i.e. the strategy still has somewhere to send traffic. Informational:
+   * /readyz reports it but does not fail on it (see handlers/health.ts).
+   */
+  hasUsableTarget(): boolean {
+    for (const name of this.registry.list()) {
+      if (this.circuitBreakers.get(name)?.getState() !== "OPEN") return true;
+    }
+    return false;
+  }
+
   // ── Public API ──
 
   async route(
