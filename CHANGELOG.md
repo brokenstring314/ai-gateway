@@ -205,6 +205,21 @@
 
 ### Fixes
 
+- **Streaming lifecycle and SSE parsing hardened (T3-3, T3-4, T3-5, T3-10).**
+  `data: [DONE]` from upstream ends the client stream at once (the upstream
+  body is cancelled; anything sent after it is dropped). A stream that ends
+  without `[DONE]` and without any `finish_reason` is reported as an SSE
+  error event `upstream_stream_truncated` instead of a clean completion. A
+  stream that yields no chunk, or a `200` with a JSON body on a stream
+  request, is a failed attempt and fails over to the next target before any
+  output; an upstream that ignored `stream: true` and answered with a
+  `chat.completion` is converted to one chunk. The parser accepts `\r\n`,
+  `\r` and `\n` line endings, scans incrementally, rejects a line/event over
+  4 MiB (`upstream_event_too_large`), and treats malformed JSON
+  (`upstream_invalid_response`) and `event: error` as errors; `choices:[null]`
+  no longer throws. Any mid-stream error event is now sent **without** a
+  trailing `data: [DONE]`, so clients can tell the answer is incomplete.
+
 - Circuit breaker settlement is permit-based: `recordSuccess(permit)` /
   `recordFailure(permit)` only count while the breaker is still in the
   generation the permit was issued in. Requests admitted before an outage can
