@@ -101,6 +101,12 @@
 
 ### Fixes
 
+- **CORS preflight reflects the requested headers** (B3-8). It allowed only
+  `Content-Type`, `Authorization` and `X-Request-Id`, so browser calls through
+  the official openai SDK (`x-stainless-*`, `openai-organization`,
+  `openai-project`, `openai-beta`) were blocked. The default now reflects
+  `Access-Control-Request-Headers`; set `cors.allowHeaders` to restrict it.
+  hono bumped to ^4.13.7.
 - **MCP stdio servers are restarted after a crash** (B3-10). A server that
   fails to start or exits is reconnected with exponential backoff
   (1 s → 60 s), and each disconnect / attempt / recovery is logged. A

@@ -32,3 +32,5 @@ jobs:
         run: bun run typecheck:tests
       - name: unit + integration tests
         run: bun test --timeout 20000
+      - name: e2e contract tests (real server + mock upstream + openai SDK)
+        run: bun run test:e2e

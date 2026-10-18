@@ -37,6 +37,9 @@
       },
       "nursery": {
         "noFloatingPromises": "error"
+      },
+      "complexity": {
+        "useLiteralKeys": "off"
       }
     }
   },
