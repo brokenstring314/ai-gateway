@@ -12,7 +12,7 @@
  *                callbacks (budget release) → request log (console + sinks)
  *                → metrics (tokens, cost, plugin blocked) → span end
  *
- * Streaming (executeStream, PR 2.5) reuses begin() / candidates() /
+ * Streaming (executeStream → core/chat-stream.ts) reuses begin() /
  * finalize(): a stream run calls finalize(run, outcome) once when it ends.
  */
 
@@ -23,13 +23,14 @@ import { getRequestLogger, type RequestLogEntry } from "../observability/request
 import { createPluginContext, settlePluginContext, type InternalPluginContext } from "../plugins/context.js";
 import { PluginRejectionError } from "../plugins/error.js";
 import type { PluginManager } from "../plugins/manager.js";
-import type { IProvider, RequestContext, Usage } from "../providers/types.js";
+import type { ChatCompletionRequest, IProvider, RequestContext, StreamChunk, Usage } from "../providers/types.js";
 import { CircuitOpenError } from "../routing/circuit-breaker.js";
 import { ConcurrencyLimitError } from "../routing/concurrency-limiter.js";
 import type { IStrategy } from "../routing/types.js";
 import { invalidRequest, modelNotFound, toGatewayError } from "./errors.js";
 import { strategyRunOptions, type TargetExecutor } from "./executor.js";
 import type { McpLoop } from "./mcp-loop.js";
+import { runChatStream, type ChatShapedSurface } from "./chat-stream.js";
 import type { FinalizeOutcome, RequestRun, Result, Surface } from "./types.js";
 import { addUsage, costOf } from "./usage.js";
 
@@ -71,7 +72,8 @@ export class Pipeline {
     let target: string | undefined;
     try {
       let request = run.request;
-      const mcp = surface.name === "chat" ? this.deps.mcp() : null;
+      // Chat-capable surfaces (chat, completions) run the MCP agentic loop.
+      const mcp = surface.capability === "chat" ? this.deps.mcp() : null;
       if (mcp) request = mcp.inject(request as never) as Req;
       const first = await this.attempt(surface, request, ctx);
       target = first.target;
@@ -92,6 +94,11 @@ export class Pipeline {
       await this.finalize(run, { kind: "error", error: err, target });
       throw err;
     }
+  }
+
+  /** Streaming chat-shaped request (chat, completions) through the pipeline: core/chat-stream.ts. */
+  executeStream(surface: ChatShapedSurface, req: ChatCompletionRequest, ctx: RequestContext): AsyncGenerator<StreamChunk> {
+    return runChatStream(this, this.deps.executor, this.deps.strategy, surface, req, ctx);
   }
 
   /**
