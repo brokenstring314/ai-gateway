@@ -51,6 +51,7 @@ import { McpRegistry } from "./mcp/registry.js";
 import { McpExecutor } from "./mcp/executor.js";
 import { CircuitBreakerRegistry, CircuitOpenError } from "./routing/circuit-breaker.js";
 import { isBreakerFailure, isTimeoutAbort } from "./routing/outcome.js";
+import { executeCandidates } from "./routing/executor.js";
 import {
   ConcurrencyLimiterRegistry,
   ConcurrencyLimitError,
@@ -915,36 +916,82 @@ export class Gateway {
     });
   }
 
-  /** Embedding request — find provider and call embed(). */
+  /**
+   * Embedding request, routed through the configured strategy like chat:
+   * candidates are the strategy's ordered targets that support the model and
+   * embeddings, each guarded by its circuit breaker and concurrency limiter,
+   * with retry and failover (see routing/executor.ts).
+   */
   async embed(
     ctx: RequestContext,
     req: EmbeddingRequest,
   ): Promise<EmbeddingResponse> {
     const model = this.aliases[req.model] ?? req.model;
-    const provider = this.registry.findByModel(model);
-    if (!provider) {
-      throw new Error(`No provider found for embedding model "${model}"`);
-    }
-    if (!("embed" in provider)) {
-      throw new Error(`Provider "${provider.name}" does not support embeddings`);
-    }
-    return (provider as IEmbeddingProvider).embed(ctx, { ...req, model });
+    return this.routeAuxiliary(ctx, model, "embed", "embedding", "embeddings",
+      (p) => (p as IEmbeddingProvider).embed(ctx, { ...req, model }));
   }
 
-  /** Image generation request — find provider and call generateImage(). */
+  /** Image generation request, routed through the strategy (see embed()). */
   async generateImage(
     ctx: RequestContext,
     req: ImageRequest,
   ): Promise<ImageResponse> {
     const model = this.aliases[req.model] ?? req.model;
-    const provider = this.registry.findByModel(model);
-    if (!provider) {
-      throw new Error(`No provider found for image model "${model}"`);
+    return this.routeAuxiliary(ctx, model, "generateImage", "image", "image generation",
+      (p) => (p as IImageProvider).generateImage(ctx, { ...req, model }));
+  }
+
+  /**
+   * Non-streaming, non-chat request (embeddings, images) through the shared
+   * candidate executor. Candidate order comes from the strategy's
+   * selectTargets() (fallback order, weighted pick, cost ranking, ...),
+   * filtered to targets that support the model and the capability. When no
+   * strategy target qualifies, the first registered provider supporting the
+   * model is used (previous behavior), still behind its breaker / limiter.
+   */
+  private async routeAuxiliary<T>(
+    ctx: RequestContext,
+    model: string,
+    capability: "embed" | "generateImage",
+    kind: string,
+    capabilityLabel: string,
+    call: (provider: IProvider) => Promise<T>,
+  ): Promise<T> {
+    let ordered: string[] = [];
+    try {
+      ordered = this.strategy.selectTargets({ model, messages: [] });
+    } catch {
+      ordered = [];
     }
-    if (!("generateImage" in provider)) {
-      throw new Error(`Provider "${provider.name}" does not support image generation`);
+    const candidates = [...new Set(ordered)].filter((name) => {
+      const p = this.registry.get(name);
+      return !!p && capability in p && p.supportsModel(model);
+    });
+    if (candidates.length === 0) {
+      const provider = this.registry.findByModel(model);
+      if (!provider) {
+        throw new Error(`No provider found for ${kind} model "${model}"`);
+      }
+      if (!(capability in provider)) {
+        throw new Error(`Provider "${provider.name}" does not support ${capabilityLabel}`);
+      }
+      candidates.push(provider.name);
     }
-    return (provider as IImageProvider).generateImage(ctx, { ...req, model });
+    try {
+      return await executeCandidates(
+        ctx,
+        candidates,
+        (name) => this.guardProvider(name, this.limitProvider(name, this.registry.get(name))),
+        (p) => call(p),
+        {
+          label: `Gateway(${kind})`,
+          retryConfigFor: (name) => this.config.targets.find((t) => t.name === name)?.retry,
+        },
+        (p) => capability in p,
+      );
+    } catch (err) {
+      throw this.translateConcurrencyError(err);
+    }
   }
 
   /** List all models from all providers. */
@@ -1118,6 +1165,18 @@ export class Gateway {
       };
     }
 
+    const withSlot = async <T>(fn: () => Promise<T>): Promise<T> => {
+      const granted = limiter.acquire();
+      if (granted === false) throw new ConcurrencyLimitError(name);
+      try {
+        if (granted instanceof Promise) await granted;
+        return await fn();
+      } finally {
+        limiter.release();
+      }
+    };
+    wrapAuxiliaryCalls(provider, limited, (_ctx, fn) => withSlot(fn));
+
     return limited;
   }
 
@@ -1244,6 +1303,17 @@ export class Gateway {
         }
       };
     }
+
+    wrapAuxiliaryCalls(provider, guarded, async (ctx, fn) => {
+      const entry = enter();
+      try {
+        const res = await fn();
+        entry?.breaker.recordSuccess();
+        return res;
+      } catch (err) {
+        throw fail(entry, ctx, err);
+      }
+    });
 
     return guarded;
   }
@@ -1403,4 +1473,24 @@ function textOf(v: unknown): string | undefined {
     return parts.length > 0 ? parts.join("\n") : undefined;
   }
   return undefined;
+}
+
+type AuxiliaryWrapper = <T>(ctx: RequestContext, fn: () => Promise<T>) => Promise<T>;
+
+/**
+ * Copy a provider's optional embed / generateImage methods onto a decorated
+ * provider, each call running inside `wrap` (breaker or concurrency slot).
+ * Decorators build plain objects, so prototype methods would otherwise be
+ * lost (or bypass the decoration).
+ */
+function wrapAuxiliaryCalls(source: IProvider, target: IProvider, wrap: AuxiliaryWrapper): void {
+  const out = target as unknown as Record<string, unknown>;
+  if ("embed" in source) {
+    const p = source as IEmbeddingProvider;
+    out["embed"] = (ctx: RequestContext, req: EmbeddingRequest) => wrap(ctx, () => p.embed(ctx, req));
+  }
+  if ("generateImage" in source) {
+    const p = source as IImageProvider;
+    out["generateImage"] = (ctx: RequestContext, req: ImageRequest) => wrap(ctx, () => p.generateImage(ctx, req));
+  }
 }
