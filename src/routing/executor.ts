@@ -19,8 +19,9 @@
 import type { RetryConfig } from "../config/types.js";
 import type { IProvider, RequestContext } from "../providers/types.js";
 import type { ProviderLookup } from "./types.js";
-import { isFailoverEligible } from "./outcome.js";
+import { isFailoverEligible } from "../core/outcome.js";
 import { retryWithBackoff, RetryExhaustedError } from "./retry.js";
+import { mostMeaningful } from "../core/errors.js";
 
 export interface CandidateHooks {
   /** Label used in log lines and error messages, e.g. "LoadBalanceStrategy". */
@@ -58,12 +59,19 @@ async function attempt<T>(
   return retryWithBackoff(fn, retry, ctx?.signal);
 }
 
-function finish(hooks: CandidateHooks, label: string, lastError: unknown, tried: number): never {
-  if (hooks.exhausted) throw hooks.exhausted(lastError, tried);
+/**
+ * Every candidate failed. The error reported is the most meaningful attempt
+ * error (core/errors mostMeaningful: a caller-caused upstream 4xx beats a
+ * rate limit beats an auth failure ... beats an open breaker), not merely
+ * the last one.
+ */
+function finish(hooks: CandidateHooks, label: string, lastError: unknown, tried: number, errors: readonly unknown[]): never {
+  const chosen = errors.length > 0 ? mostMeaningful(errors.map(unwrapRetry)) : lastError;
+  if (hooks.exhausted) throw hooks.exhausted(chosen, tried);
   if (tried === 0) {
     throw lastError ?? new Error(`${hooks.label}: no ${label}provider available`);
   }
-  throw unwrapRetry(lastError);
+  throw unwrapRetry(chosen);
 }
 
 /**
@@ -80,6 +88,7 @@ export async function executeCandidates<T>(
   supports: (provider: IProvider) => boolean = () => true,
 ): Promise<T> {
   let lastError: unknown;
+  const errors: unknown[] = [];
   let tried = 0;
   for (const name of candidates) {
     if (ctx?.signal?.aborted) throw lastError ?? abortedError(ctx);
@@ -100,12 +109,13 @@ export async function executeCandidates<T>(
       return result;
     } catch (err) {
       lastError = err;
+      errors.push(err);
       if (!isFailoverEligible(err) || ctx?.signal?.aborted) throw unwrapRetry(err);
       hooks.onFailure?.(name, err);
       console.error(`${hooks.label}: target "${name}" failed:`, err instanceof Error ? err.message : String(err));
     }
   }
-  return finish(hooks, "", lastError, tried);
+  return finish(hooks, "", lastError, tried, errors);
 }
 
 /**
@@ -123,6 +133,7 @@ export async function* streamCandidates<C>(
   supports: (provider: IProvider) => boolean = (p) => "completeStream" in p,
 ): AsyncGenerator<C> {
   let lastError: unknown;
+  const errors: unknown[] = [];
   let tried = 0;
   for (const name of candidates) {
     if (ctx?.signal?.aborted) throw lastError ?? abortedError(ctx);
@@ -155,6 +166,7 @@ export async function* streamCandidates<C>(
       );
     } catch (err) {
       lastError = err;
+      errors.push(err);
       if (!isFailoverEligible(err) || ctx?.signal?.aborted) throw unwrapRetry(err);
       hooks.onFailure?.(name, err);
       console.error(`${hooks.label}: streaming target "${name}" failed:`, err instanceof Error ? err.message : String(err));
@@ -179,5 +191,5 @@ export async function* streamCandidates<C>(
       if (!finished) await iterator.return?.();
     }
   }
-  return finish(hooks, "streaming ", lastError, tried);
+  return finish(hooks, "streaming ", lastError, tried, errors);
 }

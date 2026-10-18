@@ -151,7 +151,10 @@ function parseSSEEvent(dataLines: string[], providerName: string): StreamChunk |
       : typeof errVal === "object" && errVal !== null && typeof (errVal as Record<string, unknown>)["message"] === "string"
         ? (errVal as Record<string, string>)["message"]!
         : "upstream stream error";
-    throw new ProviderError(providerName, 502, `stream error: ${message}`);
+    throw new ProviderError(providerName, 502, `stream error: ${message}`, {
+      origin: "upstream",
+      upstream: typeof errVal === "object" && errVal !== null ? (errVal as Record<string, unknown>) : { message },
+    });
   }
 
   if (typeof parsed !== "object" || parsed === null || !("choices" in parsed)) {

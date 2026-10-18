@@ -24,7 +24,7 @@ import type {
   Usage,
 } from "./providers/types.js";
 import { ProviderRegistry } from "./providers/registry.js";
-import { ProviderError } from "./providers/openai-compat.js";
+import { type GatewayError, gatewayTimeout, invalidRequest, modelNotFound, toGatewayError } from "./core/errors.js";
 import { createProviderFromTarget } from "./core/provider-presets.js";
 import type { IStrategy, StrategyMode } from "./routing/types.js";
 import { createStrategy } from "./routing/strategy-factory.js";
@@ -42,7 +42,7 @@ import { getRequestLogger } from "./observability/request-log.js";
 import { McpRegistry } from "./mcp/registry.js";
 import { McpExecutor } from "./mcp/executor.js";
 import { CircuitBreakerRegistry, CircuitOpenError } from "./routing/circuit-breaker.js";
-import { isBreakerFailure, isTimeoutAbort } from "./routing/outcome.js";
+import { isBreakerFailure, isTimeoutAbort } from "./core/outcome.js";
 import { executeCandidates } from "./routing/executor.js";
 import {
   ConcurrencyLimiterRegistry,
@@ -711,7 +711,7 @@ export class Gateway {
       provider: NO_UPSTREAM_PROVIDER,
       strategy: this.config.strategy.mode,
       durationMs,
-      status: rejected ? PLUGIN_REJECTION_STATUS : 200,
+      status: rejected ? cause.status : 200,
       plugin,
       surface,
       outcome,
@@ -773,10 +773,10 @@ export class Gateway {
     if (candidates.length === 0) {
       const provider = this.registry.findByModel(model);
       if (!provider) {
-        throw new Error(`No provider found for ${kind} model "${model}"`);
+        throw modelNotFound(`No provider found for ${kind} model "${model}"`);
       }
       if (!(capability in provider)) {
-        throw new Error(`Provider "${provider.name}" does not support ${capabilityLabel}`);
+        throw invalidRequest(`The model "${model}" does not support ${capabilityLabel}`, "unsupported_capability");
       }
       candidates.push(provider.name);
     }
@@ -967,7 +967,7 @@ export class Gateway {
       const breaker = breakers().get(name);
       if (!breaker) return undefined;
       const permit = breaker.acquire();
-      if (!permit) throw new CircuitOpenError(name);
+      if (!permit) throw new CircuitOpenError(name, breaker.retryAfterSeconds());
       return { breaker, permit };
     };
     type Entry = ReturnType<typeof enter>;
@@ -1090,11 +1090,8 @@ export class Gateway {
    * so the HTTP handler surfaces it as HTTP 429 (queue-full backpressure).
    */
   private translateConcurrencyError(err: unknown): unknown {
-    if (err instanceof ConcurrencyLimitError) {
-      return new ProviderError(err.target, 429, err.message);
-    }
-    if (err instanceof CircuitOpenError) {
-      return new ProviderError(err.target, 503, err.message);
+    if (err instanceof ConcurrencyLimitError || err instanceof CircuitOpenError) {
+      return toGatewayError(err);
     }
     return err;
   }
@@ -1122,11 +1119,9 @@ export class Gateway {
 
 /** Provider label for requests that never reached an upstream target. */
 const NO_UPSTREAM_PROVIDER = "none";
-/** HTTP status every handler answers a PluginRejectionError with. */
-const PLUGIN_REJECTION_STATUS = 403;
 
-function timeoutError(target: string): ProviderError {
-  return new ProviderError(target, 504, `upstream "${target}" timed out (gateway request timeout)`);
+function timeoutError(target: string): GatewayError {
+  return gatewayTimeout(target);
 }
 
 function isAbortError(err: unknown): boolean {

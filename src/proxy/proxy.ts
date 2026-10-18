@@ -25,7 +25,7 @@ import type { Context, Handler, MiddlewareHandler } from "hono";
 import type { TargetConfig } from "@/config/types";
 import type { KeyStore } from "@/persistence/key-store";
 import { timingSafeEqual } from "@/auth/key-hash";
-import { isTimeoutAbort, isTimeoutError } from "@/routing/outcome";
+import { isTimeoutAbort, isTimeoutError } from "@/core/outcome";
 
 // ── Types ──
 

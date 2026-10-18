@@ -50,6 +50,7 @@ export class BudgetPlugin implements IPlugin {
       return {
         action: "reject",
         reason: `Daily budget exceeded: ${String(entry.spent)}/${String(this.config.dailyBudget)}`,
+        status: 429,
       };
     }
 

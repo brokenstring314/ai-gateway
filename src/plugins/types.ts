@@ -23,7 +23,12 @@ export interface PluginContext {
 export type PluginResult =
   | { action: "continue" }
   | { action: "short_circuit"; response: ChatCompletionResponse }
-  | { action: "reject"; reason: string }
+  /**
+   * Block the request. `status` is the HTTP status answered (default 403;
+   * the rate-limit and budget plugins use 429); `retryAfterSeconds` becomes
+   * the Retry-After header.
+   */
+  | { action: "reject"; reason: string; status?: number; retryAfterSeconds?: number }
   | { action: "modify"; request?: ChatCompletionRequest; response?: ChatCompletionResponse };
 
 export interface IPluginManager {

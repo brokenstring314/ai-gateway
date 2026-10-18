@@ -38,8 +38,9 @@ describe("RateLimitPlugin", () => {
 
     // 3rd request should be rejected
     const result = await plugin.execute(ctx);
-    expect(result).toEqual({
+    expect(result).toMatchObject({
       action: "reject",
+      status: 429,
       reason: expect.stringContaining("2") as string,
     });
   });
@@ -73,8 +74,9 @@ describe("RateLimitPlugin", () => {
 
     const result = await plugin.execute(ctx);
     expect(result.action).toBe("reject");
-    expect(result).toEqual({
+    expect(result).toMatchObject({
       action: "reject",
+      status: 429,
       reason: expect.stringContaining("2") as string,
     });
   });
@@ -117,8 +119,9 @@ describe("RateLimitPlugin", () => {
       await plugin.execute(ctx);
     }
     const result = await plugin.execute(ctx);
-    expect(result).toEqual({
+    expect(result).toMatchObject({
       action: "reject",
+      status: 429,
       reason: "Rate limit exceeded: 3 requests per minute",
     });
   });

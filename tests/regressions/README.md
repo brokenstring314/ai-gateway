@@ -20,8 +20,12 @@ fixed by 1.4 while this suite was being written).
 | core/prev/mcp-loop | round-2: MCP depth error 500 (M2), MCP usage undercount (M3) | 2.7 |
 | stream/stream-lifecycle | T3-3, T3-4, T3-5 | 2.5 |
 | stream/sse-parser-fuzz | T3-10 | 2.5 |
-| stream/adapters | T3-9 (fields), T3-11, T3-12 (T3-8 and the T3-9 header case fixed in 1.4, kept as plain it) | 2.6 / 2.1 |
+| stream/adapters | T3-9 (fields), T3-11 (T3-8 and the T3-9 header case fixed in 1.4, T3-12 fixed in 2.1; kept as plain it) | 2.6 |
 | stream/completions | T3-7 | 2.6 |
+
+B3-7 (error shape / target leak) and the round-2 "upstream 429/500 -> 500"
+item were fixed in 2.1; their e2e cases in `tests/e2e/errors.e2e.ts` are plain
+`it` now.
 
 Black-box findings (B3-*) are covered by the e2e contract suite in `tests/e2e/`
 (`bun run test:e2e`), also with `it.failing` for the open ones.

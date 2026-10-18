@@ -104,15 +104,15 @@ describe("T3-11 (known, still reproduces) protocol fields dropped", () => {
   });
 });
 
-describe("T3-12 non-stream: malformed upstream 200 bodies -> opaque 500 'Internal server error'", () => {
-  it.failing("200 with non-JSON body maps to 502 provider error", async () => {
+describe("T3-12 (fixed in 2.1) non-stream: malformed upstream 200 bodies -> 502, not an opaque 500", () => {
+  it("200 with non-JSON body maps to 502 provider error", async () => {
     const s = setup(() => new Response("<html>bad gateway</html>", { status: 200, headers: { "content-type": "text/html" } }));
     try {
       const r = await post(s.app, {});
-      expect(r.status).toBe(502); // BUG: 500 internal_error (SyntaxError escapes openai-compat.ts:153)
+      expect(r.status).toBe(502);
     } finally { s.stop(); }
   });
-  it.failing("choices:[null] maps to 502, not a TypeError 500", async () => {
+  it("choices:[null] maps to 502, not a TypeError 500", async () => {
     const s = setup(() => Response.json({ id: "x", choices: [null] }));
     try {
       const r = await post(s.app, {});

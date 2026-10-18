@@ -61,6 +61,8 @@ export class RateLimitPlugin implements IPlugin {
       return {
         action: "reject",
         reason: `Rate limit exceeded: ${String(this.config.maxRequestsPerMinute)} requests per minute`,
+        status: 429,
+        retryAfterSeconds: Math.max(1, Math.ceil((state.minute.start + MINUTE_MS - now) / 1000)),
       };
     }
 
@@ -69,6 +71,8 @@ export class RateLimitPlugin implements IPlugin {
       return {
         action: "reject",
         reason: `Rate limit exceeded: ${String(maxPerDay)} requests per day`,
+        status: 429,
+        retryAfterSeconds: Math.max(1, Math.ceil((state.day.start + DAY_MS - now) / 1000)),
       };
     }
 

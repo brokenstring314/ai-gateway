@@ -410,7 +410,7 @@ describe("createOpenAICompatProvider", () => {
 
       await expect(
         p.complete(makeCtx(), makeRequest({ seed: 42 })),
-      ).rejects.toThrow("groq does not support");
+      ).rejects.toThrow("Unsupported parameters for this model");
 
       // Verify fetch was never called.
       expect(fetch).not.toHaveBeenCalled();

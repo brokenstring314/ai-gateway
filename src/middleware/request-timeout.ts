@@ -4,7 +4,7 @@
  */
 
 import type { MiddlewareHandler } from "hono";
-import { createTimeoutReason } from "../routing/outcome.js";
+import { createTimeoutReason } from "../core/outcome.js";
 
 const DEFAULT_TIMEOUT_MS = 30_000; // 30 seconds
 

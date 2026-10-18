@@ -35,8 +35,8 @@ describe("errors", () => {
     expect(err.status).toBe(400);
   });
 
-  // B3-7 (open): code/type/param are replaced by the gateway's own.
-  it.failing("upstream 400 error code/type/param reach the client unchanged", async () => {
+  // B3-7 (fixed in 2.1).
+  it("upstream 400 error code/type/param reach the client unchanged", async () => {
     up.enqueue(UPSTREAM_400);
     const err = await sdkError();
     expect(err.code).toBe("context_length_exceeded");
@@ -44,25 +44,36 @@ describe("errors", () => {
     expect(err.param).toBe("messages");
   });
 
-  // B3-7 (open): error body leaks the target name / upstream URL.
-  it.failing("error body does not leak the target name or upstream URL", async () => {
+  // B3-7 (fixed in 2.1): the target name is only in the X-Gateway-Target header.
+  it("error body does not leak the target name or upstream URL", async () => {
     up.enqueue(UPSTREAM_400);
     const r = await postJson(gw, "/v1/chat/completions", { model: "gpt-4o", messages });
     const text = await r.text();
     expect(text).not.toContain("secret-target-name");
     expect(text).not.toContain(`127.0.0.1:${up.port}`);
+    expect(r.headers.get("x-gateway-target")).toBe("secret-target-name");
   });
 
-  // round-2 / B3-7 (open): the upstream Retry-After is not forwarded.
-  it.failing("upstream 429 -> 429 with Retry-After", async () => {
+  it("network error body is generic (no URL, no Bun internals)", async () => {
+    up.enqueue("rst");
+    const r = await postJson(gw, "/v1/chat/completions", { model: "gpt-4o", messages });
+    const text = await r.text();
+    expect(r.status).toBe(502);
+    expect(text).not.toContain("secret-target-name");
+    expect(text).not.toContain(`127.0.0.1:${up.port}`);
+    expect(text).toContain("upstream_unavailable");
+  });
+
+  // round-2 / B3-7 (fixed in 2.1).
+  it("upstream 429 -> 429 with Retry-After", async () => {
     up.enqueue("429");
     const r = await postJson(gw, "/v1/chat/completions", { model: "gpt-4o", messages });
     expect(r.status).toBe(429);
     expect(r.headers.get("retry-after")).toBe("7");
   });
 
-  // round-2 (open): upstream 5xx is passed through as 500 instead of 502.
-  it.failing("upstream 500 -> 502", async () => {
+  // round-2 (fixed in 2.1).
+  it("upstream 500 -> 502", async () => {
     up.enqueue("500");
     const err = await sdkError();
     expect(err.status).toBe(502);
@@ -74,8 +85,8 @@ describe("errors", () => {
     expect(err.status).toBe(502);
   });
 
-  // T3-12 (open): a 200 with a non-JSON body becomes 500 "Internal server error".
-  it.failing("garbage 200 body -> 502", async () => {
+  // T3-12 (fixed in 2.1).
+  it("garbage 200 body -> 502", async () => {
     up.enqueue("garbage_200");
     const err = await sdkError();
     expect(err.status).toBe(502);

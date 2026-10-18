@@ -4,7 +4,11 @@ type BreakerState = "CLOSED" | "OPEN" | "HALF_OPEN";
 
 export class CircuitOpenError extends Error {
   override name = "CircuitOpenError";
-  constructor(public readonly target: string) {
+  constructor(
+    public readonly target: string,
+    /** Seconds until the breaker lets a probe through, when known (Retry-After). */
+    public readonly retryAfterSeconds?: number,
+  ) {
     super(`Circuit breaker is OPEN for target "${target}"`);
   }
 }
@@ -67,6 +71,12 @@ export class CircuitBreaker {
       this.consecutiveSuccesses = 0;
     }
     return this.state;
+  }
+
+  /** Seconds until an OPEN breaker admits a probe (undefined unless OPEN). */
+  retryAfterSeconds(): number | undefined {
+    if (this.getState() !== "OPEN") return undefined;
+    return Math.max(1, Math.ceil((this.openedAt + this.timeoutMs - Date.now()) / 1000));
   }
 
   allow(): boolean {
