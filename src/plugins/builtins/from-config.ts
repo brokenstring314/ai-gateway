@@ -6,7 +6,7 @@
  * (e.g. cache `ttlSeconds`/`maxAge`, word-filter `blocklist`/`blockedWords`).
  */
 
-import type { PluginConfig } from "../../config/types.js";
+import type { PluginConfig, TargetConfig } from "../../config/types.js";
 import type { IPlugin, Stage } from "../types.js";
 import { BudgetPlugin } from "./budget.js";
 import { CachePlugin } from "./cache.js";
@@ -53,6 +53,7 @@ export function normalizePluginName(name: string): string {
 
 export function buildPluginsFromConfig(
   entries: readonly PluginConfig[] | undefined,
+  targets: readonly TargetConfig[] = [],
 ): PluginRegistration[] {
   const out: PluginRegistration[] = [];
   for (const entry of entries ?? []) {
@@ -85,8 +86,14 @@ export function buildPluginsFromConfig(
           dailyBudget: requirePositive(entry.name, raw, ["dailyBudget"]),
           costPer1kInput: num(raw, ["costPer1kInput"]),
           costPer1kOutput: num(raw, ["costPer1kOutput"]),
+          reserveOutputTokens: num(raw, ["reserveOutputTokens"]),
+          // Without own rates, reserve at the most expensive target's rates.
+          estimateRates: {
+            costPer1kInputTokens: Math.max(0, ...targets.map((t) => t.costPer1kInputTokens ?? 0)),
+            costPer1kOutputTokens: Math.max(0, ...targets.map((t) => t.costPer1kOutputTokens ?? 0)),
+          },
         };
-        // Budget checks before and accrues spend after.
+        // Budget reserves before and charges after (released on settle).
         out.push({ stage: "before_request", plugin: new BudgetPlugin(cfg, "before_request") });
         out.push({ stage: "after_request", plugin: new BudgetPlugin(cfg, "after_request") });
         break;

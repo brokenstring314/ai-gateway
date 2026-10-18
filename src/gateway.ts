@@ -138,7 +138,7 @@ export class Gateway {
     this.aliases = config.aliases ?? {};
     this.registry = new ProviderRegistry();
     this.pluginManager = new PluginManager();
-    for (const { stage, plugin } of buildPluginsFromConfig(config.plugins)) {
+    for (const { stage, plugin } of buildPluginsFromConfig(config.plugins, config.targets)) {
       this.pluginManager.register(stage, plugin);
     }
     this.mcpRegistry = new McpRegistry();

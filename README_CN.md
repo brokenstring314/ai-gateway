@@ -799,7 +799,15 @@ plugins:
       dailyBudget: 100          # 每日消费限额（美元）
       costPer1kInput: 0.01     # 每 1K 输入 token 的成本
       costPer1kOutput: 0.03    # 每 1K 输出 token 的成本
+      reserveOutputTokens: 1024 # 可选：请求未设 max_tokens 时预留的输出 token 数
 ```
+
+每个请求发送前先按估算预留费用（prompt 约 4 字符/token，加上其 `max_tokens`
+或 `reserveOutputTokens`），完成后按实际用量结算；无论请求如何结束，预留都会释放。
+同一密钥还有在途请求时，只有估算能放进剩余额度的请求才会被放行，因此并发不会冲破预算。
+未配置 `costPer1kInput` / `costPer1kOutput` 时使用实际服务 target 的
+`costPer1kInputTokens` / `costPer1kOutputTokens`；任何地方都没有费率的 budget
+配置直接报错（否则永远不会生效）。
 
 #### 日志（Logger，0.2.0 已移除）
 

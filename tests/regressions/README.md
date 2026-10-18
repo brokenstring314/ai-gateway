@@ -14,7 +14,7 @@ fixed by 1.4 while this suite was being written).
 | sec/s3-5-config-scrub-gaps | S3-5 (remaining scrub gaps) — fixed, now a regression test | 3.3 |
 | sec/s3-6-passthrough-method-fallthrough | S3-6 — fixed (route allow-list, 405 on gateway routes, max-token on proxied bodies), now a regression test | 2.8 |
 | core/limiter-queue-timeout-opens-breaker | C3-3 — fixed (abortable limiter wait), now a regression test | 2.2 |
-| core/budget-race | C3-5 | 3.6 |
+| core/budget-race | C3-5 — fixed (reserve in before, settle after; budget without rates is a config error), now regression tests | 3.6 |
 | core/breaker-stale-outcome, core/breaker-fuzz (I3/I4) | C3-6 — fixed (permit-based settlement), now regression tests | 2.2 |
 | core/prev-scopes-and-logstore | round-2: initRequestLogger never called — fixed (finalize → log store sink), now a regression test | 2.3 |
 | core/prev/mcp-loop | round-2: MCP depth error 500 (M2), MCP usage undercount (M3) — fixed (core/mcp-loop.ts), now regression tests | 2.7 |
