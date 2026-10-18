@@ -173,10 +173,14 @@ export async function bootstrap(configPath: string, overrides: ServeOverrides = 
 
   console.log(`AI Gateway listening on http://${host}:${port}`);
 
-  // SIGTERM: readiness 503 -> stop accepting new connections -> drain ->
-  // close the listener and components.
+  // SIGTERM: readiness 503 -> stop accepting new connections (non-forced, so
+  // in-flight streams can finish within the grace) -> drain -> force-close
+  // whatever is left once the grace expires -> close components -> exit.
   shutdown.setStopAccepting(() => server.stop(false));
-  shutdown.register({ name: "http", close: () => server.stop() });
+  shutdown.setForceClose(() => server.stop(true));
+  // After the drain nothing should be left; a forced stop guarantees that a
+  // non-forced stop() cannot wait on a hung connection (found by tests/e2e/ops.e2e.ts).
+  shutdown.register({ name: "http", close: () => server.stop(true) });
   shutdown.register({ name: "gateway", close: () => gateway.close() });
   shutdown.register({ name: "request-logger", close: () => getRequestLogger().close() });
   shutdown.register({ name: "api-key-store", close: () => keyStore.close() });

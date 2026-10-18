@@ -125,16 +125,19 @@ describe("ShutdownManager", () => {
     offSpy.mockRestore();
   });
 
-  it("triggers shutdown when a signal is emitted", async () => {
+  it("triggers shutdown when a signal is emitted, then exits", async () => {
     const component = makeComponent("db");
     const manager = new ShutdownManager();
     manager.register(component);
-    const cleanup = manager.installSignalHandlers();
+    const exits: number[] = [];
+    const cleanup = manager.installSignalHandlers((code) => exits.push(code));
     process.emit("SIGINT");
     for (let i = 0; i < 20 && component.close.mock.calls.length === 0; i++) {
       await new Promise((resolve) => setTimeout(resolve, 5));
     }
     expect(component.close).toHaveBeenCalledTimes(1);
+    await new Promise((resolve) => setTimeout(resolve, 5));
+    expect(exits).toEqual([0]);
     cleanup();
   });
 });

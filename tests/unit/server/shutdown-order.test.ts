@@ -70,3 +70,34 @@ describe("shutdown order", () => {
     }
   });
 });
+
+describe("shutdown with a hung request", () => {
+  it("grace expiry force-closes connections, then closes components", async () => {
+    const order: string[] = [];
+    const manager = new ShutdownManager({ shutdownGraceMs: 50 });
+    manager.setStopAccepting(() => order.push("stop(false)"));
+    manager.setForceClose(() => order.push("stop(true)"));
+    manager.register({ name: "c", close: () => { order.push("close"); } });
+    manager.inFlight.increment(); // never finishes
+    await manager.shutdown("test");
+    expect(order).toEqual(["stop(false)", "stop(true)", "close"]);
+  });
+
+  it("no force-close when the drain finishes in time", async () => {
+    const manager = new ShutdownManager({ shutdownGraceMs: 500 });
+    let forced = false;
+    manager.setForceClose(() => { forced = true; });
+    await manager.shutdown("test");
+    expect(forced).toBe(false);
+  });
+
+  it("SIGTERM handler exits the process after shutdown", async () => {
+    const manager = new ShutdownManager({ shutdownGraceMs: 50 });
+    manager.inFlight.increment();
+    const exited = new Promise<number>((resolve) => {
+      const uninstall = manager.installSignalHandlers((code) => { uninstall(); resolve(code); });
+    });
+    process.emit("SIGTERM");
+    expect(await exited).toBe(0);
+  });
+});
