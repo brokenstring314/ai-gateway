@@ -50,49 +50,22 @@ export interface TargetConfig {
   concurrency?: ConcurrencyConfig;
 }
 
-/** Conditional rule (Go Condition): key/value match routed to a target. */
-export interface Condition {
-  key: string;
-  value: string;
-  targetKey: string;
-}
-
-/** Content-based rule (Go ContentCondition). */
-export interface ContentCondition {
-  type: string;
-  value: string;
-  targetKey: string;
-}
-
-/** Weighted ab-test variant (Go ABVariantConfig). */
-export interface ABVariant {
-  targetKey: string;
-  weight: number;
-  label: string;
-}
-
 export interface StrategyConfig {
   mode: StrategyMode;
-  /** Fallback: ordered target names. LoadBalance: target→weight. ABTest: variant→weight. */
+  /** single: [target]. fallback: ordered targets. loadbalance: the pool. conditional: [defaultTarget]. */
   targets?: string[];
+  /** loadbalance: target → weight (0 = drained, never selected). */
   weights?: Record<string, number>;
-  /** Conditional: field→pattern→target rules. */
+  /** conditional: first matching rule wins. */
   rules?: ConditionalRule[];
-  /** ContentBased: keyword→target mapping. */
-  keywords?: Record<string, string>;
-  /** CostOptimized: how unpriced targets are handled. */
-  unpricedStrategy?: "fallback" | "skip" | "allow";
-  /** Conditional: key→value→target rules (Go conditions). */
-  conditions?: Condition[];
-  /** ContentBased: ordered content-match rules (Go content_conditions). */
-  contentConditions?: ContentCondition[];
-  /** ABTest: weighted variants (Go ab_variants). */
-  abVariants?: ABVariant[];
 }
 
 export interface ConditionalRule {
-  field: string;
-  pattern: string;
+  field: "model" | "user" | "message" | "prompt";
+  /** Regex tested against the field. */
+  pattern?: string;
+  /** Case-insensitive substring. Exactly one of pattern/contains. */
+  contains?: string;
   target: string;
 }
 

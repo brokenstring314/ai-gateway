@@ -27,16 +27,8 @@ import { ProviderRegistry } from "./providers/registry.js";
 import { createOpenAICompatProvider, ProviderError } from "./providers/openai-compat.js";
 import type { IStrategy, StrategyMode } from "./routing/types.js";
 import { createStrategy } from "./routing/strategy-factory.js";
-import type {
-  SingleConfig,
-  FallbackConfig,
-  LoadBalanceConfig,
-  ConditionalConfig,
-  LeastLatencyConfig,
-  CostOptimizedConfig,
-  ContentBasedConfig,
-  AbTestConfig,
-} from "./routing/strategy-factory.js";
+import { resolveStrategyMode } from "./config/removed.js";
+import type { StrategyConfig as RoutingStrategyConfig } from "./routing/strategy-factory.js";
 import { PluginManager } from "./plugins/manager.js";
 import { createPluginContext } from "./plugins/context.js";
 import { PluginRejectionError } from "./plugins/error.js";
@@ -234,7 +226,7 @@ function createProviderFromTarget(rawTarget: TargetConfig): IProvider {
 
 function buildStrategyConfig(config: GatewayConfig): {
   mode: StrategyMode;
-  config: SingleConfig | FallbackConfig | LoadBalanceConfig | ConditionalConfig | LeastLatencyConfig | CostOptimizedConfig | ContentBasedConfig | AbTestConfig;
+  config: RoutingStrategyConfig;
 } {
   const sc = config.strategy;
   const targetNames = config.targets.map((t) => t.name);
@@ -245,7 +237,8 @@ function buildStrategyConfig(config: GatewayConfig): {
     if (t.retry) retryConfigs.set(t.name, t.retry);
   }
 
-  switch (sc.mode) {
+  const mode = resolveStrategyMode(sc.mode);
+  switch (mode) {
     case "single": {
       const target = sc.targets?.[0] ?? targetNames[0];
       if (!target) throw new Error("single strategy requires at least one target");
@@ -256,6 +249,7 @@ function buildStrategyConfig(config: GatewayConfig): {
       return { mode: "fallback", config: { targets: fallbackTargets, retryConfigs } };
     }
     case "loadbalance": {
+      // Weight 0 drains a target: it gets no traffic (not even as failover).
       const targets = (sc.targets ?? targetNames).map((name) => {
         const t = config.targets.find((tgt) => tgt.name === name);
         return { name, weight: t?.weight ?? sc.weights?.[name] ?? 1 };
@@ -263,81 +257,17 @@ function buildStrategyConfig(config: GatewayConfig): {
       return { mode: "loadbalance", config: { targets, retryConfigs } };
     }
     case "conditional": {
-      // Go-style conditions (key/value/targetKey) are bridged to TS
-      // field/pattern/target rules: the condition key becomes the field and
-      // the condition value becomes the regex pattern.
-      const rules =
-        sc.rules ??
-        (sc.conditions ?? []).map((c) => ({
-          field: c.key,
-          pattern: c.value,
-          target: c.targetKey,
-        }));
       return {
         mode: "conditional",
         config: {
-          rules,
+          rules: sc.rules ?? [],
           defaultTarget: sc.targets?.[0] ?? targetNames[0],
           retryConfigs,
         },
       };
-    }
-    case "least_latency": {
-      return { mode: "least_latency", config: { targets: sc.targets ?? targetNames, retryConfigs } };
-    }
-    case "cost_optimized": {
-      const targets = (sc.targets ?? targetNames).map((name) => {
-        const t = config.targets.find((tgt) => tgt.name === name);
-        return {
-          name,
-          costPer1kInputTokens: t?.costPer1kInputTokens ?? 0,
-          costPer1kOutputTokens: t?.costPer1kOutputTokens ?? 0,
-        };
-      });
-      return {
-        mode: "cost_optimized",
-        config: {
-          targets,
-          unpricedStrategy: sc.unpricedStrategy ?? "fallback",
-          retryConfigs,
-        },
-      };
-    }
-    case "content_based": {
-      const keywords = sc.keywords
-        ? Object.entries(sc.keywords).map(([keyword, target]) => ({ keyword, target }))
-        : [];
-      // Go-style content_conditions are bridged to ContentBasedRule.
-      const contentConditions = (sc.contentConditions ?? []).map((cc) => ({
-        type: cc.type as "prompt_contains" | "prompt_not_contains" | "prompt_regex",
-        value: cc.value,
-        target: cc.targetKey,
-      }));
-      return {
-        mode: "content_based",
-        config: {
-          keywords,
-          contentConditions,
-          defaultTarget: sc.targets?.[0] ?? targetNames[0],
-          retryConfigs,
-        },
-      };
-    }
-    case "abtest": {
-      // Prefer Go-style ab_variants when configured.
-      const variants = sc.abVariants && sc.abVariants.length > 0
-        ? sc.abVariants.map((v) => ({
-            name: v.targetKey,
-            weight: v.weight,
-          }))
-        : (sc.targets ?? targetNames).map((name) => ({
-            name,
-            weight: sc.weights?.[name] ?? 1,
-          }));
-      return { mode: "abtest", config: { variants, retryConfigs } };
     }
     default: {
-      const _exhaustive: never = sc.mode;
+      const _exhaustive: never = mode;
       throw new Error(`Unknown strategy mode: ${String(_exhaustive)}`);
     }
   }

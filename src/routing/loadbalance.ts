@@ -23,7 +23,12 @@ export class LoadBalanceStrategy implements IStrategy {
   constructor(lookup: ProviderLookup, config: LoadBalanceConfig) {
     this.lookup = lookup;
     this.retryConfigs = config.retryConfigs ?? new Map();
-    this.targets = config.targets;
+    // Weight 0 (or less) means "drained": never selected, not even as a
+    // failover candidate.
+    this.targets = config.targets.filter((t) => t.weight > 0);
+    if (this.targets.length === 0) {
+      throw new Error("LoadBalanceStrategy: every target has weight 0; at least one weight must be > 0");
+    }
   }
 
   /**
@@ -35,11 +40,11 @@ export class LoadBalanceStrategy implements IStrategy {
     const remaining = [...this.targets];
     const order: string[] = [];
     while (remaining.length > 0) {
-      const total = remaining.reduce((s, t) => s + effectiveWeight(t.weight), 0);
+      const total = remaining.reduce((s, t) => s + t.weight, 0);
       let r = Math.random() * total;
       let idx = remaining.length - 1;
       for (let k = 0; k < remaining.length; k++) {
-        r -= effectiveWeight(remaining[k]!.weight);
+        r -= remaining[k]!.weight;
         if (r <= 0) {
           idx = k;
           break;
@@ -78,8 +83,4 @@ export class LoadBalanceStrategy implements IStrategy {
     );
   }
 
-}
-
-function effectiveWeight(weight: number): number {
-  return weight > 0 ? weight : 1;
 }

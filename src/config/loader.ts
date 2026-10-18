@@ -5,6 +5,7 @@
 import { readFileSync, existsSync } from "node:fs";
 import { parse as parseYaml } from "yaml";
 import { parseConfig } from "./schema.js";
+import { configDeprecationWarnings } from "./removed.js";
 import type { GatewayConfig } from "./types.js";
 
 const ENV_PREFIX = "AI_GATEWAY_";
@@ -23,13 +24,19 @@ export function loadConfigFromPath(path: string): GatewayConfig {
     parsed = JSON.parse(raw);
   }
   const withEnv = applyEnvOverrides(parsed);
+  warnDeprecations(withEnv);
   return parseConfig(withEnv);
 }
 
 /** Load config from a plain object (for embedded mode). */
 export function loadConfigFromObject(obj: unknown): GatewayConfig {
   const withEnv = applyEnvOverrides(obj);
+  warnDeprecations(withEnv);
   return parseConfig(withEnv);
+}
+
+function warnDeprecations(raw: unknown): void {
+  for (const warning of configDeprecationWarnings(raw)) console.warn(`[config] ${warning}`);
 }
 
 /** Apply environment variable overrides. AI_GATEWAY_SERVER_PORT=8080 → config.server.port = 8080 */

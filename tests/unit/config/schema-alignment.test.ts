@@ -298,73 +298,64 @@ describe("observability", () => {
   });
 });
 
-describe("strategy aliases and fields", () => {
-  it("maps least-latency and least_latency to least_latency", () => {
-    const hyphen = parseConfig(baseConfig({ strategy: { mode: "least-latency", targets: ["primary"] } }));
-    const underscore = parseConfig(baseConfig({ strategy: { mode: "least_latency", targets: ["primary"] } }));
-    expect(hyphen.strategy.mode).toBe("least_latency");
-    expect(underscore.strategy.mode).toBe("least_latency");
-  });
+function parseErrors(input: Record<string, unknown>): string {
+  const r = safeParseConfig(input);
+  expect(r.success).toBe(false);
+  return r.success ? "" : r.error.issues.map((x) => x.message).join("\n");
+}
 
-  it("maps cost-optimized to cost_optimized", () => {
-    const config = parseConfig(baseConfig({ strategy: { mode: "cost-optimized", targets: ["primary"] } }));
-    expect(config.strategy.mode).toBe("cost_optimized");
-  });
+describe("strategy modes and fields (0.2.0)", () => {
+  for (const [mode, hint] of [
+    ["least_latency", "use fallback"],
+    ["least-latency", "use fallback"],
+    ["cost_optimized", "cheapest to most expensive"],
+    ["cost-optimized", "cheapest to most expensive"],
+    ["content_based", "field: prompt"],
+    ["content-based", "field: prompt"],
+  ] as const) {
+    it(`removed mode ${mode} fails with a migration hint`, () => {
+      const msg = parseErrors(baseConfig({ strategy: { mode, targets: ["primary"] } }));
+      expect(msg).toContain("removed in 0.2.0");
+      expect(msg).toContain(hint);
+    });
+  }
 
-  it("maps content-based to content_based", () => {
-    const config = parseConfig(baseConfig({ strategy: { mode: "content-based", targets: ["primary"] } }));
-    expect(config.strategy.mode).toBe("content_based");
-  });
-
-  it("maps ab-test to abtest", () => {
-    const config = parseConfig(baseConfig({ strategy: { mode: "ab-test", targets: ["primary"] } }));
-    expect(config.strategy.mode).toBe("abtest");
+  it("abtest / ab-test is a deprecated alias of loadbalance", () => {
+    expect(parseConfig(baseConfig({ strategy: { mode: "abtest", targets: ["primary"] } })).strategy.mode).toBe("loadbalance");
+    expect(parseConfig(baseConfig({ strategy: { mode: "ab-test", targets: ["primary"] } })).strategy.mode).toBe("loadbalance");
   });
 
   it("rejects an unknown strategy mode", () => {
-    expectParseFailure(baseConfig({ strategy: { mode: "magic" } }));
+    expect(parseErrors(baseConfig({ strategy: { mode: "magic" } }))).toContain('unknown strategy mode "magic"');
   });
 
-  it("accepts snake_case strategy keys and target_key", () => {
-    const config = parseConfig(
-      baseConfig({
-        strategy: {
-          mode: "content-based",
-          unpriced_strategy: "skip",
-          conditions: [{ key: "country", value: "US", target_key: "primary" }],
-          content_conditions: [{ type: "prompt_contains", value: "code", target_key: "primary" }],
-          ab_variants: [{ target_key: "primary", weight: 2, label: "control" }],
-        },
-      }),
-    );
-    const strategy = config.strategy;
-    expect(strategy.mode).toBe("content_based");
-    expect(strategy.unpricedStrategy).toBe("skip");
-    expect(strategy.conditions?.[0]).toEqual({ key: "country", value: "US", targetKey: "primary" });
-    expect(strategy.contentConditions?.[0]).toEqual({
-      type: "prompt_contains",
-      value: "code",
-      targetKey: "primary",
+  for (const key of ["conditions", "content_conditions", "contentConditions", "keywords", "ab_variants", "abVariants", "unpriced_strategy", "unpricedStrategy"]) {
+    it(`removed strategy key ${key} fails with a migration hint`, () => {
+      const msg = parseErrors(baseConfig({ strategy: { mode: "fallback", targets: ["primary"], [key]: [] } }));
+      expect(msg).toContain(`strategy.${key}`);
+      expect(msg).toContain("was removed in 0.2.0");
     });
-    expect(strategy.abVariants?.[0]).toEqual({ targetKey: "primary", weight: 2, label: "control" });
+  }
+
+  it("conditional rules: field prompt + contains or pattern; exactly one; regex validated", () => {
+    const ok = parseConfig(baseConfig({
+      strategy: { mode: "conditional", targets: ["primary"], rules: [
+        { field: "prompt", contains: "code", target: "primary" },
+        { field: "model", pattern: "^gpt-", target: "primary" },
+      ] },
+    }));
+    expect(ok.strategy.rules?.length).toBe(2);
+    expect(parseErrors(baseConfig({ strategy: { mode: "conditional", rules: [{ field: "prompt", target: "primary" }] } })))
+      .toContain("exactly one");
+    expect(parseErrors(baseConfig({ strategy: { mode: "conditional", rules: [{ field: "prompt", pattern: "x", contains: "y", target: "primary" }] } })))
+      .toContain("exactly one");
+    expect(parseErrors(baseConfig({ strategy: { mode: "conditional", rules: [{ field: "model", pattern: "[bad", target: "primary" }] } })))
+      .toContain("invalid regex");
   });
 
-  it("accepts camelCase strategy fields and defaults unpricedStrategy to fallback", () => {
-    const config = parseConfig(
-      baseConfig({
-        strategy: {
-          mode: "cost_optimized",
-          targets: ["primary"],
-          unpricedStrategy: "allow",
-          contentConditions: [{ type: "prompt_regex", value: "^hi", targetKey: "primary" }],
-        },
-      }),
-    );
-    expect(config.strategy.unpricedStrategy).toBe("allow");
-    expect(config.strategy.contentConditions?.[0]?.targetKey).toBe("primary");
-
-    const fallback = parseConfig(baseConfig({ strategy: { mode: "fallback", targets: ["primary"] } }));
-    expect(fallback.strategy.unpricedStrategy).toBe("fallback");
+  it("loadbalance weights: negative rejected, 0 allowed, all-0 rejected (C3-9)", () => {
+    expectParseFailure(baseConfig({ strategy: { mode: "loadbalance", weights: { primary: -1 } } }));
+    expect(parseErrors(baseConfig({ strategy: { mode: "loadbalance", weights: { primary: 0 } } }))).toContain("every target has weight 0");
   });
 });
 

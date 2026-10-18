@@ -5,33 +5,43 @@
 
 import { z } from "zod";
 import type { StrategyMode } from "../routing/types.js";
+import {
+  DEPRECATED_STRATEGY_MODES,
+  REMOVED_STRATEGY_KEYS,
+  REMOVED_STRATEGY_MODES,
+  canonicalStrategyMode,
+} from "./removed.js";
 
 /** Go-style duration string: a positive integer followed by a unit (ms|s|m|h). */
 function durationString(message: string): z.ZodString {
   return z.string().regex(/^\d+(ms|s|m|h)$/, message);
 }
 
-/** Strategy-mode YAML aliases — the Go config uses hyphenated forms. */
-const STRATEGY_MODE_ALIASES: Record<string, StrategyMode> = {
-  "least-latency": "least_latency",
-  "cost-optimized": "cost_optimized",
-  "content-based": "content_based",
-  "ab-test": "abtest",
-};
+const STRATEGY_MODES = ["single", "fallback", "loadbalance", "conditional"] as const satisfies readonly StrategyMode[];
 
-export const StrategyModeSchema = z.preprocess(
-  (val) => (typeof val === "string" ? (STRATEGY_MODE_ALIASES[val] ?? val) : val),
-  z.enum([
-    "single",
-    "fallback",
-    "loadbalance",
-    "conditional",
-    "least_latency",
-    "cost_optimized",
-    "content_based",
-    "abtest",
-  ]),
-);
+/**
+ * Strategy mode. Removed modes (least_latency, cost_optimized, content_based)
+ * fail with a migration hint; the deprecated abtest alias maps to loadbalance
+ * (configDeprecationWarnings reports it).
+ */
+export const StrategyModeSchema = z
+  .string()
+  .superRefine((val, ctx) => {
+    const mode = canonicalStrategyMode(val);
+    const hint = REMOVED_STRATEGY_MODES[mode];
+    if (hint !== undefined) {
+      ctx.addIssue({ code: "custom", message: hint });
+    } else if (DEPRECATED_STRATEGY_MODES[mode] === undefined && !(STRATEGY_MODES as readonly string[]).includes(mode)) {
+      ctx.addIssue({
+        code: "custom",
+        message: `unknown strategy mode "${val}"; expected one of ${STRATEGY_MODES.join(", ")}`,
+      });
+    }
+  })
+  .transform((val): StrategyMode => {
+    const mode = canonicalStrategyMode(val);
+    return DEPRECATED_STRATEGY_MODES[mode] ?? (mode as StrategyMode);
+  });
 
 export const StageSchema = z.enum(["before_request", "after_request", "on_error"]);
 
@@ -70,7 +80,7 @@ export const TargetConfigSchema = z.object({
   apiKey: z.string().min(1),
   baseURL: z.string().url().optional(),
   models: z.array(z.string()).optional(),
-  weight: z.number().positive().optional(),
+  weight: z.number().nonnegative().optional(),
   priority: z.number().int().nonnegative().optional(),
   budget: z.number().positive().optional(),
   costPer1kInputTokens: z.number().nonnegative().optional(),
@@ -80,78 +90,45 @@ export const TargetConfigSchema = z.object({
   concurrency: ConcurrencyConfigSchema.optional(),
 });
 
-export const ConditionalRuleSchema = z.object({
-  field: z.string().min(1),
-  pattern: z.string().min(1),
-  target: z.string().min(1),
-});
+export const ConditionalRuleSchema = z
+  .object({
+    field: z.enum(["model", "user", "message", "prompt"]),
+    pattern: z.string().min(1).optional(),
+    contains: z.string().min(1).optional(),
+    target: z.string().min(1),
+  })
+  .superRefine((rule, ctx) => {
+    if ((rule.pattern === undefined) === (rule.contains === undefined)) {
+      ctx.addIssue({ code: "custom", message: 'a rule needs exactly one of "pattern" (regex) or "contains"' });
+    }
+    if (rule.pattern !== undefined) {
+      try {
+        new RegExp(rule.pattern);
+      } catch (err) {
+        ctx.addIssue({
+          code: "custom",
+          path: ["pattern"],
+          message: `invalid regex: ${err instanceof Error ? err.message : String(err)}`,
+        });
+      }
+    }
+  });
 
-/** Rename the Go `target_key` key to `targetKey` before validation. */
-function normalizeTargetKey(input: unknown): unknown {
-  if (typeof input !== "object" || input === null || Array.isArray(input)) return input;
-  const out: Record<string, unknown> = {};
-  for (const [key, value] of Object.entries(input as Record<string, unknown>)) {
-    out[key === "target_key" ? "targetKey" : key] = value;
-  }
-  return out;
-}
-
-export const ConditionSchema = z.preprocess(
-  normalizeTargetKey,
-  z.object({
-    key: z.string().min(1),
-    value: z.string().min(1),
-    targetKey: z.string().min(1),
-  }),
-);
-
-export const ContentConditionSchema = z.preprocess(
-  normalizeTargetKey,
-  z.object({
-    type: z.string().min(1),
-    value: z.string().min(1),
-    targetKey: z.string().min(1),
-  }),
-);
-
-export const ABVariantSchema = z.preprocess(
-  normalizeTargetKey,
-  z.object({
-    targetKey: z.string().min(1),
-    weight: z.number().nonnegative().optional().default(1),
-    label: z.string().min(1),
-  }),
-);
-
-/** Rename Go snake_case strategy keys to camelCase before validation. */
-function normalizeStrategyKeys(input: unknown): unknown {
-  if (typeof input !== "object" || input === null || Array.isArray(input)) return input;
-  const out: Record<string, unknown> = {};
-  for (const [key, value] of Object.entries(input as Record<string, unknown>)) {
-    out[
-      key === "unpriced_strategy" ? "unpricedStrategy" :
-      key === "content_conditions" ? "contentConditions" :
-      key === "ab_variants" ? "abVariants" :
-      key
-    ] = value;
-  }
-  return out;
-}
-
-export const StrategyConfigSchema = z.preprocess(
-  normalizeStrategyKeys,
-  z.object({
+export const StrategyConfigSchema = z
+  .object({
     mode: StrategyModeSchema,
     targets: z.array(z.string()).optional(),
-    weights: z.record(z.string(), z.number()).optional(),
+    weights: z.record(z.string(), z.number().nonnegative()).optional(),
     rules: z.array(ConditionalRuleSchema).optional(),
-    keywords: z.record(z.string(), z.string()).optional(),
-    unpricedStrategy: z.enum(["fallback", "skip", "allow"]).optional().default("fallback"),
-    conditions: z.array(ConditionSchema).optional(),
-    contentConditions: z.array(ContentConditionSchema).optional(),
-    abVariants: z.array(ABVariantSchema).optional(),
-  }),
-);
+  })
+  .passthrough()
+  .superRefine((val, ctx) => {
+    for (const key of Object.keys(val)) {
+      const hint = REMOVED_STRATEGY_KEYS[key];
+      if (hint !== undefined) ctx.addIssue({ code: "custom", path: [key], message: hint });
+    }
+  })
+  .transform(({ mode, targets, weights, rules }) => ({ mode, targets, weights, rules }));
 
 export const PluginConfigSchema = z.object({
   name: z.string().min(1),
@@ -263,6 +240,19 @@ export const GatewayConfigSchema = z.object({
       allowHeaders: z.array(z.string()).optional(),
     })
     .optional(),
+}).superRefine((cfg, ctx) => {
+  if (cfg.strategy.mode === "loadbalance") {
+    const pool = cfg.strategy.targets ?? cfg.targets.map((t) => t.name);
+    const weightOf = (name: string) =>
+      cfg.targets.find((t) => t.name === name)?.weight ?? cfg.strategy.weights?.[name] ?? 1;
+    if (pool.length > 0 && pool.every((name) => weightOf(name) === 0)) {
+      ctx.addIssue({
+        code: "custom",
+        path: ["strategy", "weights"],
+        message: "loadbalance: every target has weight 0 (0 = drained); at least one weight must be > 0",
+      });
+    }
+  }
 });
 
 /** Parse and validate a GatewayConfig from unknown input. Throws ZodError on failure. */

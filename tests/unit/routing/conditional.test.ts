@@ -178,17 +178,38 @@ describe("ConditionalStrategy", () => {
     expect(targets).toContain("groq");
   });
 
-  it("invalid regex pattern throws at match time", async () => {
+  it("invalid regex pattern throws at construction (startup), not per request", () => {
     const openai = createMockProvider("openai");
     const lookup = (name: string) => name === "openai" ? openai : undefined;
-
-    const strategy = new ConditionalStrategy(lookup, {
+    expect(() => new ConditionalStrategy(lookup, {
       rules: [{ field: "model", pattern: "[invalid", target: "openai" }],
       defaultTarget: "openai",
-    });
+    })).toThrow(/invalid pattern/);
+  });
 
-    await expect(
-      strategy.execute({ metadata: {} }, createReq({ model: "test" })),
-    ).rejects.toThrow();
+  it("field prompt + contains matches any user message case-insensitively (absorbs content_based)", () => {
+    const strategy = new ConditionalStrategy(() => undefined, {
+      rules: [{ field: "prompt", contains: "Code", target: "coder" }],
+      defaultTarget: "general",
+    });
+    expect(strategy.selectTargets(createReq({
+      messages: [
+        { role: "system", content: "you write code" },
+        { role: "user", content: "hello" },
+        { role: "user", content: [{ type: "text", text: "fix my CODE" }] as never },
+      ],
+    }))[0]).toBe("coder");
+    expect(strategy.selectTargets(createReq({
+      messages: [{ role: "system", content: "code" }, { role: "user", content: "hello" }],
+    }))[0]).toBe("general");
+  });
+
+  it("field prompt + pattern uses a regex", () => {
+    const strategy = new ConditionalStrategy(() => undefined, {
+      rules: [{ field: "prompt", pattern: "^\\[code\\]", target: "coder" }],
+      defaultTarget: "general",
+    });
+    expect(strategy.selectTargets(createReq({ messages: [{ role: "user", content: "[code] fix" }] }))[0]).toBe("coder");
+    expect(strategy.selectTargets(createReq({ messages: [{ role: "user", content: "x [code]" }] }))[0]).toBe("general");
   });
 });
