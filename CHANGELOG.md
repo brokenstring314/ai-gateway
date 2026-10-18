@@ -65,3 +65,9 @@
   `required` server that fails 5 consecutive attempts makes `/livez` return
   503. Failed servers now show up as `unready` in `/readyz` `mcpServers`
   instead of being missing.
+- **word-filter compares text in NFKC + lower-case form** (S3-7). Compatibility
+  characters (Kelvin sign, fullwidth letters, long s, ...) are now detected
+  and redacted; redaction runs on the same representation as detection, and
+  a word that is detected but cannot be redacted makes the request rejected
+  instead of forwarded unchanged. Redacted text is forwarded in NFKC form
+  (untouched when it contains no blocked word).
