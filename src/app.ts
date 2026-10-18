@@ -25,7 +25,7 @@ import { isClientAuthEnabled } from "./config/production-safety.js";
 import { adminAuthMiddleware } from "./middleware/auth.js";
 import { createBootstrapGate, type BootstrapGate } from "./auth/bootstrap.js";
 import type { KeyStore } from "./persistence/key-store.js";
-import { perIpRateLimitMiddleware } from "./middleware/per-ip-rate-limit.js";
+import { perIpRateLimitMiddleware, requestRemoteAddress } from "./middleware/per-ip-rate-limit.js";
 import { parseTrustedProxies, resolveClientIp } from "./middleware/trusted-proxy.js";
 import { requestTimeoutMiddleware } from "./middleware/request-timeout.js";
 import { registerChatHandler } from "./handlers/chat.js";
@@ -142,19 +142,17 @@ export function createApp(
     }));
   }
 
+  // Per-IP limiter: off unless configured (server.perIpRateLimit, or the
+  // RATE_LIMIT_RPS / RATE_LIMIT_BURST env vars, which take precedence).
   const trustedProxies = parseTrustedProxies(process.env["TRUSTED_PROXIES"]);
   app.use("/v1/*", perIpRateLimitMiddleware({
-    rps: parseEnvNumber(process.env["RATE_LIMIT_RPS"]),
-    burst: parseEnvNumber(process.env["RATE_LIMIT_BURST"]),
-    resolveClientIp: (c) => {
-      const server = (c.env as { server?: { requestIP?: (request: Request) => { address: string } | null } } | undefined)?.server;
-      const remoteAddress = server?.requestIP?.(c.req.raw)?.address ?? "unknown";
-      return resolveClientIp(
-        remoteAddress,
-        Object.fromEntries(c.req.raw.headers.entries()),
-        trustedProxies,
-      );
-    },
+    rps: parseEnvNumber(process.env["RATE_LIMIT_RPS"]) ?? config.server?.perIpRateLimit?.rps,
+    burst: parseEnvNumber(process.env["RATE_LIMIT_BURST"]) ?? config.server?.perIpRateLimit?.burst,
+    resolveClientIp: (c) => resolveClientIp(
+      requestRemoteAddress(c),
+      Object.fromEntries(c.req.raw.headers.entries()),
+      trustedProxies,
+    ),
   }));
 
   app.use("*", requestTimeoutMiddleware(config.requestTimeout));

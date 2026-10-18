@@ -217,6 +217,10 @@ export const GatewayConfigSchema = z.object({
       // (seconds, 0 = off, default 120) and optional max stream duration.
       streamIdleTimeoutSeconds: z.number().min(0).optional(),
       streamMaxDurationSeconds: z.number().min(0).optional(),
+      // Per-client-IP token bucket on /v1/* (off unless rps > 0).
+      perIpRateLimit: z
+        .object({ rps: z.number().min(0).optional(), burst: z.number().min(0).optional() })
+        .optional(),
     })
     .optional(),
   // Opt-in pass-through proxy for other /v1/* routes (see config/types.ts).

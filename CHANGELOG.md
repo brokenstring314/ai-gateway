@@ -94,3 +94,14 @@
   only when `maxRequestsPerDay` is set, and idle keys are evicted. Behavior
   change: windows are fixed (start at the key's first request), not sliding.
   The README's rate-limit section now documents the real config keys.
+- **Per-IP rate limiter fixed and made opt-in** (B3-12). It read
+  `c.env.server.requestIP`, which does not exist under `Bun.serve`, so every
+  client shared one `"unknown"` bucket and the whole gateway was capped at
+  20 req/s by an undocumented default. It now keys on the real peer address
+  (`(c.env as Server).requestIP`, then `TRUSTED_PROXIES` forwarding headers),
+  is **off unless configured** via the new `server.perIpRateLimit: { rps,
+  burst }` (or `RATE_LIMIT_RPS` / `RATE_LIMIT_BURST`, which take precedence;
+  burst defaults to 2 × rps), sends `Retry-After` on 429, and evicts idle
+  buckets. *Migration:* deployments that relied on the implicit 20 rps / 40
+  burst must set it explicitly. README now documents every operational
+  environment variable and the contents of the data directory.
