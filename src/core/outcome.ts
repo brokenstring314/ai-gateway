@@ -96,3 +96,50 @@ export function isFailoverEligible(err: unknown): boolean {
   if (TARGET_CAUSED_4XX.has(status)) return true;
   return status < 400;
 }
+
+// ── Attempt classification (plan §1.4) ──
+
+/** How an attempt settles its circuit-breaker permit. */
+export type BreakerSettlement = "success" | "failure" | "release";
+
+export interface AttemptFacts {
+  /** The request's abort signal (client disconnect ∪ gateway deadline). */
+  readonly signal?: AbortSignal | null;
+  /**
+   * The local concurrency limiter let the attempt through, i.e. it really
+   * reached (or was about to reach) the upstream. A request that timed out
+   * or was rejected while still queued never touched the upstream (C3-3).
+   */
+  readonly admitted: boolean;
+  /** At least one stream chunk was delivered. */
+  readonly started?: boolean;
+}
+
+export interface AttemptClassification {
+  readonly breaker: BreakerSettlement;
+  /** The gateway deadline fired before any output: surface a gateway timeout. */
+  readonly timedOut: boolean;
+}
+
+/**
+ * The single source of truth for settling a failed attempt (plan §1.4):
+ *  - not admitted (breaker open, queue full, aborted / timed out while queued): release;
+ *  - gateway deadline before output: failure (upstream too slow), reported as a timeout;
+ *  - gateway deadline after output started: release (says little about upstream health);
+ *  - client abort: success if output had started, else release;
+ *  - caller-caused 4xx, upstream 404: release (see isBreakerFailure);
+ *  - anything else (network, 5xx, 408, 429, 401/403, broken stream): failure.
+ * Failover eligibility is decided separately by isFailoverEligible().
+ */
+export function classifyAttemptError(err: unknown, facts: AttemptFacts): AttemptClassification {
+  const started = facts.started === true;
+  if (!facts.admitted) return { breaker: "release", timedOut: false };
+  if (isTimeoutAbort(facts.signal)) {
+    return started ? { breaker: "release", timedOut: false } : { breaker: "failure", timedOut: true };
+  }
+  if (isAbortError(err) || facts.signal?.aborted) {
+    return { breaker: started ? "success" : "release", timedOut: false };
+  }
+  if (!isBreakerFailure(err)) return { breaker: "release", timedOut: false };
+  return { breaker: "failure", timedOut: false };
+}

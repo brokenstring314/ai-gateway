@@ -2,92 +2,33 @@
  * Conditional strategy — routes based on request field matching rules.
  */
 
-import type { IStrategy, StrategyMode, ProviderLookup } from "./types.js";
-import type {
-  RequestContext,
-  ChatCompletionRequest,
-  ChatCompletionResponse,
-  StreamChunk,
-  IStreamProvider,
-} from "../providers/types.js";
+import type { IStrategy, StrategyMode } from "./types.js";
+import type { ChatCompletionRequest } from "../providers/types.js";
 import type {
   ConditionalConfig,
   ConditionalRule,
 } from "./strategy-factory.js";
-import type { RetryConfig } from "../config/types.js";
-import { executeCandidates, streamCandidates, type CandidateHooks } from "./executor.js";
 
 export class ConditionalStrategy implements IStrategy {
   public readonly mode: StrategyMode = "conditional";
   private readonly rules: readonly ConditionalRule[];
   private readonly defaultTarget: string | undefined;
-  private readonly lookup: ProviderLookup;
-  private readonly retryConfigs: ReadonlyMap<string, RetryConfig>;
 
   private readonly matchers: ReadonlyArray<(value: string) => boolean>;
 
-  constructor(lookup: ProviderLookup, config: ConditionalConfig) {
-    this.lookup = lookup;
-    this.retryConfigs = config.retryConfigs ?? new Map();
+  constructor(config: ConditionalConfig) {
     this.rules = config.rules;
     this.defaultTarget = config.defaultTarget;
     // Compile once; a malformed regex fails at startup, not per request.
     this.matchers = this.rules.map((rule) => compileRule(rule));
   }
 
-  selectTargets(req: ChatCompletionRequest): string[] {
-    const matched = this.findMatchingRule(req);
-    const result: string[] = [];
-    if (matched) result.push(matched.target);
-
-    // Append default if not already included
-    if (this.defaultTarget && this.defaultTarget !== matched?.target) {
-      result.push(this.defaultTarget);
-    }
-
-    // Append other unique targets from rules
-    for (const rule of this.rules) {
-      if (rule.target !== matched?.target && rule.target !== this.defaultTarget) {
-        if (!result.includes(rule.target)) result.push(rule.target);
-      }
-    }
-
-    return result;
-  }
-
-  private hooks(): CandidateHooks {
-    return {
-      label: "ConditionalStrategy",
-      retryConfigFor: (name) => this.retryConfigs.get(name),
-    };
-  }
-
-  async execute(
-    ctx: RequestContext,
-    req: ChatCompletionRequest,
-  ): Promise<ChatCompletionResponse> {
-    return executeCandidates(ctx, this.executionTargets(req), this.lookup, (p) => p.complete(ctx, req), this.hooks());
-  }
-
-  async *executeStream(
-    ctx: RequestContext,
-    req: ChatCompletionRequest,
-  ): AsyncIterable<StreamChunk> {
-    yield* streamCandidates(
-      ctx,
-      this.executionTargets(req),
-      this.lookup,
-      (p) => (p as IStreamProvider).completeStream(ctx, req),
-      this.hooks(),
-    );
-  }
-
   /**
-   * Execution candidates: the matched rule's target, then the default
-   * target as failover. Other rules' targets are not used: they serve
-   * different request content.
+   * Candidates: the matched rule's target, then the default target as
+   * failover. Other rules' targets are not used: they serve different
+   * request content. Throws when nothing matched and there is no default.
    */
-  private executionTargets(req: ChatCompletionRequest): string[] {
+  selectTargets(req: ChatCompletionRequest): string[] {
     const matched = this.findMatchingRule(req)?.target;
     if (!matched && !this.defaultTarget) {
       throw new Error(

@@ -180,8 +180,9 @@ export function toGatewayError(err: unknown, opts: ToGatewayErrorOptions = {}): 
   return internalError(inner);
 }
 
+/** Errors that the gateway deadline turns into a 504 (local overload stays 429). */
 function isAttemptError(e: GatewayError): boolean {
-  return e.kind.startsWith("upstream_") || e.kind === "breaker_open" || e.kind === "overloaded";
+  return e.kind.startsWith("upstream_") || e.kind === "breaker_open";
 }
 
 function str(v: unknown): string | undefined {

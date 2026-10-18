@@ -24,7 +24,7 @@ import type {
   Usage,
 } from "./providers/types.js";
 import { ProviderRegistry } from "./providers/registry.js";
-import { type GatewayError, gatewayTimeout, invalidRequest, modelNotFound, toGatewayError } from "./core/errors.js";
+import { invalidRequest, modelNotFound, toGatewayError } from "./core/errors.js";
 import { createProviderFromTarget } from "./core/provider-presets.js";
 import type { IStrategy, StrategyMode } from "./routing/types.js";
 import { createStrategy } from "./routing/strategy-factory.js";
@@ -36,15 +36,14 @@ import { createPluginContext } from "./plugins/context.js";
 import { PluginRejectionError } from "./plugins/error.js";
 import type { IPlugin, Stage } from "./plugins/types.js";
 import { buildPluginsFromConfig } from "./plugins/builtins/from-config.js";
-import type { GatewayConfig, TargetConfig } from "./config/types.js";
+import type { GatewayConfig, RetryConfig, TargetConfig } from "./config/types.js";
 import { getMetrics } from "./metrics/metrics.js";
 import { getTracer } from "./observability/otel-tracer.js";
 import { getRequestLogger } from "./observability/request-log.js";
 import { McpRegistry } from "./mcp/registry.js";
 import { McpExecutor } from "./mcp/executor.js";
 import { CircuitBreakerRegistry, CircuitOpenError } from "./routing/circuit-breaker.js";
-import { isBreakerFailure, isTimeoutAbort } from "./core/outcome.js";
-import { executeCandidates } from "./routing/executor.js";
+import { TargetExecutor, executeChat, streamChat } from "./core/executor.js";
 import {
   ConcurrencyLimiterRegistry,
   ConcurrencyLimitError,
@@ -72,12 +71,6 @@ function buildStrategyConfig(config: GatewayConfig): {
 } {
   const sc = config.strategy;
   const targetNames = config.targets.map((t) => t.name);
-  // Per-target retry config, honored by every multi-target strategy's
-  // candidate executor (a target without one gets a single attempt).
-  const retryConfigs = new Map<string, import("./config/types.js").RetryConfig>();
-  for (const t of config.targets) {
-    if (t.retry) retryConfigs.set(t.name, t.retry);
-  }
 
   const mode = resolveStrategyMode(sc.mode);
   switch (mode) {
@@ -88,7 +81,7 @@ function buildStrategyConfig(config: GatewayConfig): {
     }
     case "fallback": {
       const fallbackTargets = sc.targets ?? targetNames;
-      return { mode: "fallback", config: { targets: fallbackTargets, retryConfigs } };
+      return { mode: "fallback", config: { targets: fallbackTargets } };
     }
     case "loadbalance": {
       // Weight 0 drains a target: it gets no traffic (not even as failover).
@@ -96,7 +89,7 @@ function buildStrategyConfig(config: GatewayConfig): {
         const t = config.targets.find((tgt) => tgt.name === name);
         return { name, weight: t?.weight ?? sc.weights?.[name] ?? 1 };
       });
-      return { mode: "loadbalance", config: { targets, retryConfigs } };
+      return { mode: "loadbalance", config: { targets } };
     }
     case "conditional": {
       return {
@@ -104,7 +97,6 @@ function buildStrategyConfig(config: GatewayConfig): {
         config: {
           rules: sc.rules ?? [],
           defaultTarget: sc.targets?.[0] ?? targetNames[0],
-          retryConfigs,
         },
       };
     }
@@ -127,7 +119,9 @@ export class Gateway {
   private mcpExecutor: McpExecutor | null;
   private circuitBreakers: CircuitBreakerRegistry;
   private concurrencyLimiters: ConcurrencyLimiterRegistry;
-  /** Target that produced each in-flight stream (see tagStreamProvider). */
+  /** Runs strategy-ordered candidates: breaker, limiter, retry, failover (core/executor.ts). */
+  private readonly executor: TargetExecutor;
+  /** Target that produced each in-flight stream (first chunk), for stream logs / metrics. */
   private readonly streamServedBy = new WeakMap<RequestContext, string>();
 
   constructor(config: GatewayConfig) {
@@ -155,9 +149,18 @@ export class Gateway {
     }
 
     const { mode, config: strategyConfig } = buildStrategyConfig(config);
-    this.strategy = createStrategy(mode, strategyConfig, (name: string) =>
-      this.tagStreamProvider(name, this.guardProvider(name, this.limitProvider(name, this.registry.get(name)))),
-    );
+    this.strategy = createStrategy(mode, strategyConfig);
+    // Per-target retry, honored for every strategy (a target without one gets a single attempt).
+    const retryConfigs = new Map<string, RetryConfig>();
+    for (const t of config.targets) {
+      if (t.retry) retryConfigs.set(t.name, t.retry);
+    }
+    this.executor = new TargetExecutor({
+      lookup: (name) => this.registry.get(name),
+      breaker: (name) => this.circuitBreakers.get(name),
+      limiter: (name) => this.concurrencyLimiters.get(name),
+      retryConfig: (name) => retryConfigs.get(name),
+    });
 
     if (config.mcpServers && config.mcpServers.length > 0) {
       const firstServer = config.mcpServers[0] as McpServerRuntimeConfig;
@@ -308,7 +311,7 @@ export class Gateway {
     }
 
     if (this.mcpExecutor && response.choices[0]?.message?.toolCalls && response.choices[0].message.toolCalls.length > 0) {
-      response = await this.mcpExecutor.executeAgenticLoop(ctx, finalReq, response, this.strategy);
+      response = await this.mcpExecutor.executeAgenticLoop(ctx, finalReq, response, (c, r) => this.executeWithCircuitBreaker(c, r));
     }
 
     pluginCtx.response = response;
@@ -405,9 +408,9 @@ export class Gateway {
       }
     };
 
-    // Circuit breaking is applied per invoked target (see guardProvider).
+    // Breaker, limiter, retry and failover per candidate: core/executor.ts.
     try {
-      for await (const chunk of this.strategy.executeStream(ctx, finalReq)) {
+      for await (const chunk of this.streamCandidates(ctx, finalReq)) {
         accumulateChunk(acc, chunk);
         yield chunk;
       }
@@ -763,7 +766,7 @@ export class Gateway {
     capabilityLabel: string,
     call: (provider: IProvider) => Promise<T>,
   ): Promise<T> {
-    let ordered: string[] = [];
+    let ordered: readonly string[] = [];
     try {
       ordered = this.strategy.selectTargets({ model, messages: [] });
     } catch {
@@ -784,17 +787,10 @@ export class Gateway {
       candidates.push(provider.name);
     }
     try {
-      return await executeCandidates(
-        ctx,
-        candidates,
-        (name) => this.guardProvider(name, this.limitProvider(name, this.registry.get(name))),
-        (p) => call(p),
-        {
-          label: `Gateway(${kind})`,
-          retryConfigFor: (name) => this.config.targets.find((t) => t.name === name)?.retry,
-        },
-        (p) => capability in p,
-      );
+      return await this.executor.run(ctx, candidates, (p) => call(p), {
+        label: `Gateway(${kind})`,
+        supports: (p) => capability in p,
+      });
     } catch (err) {
       throw this.translateConcurrencyError(err);
     }
@@ -842,253 +838,6 @@ export class Gateway {
   // ── Internal ──
 
   /**
-   * Record which target actually produced a stream (the one whose first
-   * chunk arrived), keyed by request context, for stream metrics and
-   * request logs. Pure observation: does not alter the stream.
-   */
-  private tagStreamProvider(
-    name: string,
-    provider: IProvider | undefined,
-  ): IProvider | undefined {
-    if (!provider || !("completeStream" in provider)) return provider;
-    const servedBy = this.streamServedBy;
-    const streamer = provider as IProvider & {
-      completeStream(ctx: RequestContext, req: ChatCompletionRequest): AsyncIterable<StreamChunk>;
-    };
-    // Inherit from the provider (keeps class-based providers' prototype
-    // methods) and override only completeStream.
-    const tagged = Object.create(provider) as IProvider;
-    return Object.assign(tagged, {
-      completeStream: async function* (
-        ctx: RequestContext,
-        req: ChatCompletionRequest,
-      ): AsyncIterable<StreamChunk> {
-        let tagged = false;
-        for await (const chunk of streamer.completeStream(ctx, req)) {
-          if (!tagged) {
-            if (ctx !== null && typeof ctx === "object") servedBy.set(ctx, name);
-            tagged = true;
-          }
-          yield chunk;
-        }
-      },
-    });
-  }
-
-  /**
-   * Decorate a provider with its per-target concurrency limiter when one is
-   * configured. The limiter sits INNERMOST — around only the upstream call —
-   * so an open circuit breaker fails fast without occupying a slot, matching
-   * the Go decoration order (limiter innermost, circuit breaker outermost).
-   * When the queue is full the caller receives a ConcurrencyLimitError, which
-   * the gateway converts to an upstream 429.
-   */
-  private limitProvider(
-    name: string,
-    provider: IProvider | undefined,
-  ): IProvider | undefined {
-    if (!provider) return undefined;
-    const limiter = this.concurrencyLimiters.get(name);
-    if (!limiter) return provider;
-
-    const limited = {
-      ...provider,
-      complete: async (
-        ctx: RequestContext,
-        req: ChatCompletionRequest,
-      ): Promise<ChatCompletionResponse> => {
-        const granted = limiter.acquire();
-        if (granted === false) throw new ConcurrencyLimitError(name);
-        try {
-          if (granted instanceof Promise) await granted;
-          return await provider.complete(ctx, req);
-        } finally {
-          limiter.release();
-        }
-      },
-    } as IProvider;
-
-    if ("completeStream" in provider) {
-      const streamer = provider as IProvider & {
-        completeStream(
-          ctx: RequestContext,
-          req: ChatCompletionRequest,
-        ): AsyncIterable<StreamChunk>;
-      };
-      (limited as IProvider & {
-        completeStream(
-          ctx: RequestContext,
-          req: ChatCompletionRequest,
-        ): AsyncIterable<StreamChunk>;
-      }).completeStream = async function* (
-        ctx: RequestContext,
-        req: ChatCompletionRequest,
-      ): AsyncIterable<StreamChunk> {
-        const granted = limiter.acquire();
-        if (granted === false) throw new ConcurrencyLimitError(name);
-        try {
-          if (granted instanceof Promise) await granted;
-          yield* streamer.completeStream(ctx, req);
-        } finally {
-          limiter.release();
-        }
-      };
-    }
-
-    const withSlot = async <T>(fn: () => Promise<T>): Promise<T> => {
-      const granted = limiter.acquire();
-      if (granted === false) throw new ConcurrencyLimitError(name);
-      try {
-        if (granted instanceof Promise) await granted;
-        return await fn();
-      } finally {
-        limiter.release();
-      }
-    };
-    wrapAuxiliaryCalls(provider, limited, (_ctx, fn) => withSlot(fn));
-
-    return limited;
-  }
-
-  /**
-   * Decorate a provider with its circuit breaker (OUTERMOST, around the
-   * concurrency limiter). The breaker is consulted on every actual invocation
-   * of this target, so an open breaker rejects with CircuitOpenError (letting
-   * fallback move on) and success/failure is recorded only for the target that
-   * was really called. Client aborts and local concurrency rejections are not
-   * counted as upstream failures.
-   */
-  private guardProvider(
-    name: string,
-    provider: IProvider | undefined,
-  ): IProvider | undefined {
-    if (!provider) return undefined;
-    const breakers = (): CircuitBreakerRegistry => this.circuitBreakers;
-    if (!breakers().get(name)) return provider;
-
-    const enter = () => {
-      const breaker = breakers().get(name);
-      if (!breaker) return undefined;
-      const permit = breaker.acquire();
-      if (!permit) throw new CircuitOpenError(name, breaker.retryAfterSeconds());
-      return { breaker, permit };
-    };
-    type Entry = ReturnType<typeof enter>;
-
-    /**
-     * Settle a failed attempt and return the error to rethrow. Every admitted
-     * attempt must end in recordSuccess, recordFailure or release — otherwise
-     * a HALF_OPEN probe permit leaks and the breaker wedges.
-     *  - gateway request timeout (signal reason TimeoutError) before output:
-     *    upstream too slow -> failure, surfaced as a 504 ProviderError;
-     *  - client abort: no health signal (success if output had started);
-     *  - local concurrency rejection / caller-caused 4xx: no health signal;
-     *  - anything else (network, 5xx, 408, 429, broken stream): failure.
-     */
-    const fail = (entry: Entry, ctx: RequestContext, err: unknown, started = false): unknown => {
-      if (!entry) {
-        return isTimeoutAbort(ctx.signal) && !started ? timeoutError(name) : err;
-      }
-      const { breaker, permit } = entry;
-      if (err instanceof ConcurrencyLimitError) {
-        breaker.release(permit);
-        return err;
-      }
-      if (isTimeoutAbort(ctx.signal)) {
-        if (started) {
-          // Output was flowing; a total-request timeout mid-stream says little
-          // about upstream health.
-          breaker.release(permit);
-          return err;
-        }
-        breaker.recordFailure(permit);
-        return timeoutError(name);
-      }
-      if (isAbortError(err) || ctx.signal?.aborted) {
-        if (started) breaker.recordSuccess(permit);
-        else breaker.release(permit);
-        return err;
-      }
-      if (!isBreakerFailure(err)) {
-        breaker.release(permit);
-        return err;
-      }
-      breaker.recordFailure(permit);
-      return err;
-    };
-
-    const guarded = {
-      ...provider,
-      complete: async (
-        ctx: RequestContext,
-        req: ChatCompletionRequest,
-      ): Promise<ChatCompletionResponse> => {
-        const entry = enter();
-        try {
-          const res = await provider.complete(ctx, req);
-          entry?.breaker.recordSuccess(entry.permit);
-          return res;
-        } catch (err) {
-          throw fail(entry, ctx, err);
-        }
-      },
-    } as IProvider;
-
-    if ("completeStream" in provider) {
-      const streamer = provider as IProvider & {
-        completeStream(
-          ctx: RequestContext,
-          req: ChatCompletionRequest,
-        ): AsyncIterable<StreamChunk>;
-      };
-      (guarded as IProvider & {
-        completeStream(
-          ctx: RequestContext,
-          req: ChatCompletionRequest,
-        ): AsyncIterable<StreamChunk>;
-      }).completeStream = async function* (
-        ctx: RequestContext,
-        req: ChatCompletionRequest,
-      ): AsyncIterable<StreamChunk> {
-        const entry = enter();
-        let started = false;
-        let settled = false;
-        try {
-          for await (const chunk of streamer.completeStream(ctx, req)) {
-            started = true;
-            yield chunk;
-          }
-          settled = true;
-          entry?.breaker.recordSuccess(entry.permit);
-        } catch (err) {
-          settled = true;
-          throw fail(entry, ctx, err, started);
-        } finally {
-          if (!settled && entry) {
-            // Consumer stopped early. With output, upstream was healthy;
-            // without any, there is no signal: return the probe permit.
-            if (started) entry.breaker.recordSuccess(entry.permit);
-            else entry.breaker.release(entry.permit);
-          }
-        }
-      };
-    }
-
-    wrapAuxiliaryCalls(provider, guarded, async (ctx, fn) => {
-      const entry = enter();
-      try {
-        const res = await fn();
-        entry?.breaker.recordSuccess(entry.permit);
-        return res;
-      } catch (err) {
-        throw fail(entry, ctx, err);
-      }
-    });
-
-    return guarded;
-  }
-
-  /**
    * Translate a per-target concurrency limit rejection into a 429 ProviderError
    * so the HTTP handler surfaces it as HTTP 429 (queue-full backpressure).
    */
@@ -1099,16 +848,24 @@ export class Gateway {
     return err;
   }
 
+  /** Strategy-ordered candidates through the executor (non-streaming chat). */
   private async executeWithCircuitBreaker(
     ctx: RequestContext,
     req: ChatCompletionRequest,
   ): Promise<ChatCompletionResponse> {
-    // Circuit breaking is applied per invoked target (see guardProvider).
     try {
-      return await this.strategy.execute(ctx, req);
+      return await executeChat(this.executor, this.strategy, ctx, req);
     } catch (err) {
       throw this.translateConcurrencyError(err);
     }
+  }
+
+  /** Strategy-ordered candidates through the executor (streaming chat). */
+  private streamCandidates(ctx: RequestContext, req: ChatCompletionRequest): AsyncGenerator<StreamChunk> {
+    const servedBy = this.streamServedBy;
+    return streamChat(this.executor, this.strategy, ctx, req, (name) => {
+      if (ctx !== null && typeof ctx === "object") servedBy.set(ctx, name);
+    });
   }
 
   private resolveAlias(req: ChatCompletionRequest): ChatCompletionRequest {
@@ -1123,13 +880,6 @@ export class Gateway {
 /** Provider label for requests that never reached an upstream target. */
 const NO_UPSTREAM_PROVIDER = "none";
 
-function timeoutError(target: string): GatewayError {
-  return gatewayTimeout(target);
-}
-
-function isAbortError(err: unknown): boolean {
-  return err !== null && typeof err === "object" && (err as { name?: unknown }).name === "AbortError";
-}
 
 interface StreamAccumulator {
   id: string;
@@ -1238,24 +988,4 @@ function textOf(v: unknown): string | undefined {
     return parts.length > 0 ? parts.join("\n") : undefined;
   }
   return undefined;
-}
-
-type AuxiliaryWrapper = <T>(ctx: RequestContext, fn: () => Promise<T>) => Promise<T>;
-
-/**
- * Copy a provider's optional embed / generateImage methods onto a decorated
- * provider, each call running inside `wrap` (breaker or concurrency slot).
- * Decorators build plain objects, so prototype methods would otherwise be
- * lost (or bypass the decoration).
- */
-function wrapAuxiliaryCalls(source: IProvider, target: IProvider, wrap: AuxiliaryWrapper): void {
-  const out = target as unknown as Record<string, unknown>;
-  if ("embed" in source) {
-    const p = source as IEmbeddingProvider;
-    out["embed"] = (ctx: RequestContext, req: EmbeddingRequest) => wrap(ctx, () => p.embed(ctx, req));
-  }
-  if ("generateImage" in source) {
-    const p = source as IImageProvider;
-    out["generateImage"] = (ctx: RequestContext, req: ImageRequest) => wrap(ctx, () => p.generateImage(ctx, req));
-  }
 }

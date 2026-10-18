@@ -3,11 +3,9 @@
  */
 
 import { describe, it, expect, vi } from "bun:test";
-import {
-  FallbackStrategy,
-  FallbackExhaustedError,
-} from "@/routing/fallback";
+import { FallbackExhaustedError } from "@/routing/fallback";
 import { createMockProvider, createStreamMockProvider, createReq, createFailingProvider } from "./helpers";
+import { boundFallback } from "./helpers";
 
 function createStatusErrorProvider(name: string, statusCode: number) {
   const err: Error & { statusCode: number } = new Error(`status ${statusCode}`) as Error & { statusCode: number };
@@ -20,7 +18,7 @@ describe("FallbackStrategy", () => {
     const a = createMockProvider("a");
     const lookup = (name: string) =>
       name === "a" ? a : name === "b" ? createMockProvider("b") : undefined;
-    const strategy = new FallbackStrategy(lookup, {
+    const strategy = boundFallback(lookup, {
       targets: ["a", "b"],
     });
 
@@ -32,7 +30,7 @@ describe("FallbackStrategy", () => {
     const b = createMockProvider("b");
     const lookup = (name: string) =>
       name === "a" ? a : name === "b" ? b : undefined;
-    const strategy = new FallbackStrategy(lookup, {
+    const strategy = boundFallback(lookup, {
       targets: ["a", "b"],
     });
 
@@ -45,7 +43,7 @@ describe("FallbackStrategy", () => {
     const b = createMockProvider("b");
     const lookup = (name: string) =>
       name === "a" ? a : name === "b" ? b : undefined;
-    const strategy = new FallbackStrategy(lookup, {
+    const strategy = boundFallback(lookup, {
       targets: ["a", "b"],
     });
 
@@ -58,7 +56,7 @@ describe("FallbackStrategy", () => {
     const b = createFailingProvider("b", new Error("also down"));
     const lookup = (name: string) =>
       name === "a" ? a : name === "b" ? b : undefined;
-    const strategy = new FallbackStrategy(lookup, {
+    const strategy = boundFallback(lookup, {
       targets: ["a", "b"],
     });
 
@@ -70,7 +68,7 @@ describe("FallbackStrategy", () => {
   it("skips targets that are not registered", async () => {
     const b = createMockProvider("b");
     const lookup = (name: string) => (name === "b" ? b : undefined);
-    const strategy = new FallbackStrategy(lookup, {
+    const strategy = boundFallback(lookup, {
       targets: ["missing", "b"],
     });
 
@@ -83,7 +81,7 @@ describe("FallbackStrategy", () => {
     const b = createStreamMockProvider("b");
     const lookup = (name: string) =>
       name === "a" ? a : name === "b" ? b : undefined;
-    const strategy = new FallbackStrategy(lookup, {
+    const strategy = boundFallback(lookup, {
       targets: ["a", "b"],
     });
 
@@ -99,7 +97,7 @@ describe("FallbackStrategy", () => {
     const b = createMockProvider("b");
     const lookup = (name: string) =>
       name === "a" ? a : name === "b" ? b : undefined;
-    const strategy = new FallbackStrategy(lookup, {
+    const strategy = boundFallback(lookup, {
       targets: ["a", "b"],
     });
 
@@ -113,7 +111,7 @@ describe("FallbackStrategy", () => {
     const b = createMockProvider("b");
     const lookup = (name: string) =>
       name === "a" ? a : name === "b" ? b : undefined;
-    const strategy = new FallbackStrategy(lookup, {
+    const strategy = boundFallback(lookup, {
       targets: ["a", "b"],
       retryConfigs: new Map([["a", { attempts: 1, initialBackoffMs: 1 }]]),
     });
@@ -127,7 +125,7 @@ describe("FallbackStrategy", () => {
     const b = createMockProvider("b");
     const lookup = (name: string) =>
       name === "a" ? a : name === "b" ? b : undefined;
-    const strategy = new FallbackStrategy(lookup, {
+    const strategy = boundFallback(lookup, {
       targets: ["a", "b"],
       retryConfigs: new Map([["a", { attempts: 1, initialBackoffMs: 1 }]]),
     });
@@ -142,7 +140,7 @@ describe("FallbackStrategy", () => {
     const b = createMockProvider("b");
     const lookup = (name: string) =>
       name === "a" ? a : name === "b" ? b : undefined;
-    const strategy = new FallbackStrategy(lookup, {
+    const strategy = boundFallback(lookup, {
       targets: ["a", "b"],
       retryConfigs: new Map([["a", { attempts: 1, initialBackoffMs: 1 }]]),
     });
@@ -159,7 +157,7 @@ describe("FallbackStrategy", () => {
     const cause = new Error("root cause");
     const a = createFailingProvider("a", cause);
     const lookup = (name: string) => name === "a" ? a : undefined;
-    const strategy = new FallbackStrategy(lookup, {
+    const strategy = boundFallback(lookup, {
       targets: ["a"],
       retryConfigs: new Map([["a", { attempts: 1, initialBackoffMs: 1 }]]),
     });

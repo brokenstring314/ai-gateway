@@ -566,7 +566,7 @@ curl -X POST \
 
 ## 路由策略
 
-可用策略有 4 种：`single`、`fallback`、`loadbalance`、`conditional`（`least_latency`、`cost_optimized`、`content_based`、`abtest` 已在 0.2.0 移除，见下文“已移除的策略”）。所有多目标策略都会生成一个**有序候选列表**（首选目标在前），并交给同一个执行器：候选目标熔断器打开、达到并发上限、或出现可切换错误（网络错误、5xx、408、429、401/403/404）时跳过，尝试下一个候选（按各目标自己的 `retry` 配置）。调用方导致的 4xx（400/409/413/422 等）、客户端中断和网关请求超时会直接结束请求。流式请求只在第一个 chunk 之前切换。conditional 只从命中的目标切换到默认目标。`/v1/embeddings` 和 `/v1/images/generations` 使用相同的策略顺序（仅保留支持该模型和能力的目标），同样经过熔断器、并发限制、重试和故障切换。
+可用策略有 4 种：`single`、`fallback`、`loadbalance`、`conditional`（`least_latency`、`cost_optimized`、`content_based`、`abtest` 已在 0.2.0 移除，见下文“已移除的策略”）。策略只负责生成**有序候选列表**（首选目标在前），由同一个执行器（`src/core/executor.ts`）执行：候选目标熔断器打开、达到并发上限（队列已满，或在排队时请求截止时间已到——返回 429 `gateway_overloaded`，且不计入熔断失败）、或出现可切换错误（网络错误、5xx、408、429、401/403/404）时跳过，尝试下一个候选（按各目标自己的 `retry` 配置）。调用方导致的 4xx（400/409/413/422 等）、客户端中断和网关请求超时会直接结束请求。流式请求只在第一个 chunk 之前切换。conditional 只从命中的目标切换到默认目标。`/v1/embeddings` 和 `/v1/images/generations` 使用相同的策略顺序（仅保留支持该模型和能力的目标），同样经过熔断器、并发限制、重试和故障切换。
 
 ### Single（单目标）
 
@@ -1131,9 +1131,16 @@ src/
 │   ├── sse-parser.ts          # SSE 流解析器
 │   └── （预设：src/core/provider-presets.ts，一张表覆盖 20+ 提供商）
 │
+├── core/
+│   ├── executor.ts            # 候选执行器：熔断 → 并发限制 → 调用 → 结算 → 切换，含重试
+│   ├── outcome.ts             # 尝试结果分类（熔断结算、是否切换）
+│   ├── errors.ts              # GatewayError、toGatewayError、OpenAI 错误格式
+│   └── provider-presets.ts    # 提供商预设表
+│
 ├── routing/
-│   ├── types.ts               # IStrategy 接口
+│   ├── types.ts               # IStrategy 接口（只有 selectTargets）
 │   ├── strategy-factory.ts    # 策略构造
+│   ├── concurrency-limiter.ts # 每目标并发槽位，排队可中断
 │   ├── retry.ts               # 指数退避重试
 │   ├── circuit-breaker.ts     # 熔断器状态机
 │   ├── single.ts              # 单目标路由

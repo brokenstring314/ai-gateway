@@ -18,8 +18,12 @@ import type {
   ToolDefinition,
   ToolCall,
 } from "../providers/types.js";
-import type { IStrategy } from "../routing/types.js";
 import type { McpToolResult, McpToolRegistry } from "./types.js";
+
+/** How the agentic loop makes its next model call: a function, or any object with execute(). */
+export type ChatCompleter =
+  | ((ctx: RequestContext, req: ChatCompletionRequest) => Promise<ChatCompletionResponse>)
+  | { execute(ctx: RequestContext, req: ChatCompletionRequest): Promise<ChatCompletionResponse> };
 
 export const DEFAULT_MAX_CALL_DEPTH = 5;
 
@@ -85,7 +89,7 @@ export class McpExecutor {
    * Given an initial response that may contain tool_calls:
    * - Execute each tool call via the matching MCP server
    * - Append tool results as messages
-   * - Re-invoke the strategy to get the next response
+   * - Call the model again (via `next`) to get the next response
    * - Repeat until no tool_calls, or throw McpCallDepthError when the
    *   configured depth limit is exceeded
    *
@@ -95,8 +99,9 @@ export class McpExecutor {
     ctx: RequestContext,
     req: ChatCompletionRequest,
     response: ChatCompletionResponse,
-    strategy: IStrategy,
+    next: ChatCompleter,
   ): Promise<ChatCompletionResponse> {
+    const complete = typeof next === "function" ? next : (c: RequestContext, r: ChatCompletionRequest) => next.execute(c, r);
     let currentResponse = response;
     let messages = [...req.messages];
     // Each independent request starts its agentic loop at depth 0.
@@ -141,8 +146,8 @@ export class McpExecutor {
         tools: req.tools,
       };
 
-      // Re-invoke the strategy
-      currentResponse = await strategy.execute(ctx, nextReq);
+      // Next model call (through the gateway's executor: breaker, retry, failover)
+      currentResponse = await complete(ctx, nextReq);
       depth++;
     }
 

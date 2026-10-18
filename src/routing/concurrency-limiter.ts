@@ -12,9 +12,17 @@ export class ConcurrencyLimitError extends Error {
 
 const DEFAULT_QUEUE_SIZE = 1000;
 
+interface Waiter {
+  grant(granted: boolean): void;
+}
+
+function abortReason(signal: AbortSignal): unknown {
+  return signal.reason ?? new DOMException("Aborted", "AbortError");
+}
+
 export class ConcurrencyLimiter {
   private inFlightCount = 0;
-  private readonly queue: Array<(granted: boolean) => void> = [];
+  private readonly queue: Waiter[] = [];
   private readonly maxConcurrency: number;
   private readonly queueSize: number;
   private closed = false;
@@ -37,7 +45,14 @@ export class ConcurrencyLimiter {
     return this.queue.length;
   }
 
-  acquire(): boolean | Promise<boolean> {
+  /**
+   * Take a slot: true (granted now), false (queue full / closed), or a
+   * promise for a queued wait that resolves true when a slot is handed over
+   * (false when the limiter closes). With a `signal`, a queued wait is
+   * abortable: on abort the waiter leaves the queue (it never holds a slot)
+   * and the promise rejects with the signal's reason (C3-3).
+   */
+  acquire(signal?: AbortSignal | null): boolean | Promise<boolean> {
     if (this.closed) return false;
 
     if (this.inFlightCount < this.maxConcurrency) {
@@ -49,8 +64,22 @@ export class ConcurrencyLimiter {
       return false;
     }
 
-    return new Promise<boolean>((resolve) => {
-      this.queue.push(resolve);
+    if (signal?.aborted) return Promise.reject(abortReason(signal));
+
+    return new Promise<boolean>((resolve, reject) => {
+      const onAbort = (): void => {
+        const i = this.queue.indexOf(waiter);
+        if (i >= 0) this.queue.splice(i, 1);
+        reject(abortReason(signal!));
+      };
+      const waiter: Waiter = {
+        grant: (granted) => {
+          signal?.removeEventListener("abort", onAbort);
+          resolve(granted);
+        },
+      };
+      this.queue.push(waiter);
+      signal?.addEventListener("abort", onAbort, { once: true });
     });
   }
 
@@ -59,7 +88,7 @@ export class ConcurrencyLimiter {
 
     const next = this.queue.shift();
     if (next) {
-      next(true);
+      next.grant(true);
       return;
     }
 
@@ -70,7 +99,7 @@ export class ConcurrencyLimiter {
     this.closed = true;
     let next = this.queue.shift();
     while (next) {
-      next(false);
+      next.grant(false);
       next = this.queue.shift();
     }
   }

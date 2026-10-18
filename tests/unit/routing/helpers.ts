@@ -97,3 +97,46 @@ export function createFailingProvider(
     },
   };
 }
+
+// ── Strategies bound to an executor (strategies only order targets since 2.2) ──
+
+import { TargetExecutor, executeChat, streamChat } from "@/core/executor";
+import type { IStrategy, ProviderLookup } from "@/routing/types";
+import type { RetryConfig } from "@/config/types";
+import { SingleStrategy } from "@/routing/single";
+import { FallbackStrategy } from "@/routing/fallback";
+import { LoadBalanceStrategy } from "@/routing/loadbalance";
+import { ConditionalStrategy } from "@/routing/conditional";
+
+export type BoundStrategy<S extends IStrategy> = S & {
+  execute(ctx: RequestContext, req: ChatCompletionRequest): Promise<ChatCompletionResponse>;
+  executeStream(ctx: RequestContext, req: ChatCompletionRequest): AsyncGenerator<StreamChunk>;
+};
+
+/**
+ * The strategy plus execute()/executeStream() through the shared executor
+ * (failover, per-target retry), as the gateway runs it — without breakers
+ * or limiters.
+ */
+export function bindStrategy<S extends IStrategy>(
+  strategy: S,
+  lookup: ProviderLookup,
+  retryConfigs?: ReadonlyMap<string, RetryConfig>,
+): BoundStrategy<S> {
+  const executor = new TargetExecutor({ lookup, retryConfig: (n) => retryConfigs?.get(n) });
+  const bound = Object.create(strategy) as BoundStrategy<S>;
+  bound.execute = (ctx, req) => executeChat(executor, strategy, ctx, req);
+  bound.executeStream = (ctx, req) => streamChat(executor, strategy, ctx, req);
+  return bound;
+}
+
+type WithRetry<C> = C & { retryConfigs?: ReadonlyMap<string, RetryConfig> };
+
+export const boundSingle = (lookup: ProviderLookup, config: ConstructorParameters<typeof SingleStrategy>[0]) =>
+  bindStrategy(new SingleStrategy(config), lookup);
+export const boundFallback = (lookup: ProviderLookup, config: WithRetry<ConstructorParameters<typeof FallbackStrategy>[0]>) =>
+  bindStrategy(new FallbackStrategy(config), lookup, config.retryConfigs);
+export const boundLoadBalance = (lookup: ProviderLookup, config: WithRetry<ConstructorParameters<typeof LoadBalanceStrategy>[0]>) =>
+  bindStrategy(new LoadBalanceStrategy(config), lookup, config.retryConfigs);
+export const boundConditional = (lookup: ProviderLookup, config: WithRetry<ConstructorParameters<typeof ConditionalStrategy>[0]>) =>
+  bindStrategy(new ConditionalStrategy(config), lookup, config.retryConfigs);

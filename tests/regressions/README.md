@@ -13,7 +13,7 @@ fixed by 1.4 while this suite was being written).
 |---|---|---|
 | sec/s3-5-config-scrub-gaps | S3-5 (remaining scrub gaps) — fixed, now a regression test | 3.3 |
 | sec/s3-6-passthrough-method-fallthrough | S3-6 | 2.8 |
-| core/limiter-queue-timeout-opens-breaker | C3-3 | 2.2 |
+| core/limiter-queue-timeout-opens-breaker | C3-3 — fixed (abortable limiter wait), now a regression test | 2.2 |
 | core/budget-race | C3-5 | 3.6 |
 | core/breaker-stale-outcome, core/breaker-fuzz (I3/I4) | C3-6 — fixed (permit-based settlement), now regression tests | 2.2 |
 | core/prev-scopes-and-logstore | round-2: initRequestLogger never called | 2.3 |

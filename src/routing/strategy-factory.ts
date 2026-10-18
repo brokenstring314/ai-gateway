@@ -3,12 +3,11 @@
  * Also re-exports all strategy config types for convenience.
  */
 
-import type { ProviderLookup, IStrategy, StrategyMode } from "./types.js";
+import type { IStrategy, StrategyMode } from "./types.js";
 import { SingleStrategy } from "./single.js";
 import { FallbackStrategy } from "./fallback.js";
 import { LoadBalanceStrategy } from "./loadbalance.js";
 import { ConditionalStrategy } from "./conditional.js";
-import type { RetryConfig } from "../config/types.js";
 
 // ── Strategy config types ──
 
@@ -18,7 +17,6 @@ export interface SingleConfig {
 
 export interface FallbackConfig {
   readonly targets: readonly string[];
-  readonly retryConfigs?: ReadonlyMap<string, RetryConfig>;
 }
 
 export interface LoadBalanceTarget {
@@ -28,8 +26,6 @@ export interface LoadBalanceTarget {
 
 export interface LoadBalanceConfig {
   readonly targets: readonly LoadBalanceTarget[];
-  /** Per-target retry config used by the shared candidate executor. */
-  readonly retryConfigs?: ReadonlyMap<string, RetryConfig>;
 }
 
 /** Request field a conditional rule matches on. */
@@ -52,8 +48,6 @@ export interface ConditionalRule {
 export interface ConditionalConfig {
   readonly rules: readonly ConditionalRule[];
   readonly defaultTarget?: string;
-  /** Per-target retry config used by the shared candidate executor. */
-  readonly retryConfigs?: ReadonlyMap<string, RetryConfig>;
 }
 
 export type StrategyConfig =
@@ -63,22 +57,22 @@ export type StrategyConfig =
   | ConditionalConfig;
 
 /**
- * Create a routing strategy from its mode, typed config, and provider lookup.
+ * Create a routing strategy from its mode and typed config. Strategies only
+ * order targets; core/executor.ts runs them (per-target retry lives there).
  */
 export function createStrategy(
   mode: StrategyMode,
   config: StrategyConfig,
-  lookup: ProviderLookup,
 ): IStrategy {
   switch (mode) {
     case "single":
-      return new SingleStrategy(lookup, config as SingleConfig);
+      return new SingleStrategy(config as SingleConfig);
     case "fallback":
-      return new FallbackStrategy(lookup, config as FallbackConfig);
+      return new FallbackStrategy(config as FallbackConfig);
     case "loadbalance":
-      return new LoadBalanceStrategy(lookup, config as LoadBalanceConfig);
+      return new LoadBalanceStrategy(config as LoadBalanceConfig);
     case "conditional":
-      return new ConditionalStrategy(lookup, config as ConditionalConfig);
+      return new ConditionalStrategy(config as ConditionalConfig);
     default: {
       const _exhaustive: never = mode;
       throw new Error(`Unknown strategy mode: ${String(_exhaustive)}`);

@@ -22,6 +22,8 @@ export { FallbackStrategy, FallbackExhaustedError } from "./fallback.js";
 export { LoadBalanceStrategy } from "./loadbalance.js";
 export { ConditionalStrategy } from "./conditional.js";
 export { retryWithBackoff, RetryExhaustedError } from "./retry.js";
+export { TargetExecutor } from "../core/executor.js";
+export type { ExecutorDeps, RunOptions } from "../core/executor.js";
 export { CircuitBreaker, CircuitBreakerRegistry, CircuitOpenError } from "./circuit-breaker.js";
 export {
   ConcurrencyLimiter,
