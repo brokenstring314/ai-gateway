@@ -18,7 +18,8 @@
  *    no [DONE] so it can tell the answer is incomplete.
  */
 
-import { createTimeoutReason } from "../routing/outcome.js";
+import { createTimeoutReason } from "../core/outcome.js";
+import { errorToSseEvent, logGatewayError, toGatewayError } from "../core/errors.js";
 import { startSseHeartbeat, type SseHeartbeat } from "./sse-heartbeat.js";
 
 export const DONE_MESSAGE = "data: [DONE]\n\n";
@@ -140,8 +141,9 @@ export function createSseStream<T>(opts: SseStreamOptions<T>): ReadableStream<Ui
         } catch (err) {
           if (finished) return;
           cleanup();
-          const message = err instanceof Error ? err.message : String(err);
-          controller.enqueue(encoder.encode(sseData({ error: { message, type: "stream_error" } })));
+          const gatewayError = toGatewayError(err);
+          logGatewayError(gatewayError, "stream");
+          controller.enqueue(encoder.encode(errorToSseEvent(gatewayError)));
           controller.enqueue(encoder.encode(DONE_MESSAGE));
           controller.close();
           return;

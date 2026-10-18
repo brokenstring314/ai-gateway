@@ -5,16 +5,12 @@
  * and delegates to the Gateway.
  */
 
-import type { Context } from "hono";
-import type { ContentfulStatusCode } from "hono/utils/http-status";
 import { z } from "zod";
 import type { AppType } from "../app.js";
+import { respondError, respondInvalidJson, respondValidation } from "./error-response.js";
 import type { Gateway } from "../gateway.js";
 import type { ChatCompletionRequest, RequestContext, StreamChunk } from "../providers/types.js";
 import { mergeForwardedHeaders } from "../providers/response-headers.js";
-import { ProviderError } from "../providers/openai-compat.js";
-import { PluginRejectionError } from "../plugins/error.js";
-import { isTimeoutAbort, isTimeoutError } from "../routing/outcome.js";
 import { heartbeatIntervalMs } from "./sse-heartbeat.js";
 import { createSseStream, streamIdleTimeoutMs, streamMaxDurationMs } from "./sse-stream.js";
 import { linkAbortSignals } from "./abort.js";
@@ -37,27 +33,7 @@ const CompletionsRequestSchema = z.object({
   topLogprobs: z.number().int().min(0).max(20).optional(),
 });
 
-function errorResponse(c: Context, status: ContentfulStatusCode, message: string, type: string, code?: string) {
-  const error: Record<string, string> = { message, type };
-  if (code) error["code"] = code;
-  return c.json({ error }, status);
-}
 
-function handleGatewayError(c: Context, err: unknown) {
-  // The gateway's own request timeout fired (whatever error it surfaced as:
-  // AbortError, a 504 ProviderError, fallback exhaustion): answer 504.
-  if (isTimeoutAbort(c.get("abortController")?.signal) || isTimeoutError(err)) {
-    return errorResponse(c, 504, "Upstream request timed out", "timeout_error", "gateway_timeout");
-  }
-  if (err instanceof ProviderError) {
-    return errorResponse(c, (err.statusCode || 502) as ContentfulStatusCode, err.message, "provider_error", `provider_${err.provider}`);
-  }
-  if (err instanceof PluginRejectionError) {
-    return errorResponse(c, 403, err.reason, "plugin_rejection", "plugin_rejected");
-  }
-  const message = err instanceof Error ? err.message : String(err);
-  return errorResponse(c, 500, message, "internal_error");
-}
 
 /** Convert legacy completions prompt to chat messages format. */
 function promptToMessages(prompt: string | string[]): { role: "user"; content: string }[] {
@@ -73,13 +49,12 @@ export function registerCompletionsHandler(app: AppType, gateway: Gateway): void
     try {
       body = await c.req.json();
     } catch {
-      return errorResponse(c, 400, "Invalid JSON in request body", "invalid_request_error", "invalid_json");
+      return respondInvalidJson(c);
     }
 
     const parsed = CompletionsRequestSchema.safeParse(body);
     if (!parsed.success) {
-      const issues = parsed.error.issues.map((i) => `${i.path.join(".")}: ${i.message}`).join("; ");
-      return errorResponse(c, 400, `Validation error: ${issues}`, "invalid_request_error", "validation_failed");
+      return respondValidation(c, parsed.error.issues);
     }
 
     const legacy = parsed.data;
@@ -134,7 +109,7 @@ export function registerCompletionsHandler(app: AppType, gateway: Gateway): void
             firstChunk = first.value;
           }
         } catch (err) {
-          return handleGatewayError(c, err);
+          return respondError(c, err);
         }
 
         const serverCfg = gateway.getConfig?.()?.server;
@@ -162,7 +137,7 @@ export function registerCompletionsHandler(app: AppType, gateway: Gateway): void
           },
         );
       } catch (err) {
-        return handleGatewayError(c, err);
+        return respondError(c, err);
       }
     }
 
@@ -172,7 +147,7 @@ export function registerCompletionsHandler(app: AppType, gateway: Gateway): void
       const { upstreamHeaders, ...responseBody } = response;
       return c.json(responseBody, 200, mergeForwardedHeaders({}, upstreamHeaders));
     } catch (err) {
-      return handleGatewayError(c, err);
+      return respondError(c, err);
     }
   });
 }

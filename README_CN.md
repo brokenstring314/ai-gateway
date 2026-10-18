@@ -532,10 +532,34 @@ curl -X POST \
 | 头                        | 说明                                |
 | ------------------------ | --------------------------------- |
 | `X-Gateway-Provider`     | 处理请求的提供商名称                        |
+| `X-Gateway-Target`       | 仅错误响应：产生错误的目标（不会出现在响应体中） |
 | `X-Gateway-Overhead-Ms`  | 网关处理时间（毫秒）                        |
 | `X-Content-Type-Options` | `nosniff`                         |
 | `X-Frame-Options`        | `DENY`                            |
 | `Referrer-Policy`        | `strict-origin-when-cross-origin` |
+
+### 错误响应
+
+所有 `/v1` 端点的错误都是 OpenAI 形状 `{"error": {"message", "type", "code", "param"}}`。
+目标名和上游 URL 不会出现在响应体里；出错的目标放在 `X-Gateway-Target` 响应头和服务端日志中。
+
+| 情形 | 状态码 | `code` |
+| --- | --- | --- |
+| JSON 无效 / 校验失败 | 400 | `invalid_json` / `validation_failed` |
+| 没有目标支持该模型 | 404 | `model_not_found` |
+| 插件拒绝（word-filter 等） | 403 | `plugin_rejected` |
+| `rate-limit` / `budget` 插件拒绝 | 429（rate-limit 带 `Retry-After`） | `plugin_rejected` |
+| 上游 4xx（400、404、413、422 等） | 原状态码 | 上游 `code`；上游 `message`/`type`/`param` 原样保留 |
+| 上游 429 | 429，透传上游 `Retry-After` | 上游 `code`（默认 `rate_limit_exceeded`） |
+| 上游 401/403（切换后仍失败） | 502 | `upstream_auth_failed` |
+| 上游 5xx | 502 | 上游 `code`（默认 `upstream_error`） |
+| 网络错误 / 连接重置 / 200 但 body 不是 JSON | 502 | `upstream_unavailable` / `upstream_invalid_response` |
+| 所有候选目标熔断器都打开 | 503，带 `Retry-After` | `circuit_open` |
+| 本地并发队列已满 | 429 | `gateway_overloaded` |
+| 网关请求超时 | 504 | `gateway_timeout` |
+| 其他 | 500 | `Internal server error`（固定文案） |
+
+尝试了多个目标时，返回最有意义的那个错误：上游 4xx > 上游 429 > 上游 401/403 > 超时 > 上游 5xx > 网络错误 > 本地过载 > 熔断打开。
 
 ---
 
@@ -709,7 +733,7 @@ plugins:
       key: shared               # 可选，没有 API 密钥的请求使用的桶名（默认："default"）
 ```
 
-窗口从该密钥的第一个请求开始计时，60 秒 / 24 小时后重置，因此跨越窗口边界的突发最多可放行两倍限额。限额按进程计算（多副本之间不共享）。被拒绝时返回 403 `plugin_rejected`。
+窗口从该密钥的第一个请求开始计时，60 秒 / 24 小时后重置，因此跨越窗口边界的突发最多可放行两倍限额。限额按进程计算（多副本之间不共享）。被拒绝时返回 429 `plugin_rejected`，并带 `Retry-After`（距窗口重置的秒数）。`budget` 插件拒绝同样返回 429。
 
 #### 响应缓存（Cache）
 

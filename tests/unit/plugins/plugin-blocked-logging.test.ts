@@ -37,10 +37,10 @@ const post = (app: ReturnType<typeof createApp>, path: string, body: unknown) =>
 const wordFilter = [{ name: "word-filter", config: { blockedWords: ["forbidden"] } }];
 const chat = (stream: boolean) => ({ model: "gpt-4o", stream, messages: [{ role: "user", content: "forbidden words" }] });
 
-async function expectOneRejection(surface: string, plugin = "word-filter") {
+async function expectOneRejection(surface: string, plugin = "word-filter", status = 403) {
   expect(entries.length).toBe(1);
   const e = entries[0]!;
-  expect(e.status).toBe(403);
+  expect(e.status).toBe(status);
   expect(e.plugin).toBe(plugin);
   expect(e.provider).toBe("none");
   expect(e.outcome).toBe("plugin_rejected");
@@ -94,8 +94,11 @@ describe("plugin-blocked requests are logged once", () => {
     expect((await post(app, "/v1/chat/completions", ok)).status).toBe(200);
     entries = [];
     getMetrics().reset();
-    expect((await post(app, "/v1/chat/completions", ok)).status).toBe(403);
-    await expectOneRejection("chat", "rate-limit");
+    // Rate-limit (and budget) rejections answer 429, not 403.
+    const r = await post(app, "/v1/chat/completions", ok);
+    expect(r.status).toBe(429);
+    expect(Number(r.headers.get("retry-after"))).toBeGreaterThan(0);
+    await expectOneRejection("chat", "rate-limit", 429);
   });
 
   it("route(): short-circuit served by a plugin is logged once with status 200", async () => {

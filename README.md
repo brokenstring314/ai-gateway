@@ -552,10 +552,38 @@ The gateway adds these headers to responses:
 | Header                   | Description                                   |
 | ------------------------ | --------------------------------------------- |
 | `X-Gateway-Provider`     | Name of the provider that handled the request |
+| `X-Gateway-Target`       | On error responses: the target that produced the error (never in the body) |
 | `X-Gateway-Overhead-Ms`  | Gateway processing time in milliseconds       |
 | `X-Content-Type-Options` | `nosniff`                                     |
 | `X-Frame-Options`        | `DENY`                                        |
 | `Referrer-Policy`        | `strict-origin-when-cross-origin`             |
+
+### Error Responses
+
+Every `/v1` endpoint answers errors in the OpenAI shape
+`{"error": {"message", "type", "code", "param"}}`. Target names and upstream
+URLs never appear in the body; the failing target is in the
+`X-Gateway-Target` header and in the server log.
+
+| Situation | Status | `code` |
+| --- | --- | --- |
+| Invalid JSON / validation | 400 | `invalid_json` / `validation_failed` |
+| Model not served by any target | 404 | `model_not_found` |
+| Plugin rejection (word-filter, …) | 403 | `plugin_rejected` |
+| `rate-limit` / `budget` plugin rejection | 429 + `Retry-After` (rate-limit) | `plugin_rejected` |
+| Upstream 4xx (400, 404, 413, 422, …) | same status | upstream `code`; upstream `message`/`type`/`param` kept |
+| Upstream 429 | 429 + upstream `Retry-After` | upstream `code` (default `rate_limit_exceeded`) |
+| Upstream 401/403 (after failover) | 502 | `upstream_auth_failed` |
+| Upstream 5xx | 502 | upstream `code` (default `upstream_error`) |
+| Network error / reset / non-JSON 200 body | 502 | `upstream_unavailable` / `upstream_invalid_response` |
+| Every candidate's circuit breaker open | 503 + `Retry-After` | `circuit_open` |
+| Local concurrency queue full | 429 | `gateway_overloaded` |
+| Gateway request timeout | 504 | `gateway_timeout` |
+| Anything else | 500 | `Internal server error` (fixed message) |
+
+When several targets were tried, the most meaningful error is returned:
+upstream 4xx > upstream 429 > upstream 401/403 > timeout > upstream 5xx >
+network error > local overload > circuit open.
 
 ---
 
@@ -751,7 +779,7 @@ plugins:
       key: shared               # Optional bucket name for requests without an API key (default: "default")
 ```
 
-Windows start at a key's first request and reset after 60 s / 24 h, so a burst straddling a window boundary can admit up to twice the limit. Limits are per process (not shared between replicas). Rejections answer 403 `plugin_rejected`.
+Windows start at a key's first request and reset after 60 s / 24 h, so a burst straddling a window boundary can admit up to twice the limit. Limits are per process (not shared between replicas). Rejections answer 429 `plugin_rejected` with `Retry-After` (seconds until the window resets). The `budget` plugin also answers 429.
 
 #### Response Cache
 

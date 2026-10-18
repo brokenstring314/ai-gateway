@@ -11,7 +11,8 @@
  */
 
 import { Hono } from "hono";
-import type { MiddlewareHandler } from "hono";
+import type { Context, MiddlewareHandler } from "hono";
+import { respondError } from "./handlers/error-response.js";
 import type { Gateway } from "./gateway.js";
 import type { GatewayConfig } from "./config/types.js";
 import { recoverMiddleware } from "./middleware/recover.js";
@@ -217,7 +218,7 @@ export function createApp(
           return undefined;
         } catch (err) {
           if (err instanceof PluginRejectionError) {
-            return c.json({ error: { message: err.reason, type: "plugin_rejection", code: "plugin_rejected" } }, 403);
+            return respondError(c as unknown as Context, err);
           }
           throw err;
         }

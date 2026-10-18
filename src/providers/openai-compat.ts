@@ -90,10 +90,10 @@ export function createOpenAICompatProvider(opts: OpenAiCompatOptions): OpenAICom
     try {
       raw = await response.json();
     } catch {
-      throw new ProviderError(opts.name, 502, "invalid JSON in upstream response");
+      throw new ProviderError(opts.name, 502, "invalid JSON in upstream response", { origin: "invalid_body" });
     }
     if (typeof raw !== "object" || raw === null) {
-      throw new ProviderError(opts.name, 502, "unexpected upstream response shape");
+      throw new ProviderError(opts.name, 502, "unexpected upstream response shape", { origin: "invalid_body" });
     }
     return { raw: raw as Record<string, unknown>, response };
   }
@@ -122,7 +122,7 @@ export function createOpenAICompatProvider(opts: OpenAiCompatOptions): OpenAICom
     async complete(ctx: RequestContext, req: ChatCompletionRequest): Promise<ChatCompletionResponse> {
       const enforced = enforceUnsupportedParams(capabilityKey, req, compatibilityMode, opts.name);
       if (enforced.action === "rejected") {
-        throw new ProviderError(opts.name, 400, enforced.reason);
+        throw new ProviderError(opts.name, 400, enforced.reason.replace(`${opts.name} does not support`, "Unsupported parameters for this model"));
       }
       const request = enforced.request;
 
@@ -155,7 +155,16 @@ export function createOpenAICompatProvider(opts: OpenAiCompatOptions): OpenAICom
         throw await buildErrorFromResponse(opts.name, response, retryAfter);
       }
 
-      const raw = (await response.json()) as Record<string, unknown>;
+      let raw: unknown;
+      try {
+        raw = await response.json();
+      } catch (err) {
+        if (isAbortError(err) || ctx.signal?.aborted) throw abortErrorFrom(err);
+        throw new ProviderError(opts.name, 502, "invalid JSON in upstream response", { origin: "invalid_body" });
+      }
+      if (!isValidChatBody(raw)) {
+        throw new ProviderError(opts.name, 502, "unexpected upstream response shape", { origin: "invalid_body" });
+      }
       const normalized = normalizeResponse(opts.name, raw, opts.extraResponseFields);
       const upstreamHeaders = extractForwardableHeaders(response.headers);
       if (upstreamHeaders !== undefined) {
@@ -170,7 +179,7 @@ export function createOpenAICompatProvider(opts: OpenAiCompatOptions): OpenAICom
     ): AsyncGenerator<StreamChunk> {
       const enforced = enforceUnsupportedParams(capabilityKey, req, compatibilityMode, opts.name);
       if (enforced.action === "rejected") {
-        throw new ProviderError(opts.name, 400, enforced.reason);
+        throw new ProviderError(opts.name, 400, enforced.reason.replace(`${opts.name} does not support`, "Unsupported parameters for this model"));
       }
 
       const streamReq = { ...enforced.request, stream: true as const };
@@ -327,6 +336,14 @@ function serializeToolChoice(tc: ToolChoice): unknown {
 
 // ---------------------------------------------------------------------------
 // Response normalisation
+
+/** A chat completion body we can normalise: an object whose `choices` (if any) are all objects. */
+function isValidChatBody(raw: unknown): raw is Record<string, unknown> {
+  if (typeof raw !== "object" || raw === null || Array.isArray(raw)) return false;
+  const choices = (raw as Record<string, unknown>)["choices"];
+  if (choices === undefined) return true;
+  return Array.isArray(choices) && choices.every((c) => typeof c === "object" && c !== null && !Array.isArray(c));
+}
 // ---------------------------------------------------------------------------
 
 function normalizeResponse(
@@ -499,18 +516,23 @@ async function buildErrorFromResponse(
   retryAfter: string | null,
 ): Promise<ProviderError> {
   let message = `HTTP ${response.status}`;
+  let upstream: UpstreamErrorBody | undefined;
 
   try {
     const body = (await response.json()) as Partial<OpenAiErrorResponse>;
-    if (body?.error?.message) {
-      message = body.error.message;
+    if (body?.error && typeof body.error === "object") {
+      upstream = body.error as UpstreamErrorBody;
+      if (typeof body.error.message === "string" && body.error.message) message = body.error.message;
+    } else if (typeof (body as { error?: unknown })?.error === "string") {
+      message = (body as unknown as { error: string }).error;
+      upstream = { message };
     }
   } catch {
     const text = response.statusText;
     if (text) message = text;
   }
 
-  const err = new ProviderError(providerName, response.status, message);
+  const err = new ProviderError(providerName, response.status, message, { origin: "upstream", upstream });
   if (retryAfter) {
     err.retryAfter = retryAfter;
   }
@@ -525,15 +547,40 @@ function abortErrorFrom(err: unknown): unknown {
   return isAbortError(err) ? err : new DOMException("Aborted", "AbortError");
 }
 
+/** The OpenAI-shaped `error` object of an upstream error response, when it had one. */
+export interface UpstreamErrorBody {
+  readonly message?: unknown;
+  readonly type?: unknown;
+  readonly code?: unknown;
+  readonly param?: unknown;
+}
+
+/**
+ * Where a ProviderError came from:
+ *  - "upstream": an HTTP error response (or SSE error event) from the target;
+ *  - "transport": the request never got a response (DNS, refused, RST, TLS…);
+ *  - "invalid_body": a 2xx response whose body could not be used;
+ *  - "local": raised by the gateway before / instead of calling upstream.
+ */
+export type ProviderErrorOrigin = "upstream" | "transport" | "invalid_body" | "local";
+
 export class ProviderError extends Error {
   override name = "ProviderError";
+  /** Message without the "[target] " prefix (never contains the target name by construction). */
+  public readonly detail: string;
+  public readonly origin: ProviderErrorOrigin;
+  public readonly upstream: UpstreamErrorBody | undefined;
 
   constructor(
     public readonly provider: string,
     public readonly statusCode: number,
     message: string,
+    opts: { origin?: ProviderErrorOrigin; upstream?: UpstreamErrorBody } = {},
   ) {
     super(`[${provider}] ${message}`);
+    this.detail = message;
+    this.origin = opts.origin ?? (statusCode === 0 ? "transport" : "local");
+    this.upstream = opts.upstream;
   }
 
   public retryAfter?: string;

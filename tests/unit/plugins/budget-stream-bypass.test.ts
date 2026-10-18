@@ -31,7 +31,7 @@ describe("N6 streaming runs after-request plugins / logs / metrics", () => {
       await r.text();
       statuses.push(r.status);
     }
-    expect(statuses).toEqual([200, 403, 403, 403, 403]);
+    expect(statuses).toEqual([200, 429, 429, 429, 429]);
   });
 
   it("control: same budget rejects the 2nd non-stream request", async () => {
@@ -45,7 +45,7 @@ describe("N6 streaming runs after-request plugins / logs / metrics", () => {
       const r = await app.request("/v1/chat/completions", { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ model: "gpt-4o", messages: [{ role: "user", content: "ns-" + Math.random() }] }) });
       s.push(r.status);
     }
-    expect(s).toEqual([200, 403]);
+    expect(s).toEqual([200, 429]);
   });
 
   function countingGateway(provider: IProvider) {

@@ -104,14 +104,15 @@ describe("/v1/embeddings and /v1/images/generations end-to-end", () => {
     expect(await r.json()).toEqual({ created: 9, data: [{ b64_json: "Zm9v" }] });
   });
 
-  it("propagates upstream error status instead of 500", async () => {
+  it("maps upstream errors instead of answering 500 (upstream 401 -> 502 upstream_auth_failed)", async () => {
     stubFetch(401, { error: { message: "bad key" } });
     const app = createApp(new Gateway(cfg), cfg);
     const r = await app.request("/v1/embeddings", {
       method: "POST", headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ model: "text-embedding-3-small", input: "hi" }),
     });
-    expect(r.status).toBe(401);
+    expect(r.status).toBe(502);
+    expect(((await r.json()) as { error: { code: string } }).error.code).toBe("upstream_auth_failed");
   });
 });
 

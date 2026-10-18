@@ -82,6 +82,26 @@
   are an error. `serve()` remains exported as an alias of `bootstrap()`, which
   now returns a handle (`server`, `gateway`, `stop()`) and throws on a bad
   config instead of calling `process.exit`.
+- **One error model for every endpoint** (`src/core/errors.ts`). Error bodies
+  no longer name the target or the upstream URL (`code: "provider_<target>"`,
+  `type: "provider_error"` and `[target] …` messages are gone); the target is
+  in the new `X-Gateway-Target` response header. Status / code changes:
+  upstream 4xx keep the upstream `code`/`type`/`param`/`message`; upstream
+  429 → 429 with the upstream `Retry-After`; upstream 5xx → 502 (was the
+  upstream status); upstream 401/403 → 502 `upstream_auth_failed` (was
+  401/403); network errors → 502 `upstream_unavailable` with a fixed message
+  (was `fetch failed: …` including the URL); a 2xx body that is not JSON or
+  has non-object `choices` → 502 `upstream_invalid_response` (was 500);
+  `rate-limit` and `budget` plugin rejections → 429 (was 403, rate-limit adds
+  `Retry-After`); open circuit → 503 `circuit_open` with `Retry-After`; local
+  concurrency queue full → 429 `gateway_overloaded`; unknown failures → 500
+  with a fixed message on every endpoint (completions used to echo the
+  internal message). When several targets failed, the most meaningful error
+  is reported instead of the last one (`FallbackExhaustedError` is unwrapped).
+  Mid-stream SSE error events use the same shape. Plugins can set
+  `status`/`retryAfterSeconds` on a `reject` result.
+  (Closes B3-7, T3-12, round-2 "upstream 429/500 → 500" and "FallbackExhausted
+  not unwrapped".)
 
 ### Security
 
