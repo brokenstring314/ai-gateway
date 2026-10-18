@@ -67,9 +67,13 @@ ai-gateway <命令> [选项]
 
 选项：
   -c, --config <路径>   配置文件路径（YAML 或 JSON）
-  -h, --help            显示帮助
+  -p, --port <端口>     覆盖 server.port（serve）
+  -h, --host <地址>     覆盖 server.host（serve）
+  --help                显示帮助
   -v, --version         显示版本
 ```
+
+`ai-gateway serve`、`bun src/index.ts serve` 和 `bun src/cli/index.ts serve` 是同一个 CLI，都通过同一个 `bootstrap()` 启动服务（key store、生产环境安全检查、客户端鉴权、OpenTelemetry、优雅关闭）。嵌入方可以从包入口调用 `bootstrap(configPath, { port, host, dataDir })`，返回带 `stop()` 的句柄。
 
 ### 示例
 

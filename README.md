@@ -67,9 +67,13 @@ Commands:
 
 Options:
   -c, --config <path>   Path to config file (YAML or JSON)
-  -h, --help            Show help
+  -p, --port <port>     Override server.port (serve)
+  -h, --host <host>     Override server.host (serve)
+  --help                Show help
   -v, --version         Show version
 ```
+
+`ai-gateway serve`, `bun src/index.ts serve` and `bun src/cli/index.ts serve` are the same CLI and start the server through one `bootstrap()` (key store, production-safety checks, client auth, OpenTelemetry, graceful shutdown). Embedders can call `bootstrap(configPath, { port, host, dataDir })` from the package entry point; it returns a handle with `stop()`.
 
 ### Examples
 

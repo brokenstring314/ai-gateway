@@ -97,10 +97,10 @@ describe("createApp without a KeyStore enforces client auth", () => {
 });
 
 describe("ai-gateway serve CLI uses the main bootstrap", () => {
-  it("cli serve delegates to src/index.ts serve (key store + auth), not a bare createApp", () => {
+  it("cli serve delegates to the shared bootstrap() (key store + auth), not a bare createApp", () => {
     const src = readFileSync(new URL("../../../src/cli/index.ts", import.meta.url), "utf-8");
-    expect(src).toContain('await import("../index.js")');
-    expect(src).not.toMatch(/createApp\(gateway, config\)/);
+    expect(src).toContain('await import("../server/bootstrap.js")');
+    expect(src).not.toMatch(/createApp\(/);
   });
 });
 

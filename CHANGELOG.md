@@ -74,6 +74,14 @@
   400 listing their wire names. (Closes T3-8, T3-9 header part.)
 - **`${VAR}` in `targets[].baseURL` is accepted by the schema** and validated as
   an http(s) URL after expansion. (Closes C3-10.)
+- **One CLI and one server bootstrap.** `src/index.ts` and `src/cli/index.ts`
+  had separate argument parsers, help texts, versions (`1.0.0` vs `0.1.0`) and
+  `validate` implementations; there is now one CLI (`src/cli/index.ts`) and
+  one `bootstrap()` (`src/server/bootstrap.ts`) used by every server entry
+  point. `-h` now means `--host` everywhere (help is `--help`); unknown options
+  are an error. `serve()` remains exported as an alias of `bootstrap()`, which
+  now returns a handle (`server`, `gateway`, `stop()`) and throws on a bad
+  config instead of calling `process.exit`.
 
 ### Security
 
