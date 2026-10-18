@@ -3,14 +3,14 @@
  */
 
 import { describe, it, expect } from "bun:test";
-import { SingleStrategy } from "@/routing/single";
 import { createMockProvider, createStreamMockProvider, createReq } from "./helpers";
+import { boundSingle } from "./helpers";
 
 describe("SingleStrategy", () => {
   it("selects the configured target", () => {
     const provider = createMockProvider("openai");
     const lookup = (name: string) => (name === "openai" ? provider : undefined);
-    const strategy = new SingleStrategy(lookup, { target: "openai" });
+    const strategy = boundSingle(lookup, { target: "openai" });
 
     const targets = strategy.selectTargets(createReq());
     expect(targets).toEqual(["openai"]);
@@ -19,7 +19,7 @@ describe("SingleStrategy", () => {
   it("routes execute() to the target provider", async () => {
     const provider = createMockProvider("openai");
     const lookup = (name: string) => (name === "openai" ? provider : undefined);
-    const strategy = new SingleStrategy(lookup, { target: "openai" });
+    const strategy = boundSingle(lookup, { target: "openai" });
 
     const req = createReq({ model: "gpt-4" });
     const resp = await strategy.execute({ metadata: {} }, req);
@@ -32,7 +32,7 @@ describe("SingleStrategy", () => {
   it("routes executeStream() to the target provider", async () => {
     const provider = createStreamMockProvider("openai");
     const lookup = (name: string) => (name === "openai" ? provider : undefined);
-    const strategy = new SingleStrategy(lookup, { target: "openai" });
+    const strategy = boundSingle(lookup, { target: "openai" });
 
     const req = createReq({ model: "gpt-4" });
     const chunks: unknown[] = [];
@@ -45,7 +45,7 @@ describe("SingleStrategy", () => {
   });
 
   it("throws when provider not found", async () => {
-    const strategy = new SingleStrategy(() => undefined, { target: "missing" });
+    const strategy = boundSingle(() => undefined, { target: "missing" });
 
     await expect(
       strategy.execute({ metadata: {} }, createReq()),
@@ -55,7 +55,7 @@ describe("SingleStrategy", () => {
   it("throws on stream when provider does not support streaming", async () => {
     const provider = createMockProvider("openai");
     const lookup = (name: string) => (name === "openai" ? provider : undefined);
-    const strategy = new SingleStrategy(lookup, { target: "openai" });
+    const strategy = boundSingle(lookup, { target: "openai" });
 
     const iter = strategy.executeStream({ metadata: {} }, createReq());
     await expect(

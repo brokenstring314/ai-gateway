@@ -2,27 +2,15 @@
  * LoadBalance strategy — weighted random selection across targets.
  */
 
-import type { IStrategy, StrategyMode, ProviderLookup } from "./types.js";
-import type {
-  RequestContext,
-  ChatCompletionRequest,
-  ChatCompletionResponse,
-  StreamChunk,
-  IStreamProvider,
-} from "../providers/types.js";
+import type { IStrategy, StrategyMode } from "./types.js";
+import type { ChatCompletionRequest } from "../providers/types.js";
 import type { LoadBalanceConfig, LoadBalanceTarget } from "./strategy-factory.js";
-import type { RetryConfig } from "../config/types.js";
-import { executeCandidates, streamCandidates, type CandidateHooks } from "./executor.js";
 
 export class LoadBalanceStrategy implements IStrategy {
   public readonly mode: StrategyMode = "loadbalance";
   private readonly targets: readonly LoadBalanceTarget[];
-  private readonly lookup: ProviderLookup;
-  private readonly retryConfigs: ReadonlyMap<string, RetryConfig>;
 
-  constructor(lookup: ProviderLookup, config: LoadBalanceConfig) {
-    this.lookup = lookup;
-    this.retryConfigs = config.retryConfigs ?? new Map();
+  constructor(config: LoadBalanceConfig) {
     // Weight 0 (or less) means "drained": never selected, not even as a
     // failover candidate.
     this.targets = config.targets.filter((t) => t.weight > 0);
@@ -55,32 +43,4 @@ export class LoadBalanceStrategy implements IStrategy {
     }
     return order;
   }
-
-  private hooks(): CandidateHooks {
-    return {
-      label: "LoadBalanceStrategy",
-      retryConfigFor: (name) => this.retryConfigs.get(name),
-    };
-  }
-
-  async execute(
-    ctx: RequestContext,
-    req: ChatCompletionRequest,
-  ): Promise<ChatCompletionResponse> {
-    return executeCandidates(ctx, this.selectTargets(req), this.lookup, (p) => p.complete(ctx, req), this.hooks());
-  }
-
-  async *executeStream(
-    ctx: RequestContext,
-    req: ChatCompletionRequest,
-  ): AsyncIterable<StreamChunk> {
-    yield* streamCandidates(
-      ctx,
-      this.selectTargets(req),
-      this.lookup,
-      (p) => (p as IStreamProvider).completeStream(ctx, req),
-      this.hooks(),
-    );
-  }
-
 }

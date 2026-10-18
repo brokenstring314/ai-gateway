@@ -172,3 +172,30 @@ describe("ConcurrencyLimiterRegistry", () => {
     expect(registry.all().has("b")).toBe(true);
   });
 });
+
+describe("ConcurrencyLimiter abortable wait (C3-3)", () => {
+  it("an aborted queued waiter leaves the queue, rejects with the abort reason and never holds a slot", async () => {
+    const limiter = new ConcurrencyLimiter({ maxConcurrency: 1, queueSize: 5 });
+    expect(limiter.acquire()).toBe(true);
+    const ac = new AbortController();
+    const waiting = limiter.acquire(ac.signal) as Promise<boolean>;
+    const other = limiter.acquire() as Promise<boolean>;
+    expect(limiter.queued).toBe(2);
+    const reason = new DOMException("t", "TimeoutError");
+    ac.abort(reason);
+    await expect(waiting).rejects.toBe(reason);
+    expect(limiter.queued).toBe(1);
+    limiter.release(); // hands the slot to `other`, not to the aborted waiter
+    expect(await other).toBe(true);
+    expect(limiter.inFlight).toBe(1);
+  });
+
+  it("an already-aborted signal rejects at once when it would queue", async () => {
+    const limiter = new ConcurrencyLimiter({ maxConcurrency: 1 });
+    expect(limiter.acquire()).toBe(true);
+    const ac = new AbortController();
+    ac.abort();
+    await expect(limiter.acquire(ac.signal) as Promise<boolean>).rejects.toBeDefined();
+    expect(limiter.queued).toBe(0);
+  });
+});

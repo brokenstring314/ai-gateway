@@ -2,7 +2,7 @@
  * Routing strategy interfaces.
  */
 
-import type { IProvider, ChatCompletionRequest, ChatCompletionResponse, StreamChunk, RequestContext } from "../providers/types.js";
+import type { IProvider, ChatCompletionRequest } from "../providers/types.js";
 
 export type StrategyMode =
   | "single"
@@ -10,11 +10,15 @@ export type StrategyMode =
   | "loadbalance"
   | "conditional";
 
+/**
+ * A routing strategy only ORDERS candidate targets for a request (preferred
+ * first). Running them — breaker, concurrency limit, retry, failover — is the
+ * job of core/executor.ts, the same for every strategy.
+ */
 export interface IStrategy {
   readonly mode: StrategyMode;
-  execute(ctx: RequestContext, req: ChatCompletionRequest): Promise<ChatCompletionResponse>;
-  executeStream(ctx: RequestContext, req: ChatCompletionRequest): AsyncIterable<StreamChunk>;
-  selectTargets(req: ChatCompletionRequest): string[];
+  /** Ordered candidate targets for this request; throws when none can serve it. */
+  selectTargets(req: ChatCompletionRequest): readonly string[];
 }
 
 export type ProviderLookup = (name: string) => IProvider | undefined;

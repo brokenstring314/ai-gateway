@@ -595,10 +595,11 @@ network error > local overload > circuit open.
 Four strategies are available: `single`, `fallback`, `loadbalance` and
 `conditional` (`least_latency`, `cost_optimized`, `content_based` and `abtest`
 were removed in 0.2.0, see [Removed strategies](#removed-strategies-020)).
-Every multi-target strategy produces an **ordered
-candidate list** (its preferred target first) and runs it through one shared
-executor: a candidate whose circuit breaker is open, that hits its
-concurrency limit, or that fails with a failover-eligible error (network,
+Every strategy only produces an **ordered
+candidate list** (its preferred target first); one shared executor
+(`src/core/executor.ts`) runs it: a candidate whose circuit breaker is open, that hits its
+concurrency limit (queue full, or the request deadline fires while queued —
+answered 429 `gateway_overloaded` and never counted against the breaker), or that fails with a failover-eligible error (network,
 5xx, 408, 429, 401/403/404) is skipped and the next candidate is tried, using
 each target's own `retry` config. Caller-caused 4xx (400/409/413/422...),
 client aborts and the gateway request timeout end the request. Streams fail
@@ -707,7 +708,7 @@ These modes now fail `ai-gateway validate` and startup with a migration hint:
 
 ### Retry with Exponential Backoff
 
-Configure per-target retry behavior. Backoff uses exponential jitter: `delay = random(0, initialBackoffMs × 2^(attempt-1))`.
+Configure per-target retry behavior (applies to every strategy, `single` included). Backoff uses exponential jitter: `delay = random(0, initialBackoffMs × 2^(attempt-1))`.
 
 ```yaml
 targets:
@@ -1183,9 +1184,16 @@ src/
 │   ├── sse-parser.ts          # SSE stream parser
 │   └── (presets: src/core/provider-presets.ts — one table of 20+ providers)
 │
+├── core/
+│   ├── executor.ts            # Candidate executor: breaker → limiter → call → settle → failover, retry
+│   ├── outcome.ts             # Attempt classification (breaker settlement, failover)
+│   ├── errors.ts              # GatewayError, toGatewayError, OpenAI error shape
+│   └── provider-presets.ts    # Provider presets table
+│
 ├── routing/
-│   ├── types.ts               # IStrategy interface
+│   ├── types.ts               # IStrategy interface (selectTargets only)
 │   ├── strategy-factory.ts    # Strategy construction
+│   ├── concurrency-limiter.ts # Per-target slots, abortable queue
 │   ├── retry.ts               # Exponential backoff retry
 │   ├── circuit-breaker.ts     # Circuit breaker state machine
 │   ├── single.ts              # Single target routing

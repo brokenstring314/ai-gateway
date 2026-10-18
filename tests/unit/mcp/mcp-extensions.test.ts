@@ -31,7 +31,7 @@ import type {
   ChatCompletionResponse,
   RequestContext,
 } from "@/providers/types";
-import type { IStrategy } from "@/routing/types";
+import type { ChatCompleter } from "@/mcp/executor";
 
 async function waitFor(check: () => void, timeoutMs = 250): Promise<void> {
   const deadline = Date.now() + timeoutMs;
@@ -237,9 +237,9 @@ function plainResponse(id: string): ChatCompletionResponse {
 }
 
 /** Strategy that returns tool_calls for `rounds` calls, then a plain response. */
-function toolCallingStrategy(rounds = Infinity): { strategy: IStrategy; callCount: () => number } {
+function toolCallingStrategy(rounds = Infinity): { strategy: ChatCompleter & { mode?: string; selectTargets?: () => string[] }; callCount: () => number } {
   let calls = 0;
-  const strategy: IStrategy = {
+  const strategy: ChatCompleter & { mode: string; selectTargets: () => string[] } = {
     mode: "single",
     execute: async (): Promise<ChatCompletionResponse> => {
       calls++;

@@ -3,7 +3,7 @@ import { McpExecutor } from "@/mcp";
 import type { McpTool, McpToolRegistry } from "@/mcp";
 import { Gateway } from "@/gateway";
 import type { ChatCompletionRequest, ChatCompletionResponse, RequestContext } from "@/providers/types";
-import type { IStrategy } from "@/routing/types";
+import type { ChatCompleter } from "@/mcp/executor";
 
 const mcpTool: McpTool = { name: "mcp_search", description: "search", inputSchema: { type: "object" } } as McpTool;
 
@@ -31,7 +31,7 @@ function toolResponse(...names: string[]): ChatCompletionResponse {
   } as ChatCompletionResponse;
 }
 
-function countingStrategy(): { strategy: IStrategy; calls: () => number } {
+function countingStrategy(): { strategy: ChatCompleter & { mode?: string; selectTargets?: () => string[] }; calls: () => number } {
   let n = 0;
   const strategy = {
     mode: "single",
@@ -41,7 +41,7 @@ function countingStrategy(): { strategy: IStrategy; calls: () => number } {
     },
     executeStream: async function* () {},
     selectTargets: () => ["a"],
-  } as unknown as IStrategy;
+  } as unknown as ChatCompleter;
   return { strategy, calls: () => n };
 }
 

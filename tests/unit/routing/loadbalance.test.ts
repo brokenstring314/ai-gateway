@@ -3,8 +3,8 @@
  */
 
 import { describe, it, expect, vi, beforeEach } from "bun:test";
-import { LoadBalanceStrategy } from "@/routing/loadbalance";
 import { createMockProvider, createStreamMockProvider, createReq } from "./helpers";
+import { boundLoadBalance } from "./helpers";
 
 describe("LoadBalanceStrategy", () => {
   beforeEach(() => {
@@ -17,7 +17,7 @@ describe("LoadBalanceStrategy", () => {
     const lookup = (name: string) =>
       name === "a" ? a : name === "b" ? b : undefined;
 
-    const strategy = new LoadBalanceStrategy(lookup, {
+    const strategy = boundLoadBalance(lookup, {
       targets: [
         { name: "a", weight: 1 },
         { name: "b", weight: 99 },
@@ -36,7 +36,7 @@ describe("LoadBalanceStrategy", () => {
     const lookup = (name: string) =>
       name === "a" ? a : name === "b" ? b : undefined;
 
-    const strategy = new LoadBalanceStrategy(lookup, {
+    const strategy = boundLoadBalance(lookup, {
       targets: [
         { name: "a", weight: 1 },
         { name: "b", weight: 99 },
@@ -56,7 +56,7 @@ describe("LoadBalanceStrategy", () => {
     const lookup = (name: string) =>
       name === "a" ? a : name === "b" ? b : undefined;
 
-    const strategy = new LoadBalanceStrategy(lookup, {
+    const strategy = boundLoadBalance(lookup, {
       targets: [
         { name: "a", weight: 1 },
         { name: "b", weight: 99 },
@@ -74,7 +74,7 @@ describe("LoadBalanceStrategy", () => {
     const lookup = (name: string) =>
       name === "a" ? a : name === "b" ? b : undefined;
 
-    const strategy = new LoadBalanceStrategy(lookup, {
+    const strategy = boundLoadBalance(lookup, {
       targets: [
         { name: "a", weight: 1 },
         { name: "b", weight: 99 },

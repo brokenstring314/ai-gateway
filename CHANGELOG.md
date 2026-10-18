@@ -125,6 +125,22 @@
   `status`/`retryAfterSeconds` on a `reject` result.
   (Closes B3-7, T3-12, round-2 "upstream 429/500 → 500" and "FallbackExhausted
   not unwrapped".)
+- **Strategies only order targets; one executor runs them**
+  (`src/core/executor.ts`, replacing the per-provider breaker / limiter /
+  served-by decorators). Embedded API: `IStrategy` is now
+  `{ mode, selectTargets(req) }`; `execute()`/`executeStream()` are gone from
+  every strategy, strategy constructors take only their config, and
+  `createStrategy(mode, config)` no longer takes a provider lookup (run
+  candidates with `TargetExecutor` / `executeChat` / `streamChat`).
+  `ConditionalStrategy.selectTargets()` now returns the execution order
+  (matched target, then the default) instead of every rule target.
+  `McpExecutor.executeAgenticLoop()` takes a `(ctx, req) => response`
+  function (an object with `execute()` still works). Per-target `retry` now
+  applies to every strategy, `single` included (it was ignored outside the
+  multi-target strategies). A request whose deadline fires while queued for
+  a target's concurrency slot leaves the queue at once and gets
+  429 `gateway_overloaded` (it used to wait for a slot, call upstream with an
+  aborted signal, answer 504 and count as a breaker failure — C3-3).
 
 ### Security
 

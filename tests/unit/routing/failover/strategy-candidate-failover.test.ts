@@ -16,8 +16,7 @@ describe("strategies do not route around an open breaker", () => {
 });
 
 // ── R3-H3: shared candidate executor, beyond the original repro ──
-import { LoadBalanceStrategy } from "@/routing/loadbalance";
-import { ConditionalStrategy } from "@/routing/conditional";
+import { boundConditional, boundLoadBalance } from "../helpers";
 
 function streamProvider(name: string, mode: "ok" | "fail-before" | "fail-after" | "400") {
   const calls = { n: 0 };
@@ -81,18 +80,18 @@ describe("shared candidate executor", () => {
   it("stream: fails over before the first chunk, never after output started", async () => {
     const a = streamProvider("a", "fail-before");
     const b = streamProvider("b", "ok");
-    const lb = new LoadBalanceStrategy((n) => (n === "a" ? a.p : b.p), { targets: [{ name: "a", weight: 1e9 }, { name: "b", weight: 1e-9 }] });
+    const lb = boundLoadBalance((n) => (n === "a" ? a.p : b.p), { targets: [{ name: "a", weight: 1e9 }, { name: "b", weight: 1e-9 }] });
     expect(await drain(lb.executeStream({ metadata: {} } as any, req as any))).toBe("ok:b!");
 
     const a2 = streamProvider("a", "fail-after");
     const b2 = streamProvider("b", "ok");
-    const lb2 = new LoadBalanceStrategy((n) => (n === "a" ? a2.p : b2.p), { targets: [{ name: "a", weight: 1e9 }, { name: "b", weight: 1e-9 }] });
+    const lb2 = boundLoadBalance((n) => (n === "a" ? a2.p : b2.p), { targets: [{ name: "a", weight: 1e9 }, { name: "b", weight: 1e-9 }] });
     expect(await drain(lb2.executeStream({ metadata: {} } as any, req as any))).toBe("err(502):a");
     expect(b2.calls.n).toBe(0);
   });
 
   it("conditional strategy with nothing matched and no default still errors", async () => {
-    const c = new ConditionalStrategy(() => undefined, { rules: [] });
+    const c = boundConditional(() => undefined, { rules: [] });
     await expect(c.execute({ metadata: {} } as any, req as any)).rejects.toThrow("no rule matched");
   });
 });

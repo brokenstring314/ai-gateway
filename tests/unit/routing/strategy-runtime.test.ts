@@ -36,6 +36,7 @@ import {
   createReq,
   createFailingProvider,
 } from "./helpers";
+import { boundConditional, boundFallback, boundLoadBalance, boundSingle } from "./helpers";
 
 // ── Test helpers ──
 
@@ -115,7 +116,7 @@ describe("strategy factory & gateway wiring", () => {
   ];
 
   it.each(factoryConfigs)("createStrategy builds the $modeName strategy", ({ mode, config, modeName }) => {
-    const strategy = createStrategy(mode, config, providerFor(["a"]));
+    const strategy = createStrategy(mode, config);
     expect(strategy).toBeInstanceOf(
       modeName === "single" ? SingleStrategy :
       modeName === "fallback" ? FallbackStrategy :
@@ -148,16 +149,16 @@ describe("strategy factory & gateway wiring", () => {
 
 describe("single strategy runtime", () => {
   it("selects the configured target", () => {
-    const strategy = new SingleStrategy(providerFor(["a"]), { target: "a" });
+    const strategy = boundSingle(providerFor(["a"]), { target: "a" });
     expect(strategy.selectTargets(createReq())).toEqual(["a"]);
   });
 
   it("routes execute() to the target and throws when the target is missing", async () => {
-    const strategy = new SingleStrategy(providerFor(["a"]), { target: "a" });
+    const strategy = boundSingle(providerFor(["a"]), { target: "a" });
     const resp = await strategy.execute({ metadata: {} }, createReq());
     expect(resp.provider).toBe("a");
 
-    const missing = new SingleStrategy(() => undefined, { target: "nope" });
+    const missing = boundSingle(() => undefined, { target: "nope" });
     await expect(
       missing.execute({ metadata: {} }, createReq()),
     ).rejects.toThrow("not found");
@@ -168,14 +169,14 @@ describe("single strategy runtime", () => {
 
 describe("fallback strategy runtime", () => {
   it("selects all targets in declared order", () => {
-    const strategy = new FallbackStrategy(providerFor(["a", "b"]), { targets: ["a", "b"] });
+    const strategy = boundFallback(providerFor(["a", "b"]), { targets: ["a", "b"] });
     expect(strategy.selectTargets(createReq())).toEqual(["a", "b"]);
   });
 
   it("falls back to the backup target when the primary fails", async () => {
     const a = createFailingProvider("a", new Error("down"));
     const b = createMockProvider("b");
-    const strategy = new FallbackStrategy(lookupWith(["a", a], ["b", b]), {
+    const strategy = boundFallback(lookupWith(["a", a], ["b", b]), {
       targets: ["a", "b"],
     });
 
@@ -186,7 +187,7 @@ describe("fallback strategy runtime", () => {
   it("throws FallbackExhaustedError when every target fails", async () => {
     const a = createFailingProvider("a", new Error("down"));
     const b = createFailingProvider("b", new Error("also down"));
-    const strategy = new FallbackStrategy(lookupWith(["a", a], ["b", b]), {
+    const strategy = boundFallback(lookupWith(["a", a], ["b", b]), {
       targets: ["a", "b"],
     });
 
@@ -197,7 +198,7 @@ describe("fallback strategy runtime", () => {
 
   it("skips unregistered targets and still succeeds", async () => {
     const b = createMockProvider("b");
-    const strategy = new FallbackStrategy(lookupWith(["b", b]), {
+    const strategy = boundFallback(lookupWith(["b", b]), {
       targets: ["missing", "b"],
     });
 
@@ -212,7 +213,7 @@ describe("loadbalance strategy runtime", () => {
   it("distributes calls by weight (heavy target gets the majority)", async () => {
     const a = createMockProvider("a");
     const b = createMockProvider("b");
-    const strategy = new LoadBalanceStrategy(lookupWith(["a", a], ["b", b]), {
+    const strategy = boundLoadBalance(lookupWith(["a", a], ["b", b]), {
       targets: [
         { name: "a", weight: 20 },
         { name: "b", weight: 80 },
@@ -234,7 +235,7 @@ describe("loadbalance strategy runtime", () => {
 
   it("distributes evenly when all weights are equal", async () => {
     const names = ["a", "b", "c", "d"];
-    const strategy = new LoadBalanceStrategy(providerFor(names), {
+    const strategy = boundLoadBalance(providerFor(names), {
       targets: names.map((name) => ({ name, weight: 1 })),
     });
 
@@ -257,7 +258,7 @@ describe("loadbalance strategy runtime", () => {
   it("weight 0 drains a target: never selected, not even as failover (C3-9)", async () => {
     const a = createMockProvider("a");
     const b = createMockProvider("b");
-    const strategy = new LoadBalanceStrategy(lookupWith(["a", a], ["b", b]), {
+    const strategy = boundLoadBalance(lookupWith(["a", a], ["b", b]), {
       targets: [
         { name: "a", weight: 0 },
         { name: "b", weight: 1 },
@@ -271,8 +272,8 @@ describe("loadbalance strategy runtime", () => {
   });
 
   it("throws at construction when every weight is 0 or no targets are configured", () => {
-    expect(() => new LoadBalanceStrategy(providerFor(["a"]), { targets: [{ name: "a", weight: 0 }] })).toThrow(/weight 0/);
-    expect(() => new LoadBalanceStrategy(providerFor([]), { targets: [] })).toThrow();
+    expect(() => boundLoadBalance(providerFor(["a"]), { targets: [{ name: "a", weight: 0 }] })).toThrow(/weight 0/);
+    expect(() => boundLoadBalance(providerFor([]), { targets: [] })).toThrow();
   });
 });
 
@@ -280,7 +281,7 @@ describe("loadbalance strategy runtime", () => {
 
 describe("conditional strategy runtime", () => {
   it("hits a field/pattern/target rule", async () => {
-    const strategy = new ConditionalStrategy(providerFor(["a", "b"]), {
+    const strategy = boundConditional(providerFor(["a", "b"]), {
       rules: [
         { field: "model", pattern: "gpt-", target: "a" },
         { field: "model", pattern: "llama", target: "b" },
@@ -293,7 +294,7 @@ describe("conditional strategy runtime", () => {
   });
 
   it("falls back to defaultTarget when no rule matches", async () => {
-    const strategy = new ConditionalStrategy(providerFor(["a", "b"]), {
+    const strategy = boundConditional(providerFor(["a", "b"]), {
       rules: [{ field: "model", pattern: "gpt-5", target: "a" }],
       defaultTarget: "b",
     });
@@ -303,7 +304,7 @@ describe("conditional strategy runtime", () => {
   });
 
   it("treats pattern as a regex (anchored alternation)", async () => {
-    const strategy = new ConditionalStrategy(providerFor(["a"]), {
+    const strategy = boundConditional(providerFor(["a"]), {
       rules: [{ field: "model", pattern: "^gpt-4(o|-turbo)", target: "a" }],
       defaultTarget: "a",
     });
@@ -318,7 +319,7 @@ describe("conditional strategy runtime", () => {
 
 describe("shared error handling", () => {
   it("reports a missing provider target", async () => {
-    const strategy = new SingleStrategy(() => undefined, { target: "ghost" });
+    const strategy = boundSingle(() => undefined, { target: "ghost" });
     await expect(
       strategy.execute({ metadata: {} }, createReq()),
     ).rejects.toThrow("not found");

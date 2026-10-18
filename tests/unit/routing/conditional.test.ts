@@ -3,8 +3,8 @@
  */
 
 import { describe, it, expect } from "bun:test";
-import { ConditionalStrategy } from "@/routing/conditional";
 import { createMockProvider, createStreamMockProvider, createReq } from "./helpers";
+import { boundConditional } from "./helpers";
 
 describe("ConditionalStrategy", () => {
   it("routes by model field match", async () => {
@@ -13,7 +13,7 @@ describe("ConditionalStrategy", () => {
     const lookup = (name: string) =>
       name === "openai" ? openai : name === "groq" ? groq : undefined;
 
-    const strategy = new ConditionalStrategy(lookup, {
+    const strategy = boundConditional(lookup, {
       rules: [
         { field: "model", pattern: "gpt-", target: "openai" },
         { field: "model", pattern: "llama", target: "groq" },
@@ -33,7 +33,7 @@ describe("ConditionalStrategy", () => {
     const lookup = (name: string) =>
       name === "openai" ? openai : name === "groq" ? groq : undefined;
 
-    const strategy = new ConditionalStrategy(lookup, {
+    const strategy = boundConditional(lookup, {
       rules: [
         { field: "user", pattern: "premium", target: "openai" },
         { field: "user", pattern: "free", target: "groq" },
@@ -53,7 +53,7 @@ describe("ConditionalStrategy", () => {
     const lookup = (name: string) =>
       name === "openai" ? openai : name === "groq" ? groq : undefined;
 
-    const strategy = new ConditionalStrategy(lookup, {
+    const strategy = boundConditional(lookup, {
       rules: [
         { field: "message", pattern: "code", target: "openai" },
         { field: "message", pattern: "chat", target: "groq" },
@@ -75,7 +75,7 @@ describe("ConditionalStrategy", () => {
     const lookup = (name: string) =>
       name === "openai" ? openai : name === "groq" ? groq : undefined;
 
-    const strategy = new ConditionalStrategy(lookup, {
+    const strategy = boundConditional(lookup, {
       rules: [{ field: "model", pattern: "gpt-5", target: "openai" }],
       defaultTarget: "groq",
     });
@@ -91,7 +91,7 @@ describe("ConditionalStrategy", () => {
     const openai = createMockProvider("openai");
     const lookup = (name: string) => (name === "openai" ? openai : undefined);
 
-    const strategy = new ConditionalStrategy(lookup, {
+    const strategy = boundConditional(lookup, {
       rules: [{ field: "model", pattern: "gpt-5", target: "openai" }],
     });
 
@@ -106,7 +106,7 @@ describe("ConditionalStrategy", () => {
     const lookup = (name: string) =>
       name === "openai" ? openai : name === "groq" ? groq : undefined;
 
-    const strategy = new ConditionalStrategy(lookup, {
+    const strategy = boundConditional(lookup, {
       rules: [{ field: "model", pattern: "gpt-", target: "openai" }],
     });
 
@@ -124,7 +124,7 @@ describe("ConditionalStrategy", () => {
     const openai = createMockProvider("openai");
     const lookup = (name: string) => name === "openai" ? openai : undefined;
 
-    const strategy = new ConditionalStrategy(lookup, {
+    const strategy = boundConditional(lookup, {
       rules: [{ field: "model", pattern: "^gpt-4(o|-turbo)", target: "openai" }],
       defaultTarget: "openai",
     });
@@ -148,7 +148,7 @@ describe("ConditionalStrategy", () => {
     const lookup = (name: string) =>
       name === "openai" ? openai : name === "groq" ? groq : undefined;
 
-    const strategy = new ConditionalStrategy(lookup, {
+    const strategy = boundConditional(lookup, {
       rules: [
         { field: "model", pattern: "gpt-", target: "openai" },
         { field: "model", pattern: "gpt-4", target: "groq" },
@@ -162,9 +162,9 @@ describe("ConditionalStrategy", () => {
     expect(resp.provider).toBe("openai");
   });
 
-  it("selectTargets includes matched + default + other unique targets", () => {
+  it("selectTargets is the execution order: matched target, then the default (other rules' targets serve other content)", () => {
     const lookup = (name: string) => createMockProvider(name);
-    const strategy = new ConditionalStrategy(lookup, {
+    const strategy = boundConditional(lookup, {
       rules: [
         { field: "model", pattern: "gpt-", target: "openai" },
         { field: "model", pattern: "llama", target: "groq" },
@@ -173,22 +173,20 @@ describe("ConditionalStrategy", () => {
     });
 
     const targets = strategy.selectTargets(createReq({ model: "gpt-4" }));
-    expect(targets[0]).toBe("openai");
-    expect(targets).toContain("deepseek");
-    expect(targets).toContain("groq");
+    expect(targets).toEqual(["openai", "deepseek"]);
   });
 
   it("invalid regex pattern throws at construction (startup), not per request", () => {
     const openai = createMockProvider("openai");
     const lookup = (name: string) => name === "openai" ? openai : undefined;
-    expect(() => new ConditionalStrategy(lookup, {
+    expect(() => boundConditional(lookup, {
       rules: [{ field: "model", pattern: "[invalid", target: "openai" }],
       defaultTarget: "openai",
     })).toThrow(/invalid pattern/);
   });
 
   it("field prompt + contains matches any user message case-insensitively (absorbs content_based)", () => {
-    const strategy = new ConditionalStrategy(() => undefined, {
+    const strategy = boundConditional(() => undefined, {
       rules: [{ field: "prompt", contains: "Code", target: "coder" }],
       defaultTarget: "general",
     });
@@ -205,7 +203,7 @@ describe("ConditionalStrategy", () => {
   });
 
   it("field prompt + pattern uses a regex", () => {
-    const strategy = new ConditionalStrategy(() => undefined, {
+    const strategy = boundConditional(() => undefined, {
       rules: [{ field: "prompt", pattern: "^\\[code\\]", target: "coder" }],
       defaultTarget: "general",
     });
