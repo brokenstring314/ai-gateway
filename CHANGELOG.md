@@ -98,6 +98,13 @@
   to pass through, or `true` for the old full inheritance.
   *Migration:* a server that relied on an inherited variable needs it in `env`
   or `inheritEnv`.
+- **`GET /admin/config` scrubbing closes the remaining gaps** (S3-5): URL
+  userinfo and sensitive query values (`key`, `api_key`, `token`, `sig`, …) are
+  redacted in `targets[].baseURL`, `observability.tracing.otlpEndpoint` and URL
+  strings inside plugin config; every `mcpServers[].args` value is redacted; a
+  value counts as an env template only if it is exactly one `${VAR}` (so
+  `"${A}sk-literal${B}"` is redacted). The config history half of S3-5 went
+  away with the history API.
 
 ### Added
 

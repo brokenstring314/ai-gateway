@@ -11,7 +11,7 @@ fixed by 1.4 while this suite was being written).
 
 | File | Bug | Plan PR |
 |---|---|---|
-| sec/s3-5-config-scrub-gaps | S3-5 (remaining scrub gaps) | 3.3 |
+| sec/s3-5-config-scrub-gaps | S3-5 (remaining scrub gaps) — fixed, now a regression test | 3.3 |
 | sec/s3-6-passthrough-method-fallthrough | S3-6 | 2.8 |
 | core/limiter-queue-timeout-opens-breaker | C3-3 | 2.2 |
 | core/budget-race | C3-5 | 3.6 |
