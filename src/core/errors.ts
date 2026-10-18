@@ -16,6 +16,7 @@
 
 import { PluginRejectionError } from "../plugins/error.js";
 import { ProviderError, type UpstreamErrorBody } from "../providers/openai-compat.js";
+import { ReadableStreamError, type StreamErrorCode } from "../providers/sse-parser.js";
 import { CircuitOpenError } from "../routing/circuit-breaker.js";
 import { ConcurrencyLimitError } from "../routing/concurrency-limiter.js";
 import { isTimeoutAbort, isTimeoutError } from "./outcome.js";
@@ -155,6 +156,7 @@ export function toGatewayError(err: unknown, opts: ToGatewayErrorOptions = {}): 
     });
   }
   if (inner instanceof ProviderError) return fromProviderError(inner);
+  if (inner instanceof ReadableStreamError) return fromStreamError(inner);
   if (inner instanceof CircuitOpenError) {
     return new GatewayError("breaker_open", {
       status: 503,
@@ -189,6 +191,25 @@ function str(v: unknown): string | undefined {
   if (typeof v === "string" && v !== "") return v;
   if (typeof v === "number") return String(v);
   return undefined;
+}
+
+const STREAM_ERROR_MESSAGES: Readonly<Record<StreamErrorCode, string>> = {
+  upstream_stream_error: "Upstream stream failed",
+  upstream_stream_truncated: "Upstream closed the stream before completion",
+  upstream_empty_stream: "Upstream returned an empty stream",
+  upstream_invalid_response: "Invalid response from upstream",
+  upstream_event_too_large: "Upstream stream event too large",
+};
+
+/** A broken upstream stream (read failure, truncation, malformed or oversized event): 502, fixed message. */
+function fromStreamError(e: ReadableStreamError): GatewayError {
+  return new GatewayError("upstream_unavailable", {
+    status: 502,
+    message: STREAM_ERROR_MESSAGES[e.code] ?? STREAM_ERROR_MESSAGES.upstream_stream_error,
+    type: "server_error",
+    code: e.code,
+    cause: e,
+  });
 }
 
 function fromProviderError(p: ProviderError): GatewayError {

@@ -98,7 +98,10 @@ describe("OpenAI wire format — request (snake_case in)", () => {
   });
 
   it("maps tool_calls / tool_call_id / image_url / stream_options and accepts content: null", async () => {
-    const { app, calls } = setup([]);
+    // One chunk: a stream that yields nothing is a failed attempt (T3-5).
+    const { app, calls } = setup([
+      { id: "c", object: "chat.completion.chunk", created: 1, model: "gpt-4o", choices: [{ index: 0, delta: { role: "assistant", content: "ok" }, finishReason: "stop" }] },
+    ]);
     const res = await post(app, {
       model: "gpt-4o",
       stream: true,

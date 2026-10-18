@@ -2,7 +2,7 @@ import { describe, it, expect } from "bun:test";
 import { setup, sse, chunk, post, readFor } from "./_h";
 
 describe("T3-3 data: [DONE] does not end the stream; gateway waits for upstream EOF and forwards post-DONE data", () => {
-  it.failing("client must get [DONE] promptly after upstream sends it even if upstream keeps the socket open", async () => {
+  it("client must get [DONE] promptly after upstream sends it even if upstream keeps the socket open", async () => {
     const s = setup(() => {
       const enc = new TextEncoder();
       const body = new ReadableStream<Uint8Array>({
@@ -28,7 +28,7 @@ describe("T3-3 data: [DONE] does not end the stream; gateway waits for upstream 
 });
 
 describe("T3-4 (known, still reproduces) truncated upstream stream is reported as a clean completion", () => {
-  it.failing("EOF without [DONE] / finish_reason must not end with data: [DONE] and no error", async () => {
+  it("EOF without [DONE] / finish_reason must not end with data: [DONE] and no error", async () => {
     const s = setup(() => sse([chunk("The answer is"), chunk(" 4")])); // connection closes mid-answer
     try {
       const r = await post(s.app, { stream: true });
@@ -40,7 +40,7 @@ describe("T3-4 (known, still reproduces) truncated upstream stream is reported a
 });
 
 describe("T3-5 200 non-SSE upstream body on a stream request becomes an empty successful stream", () => {
-  it.failing("JSON error body with 200 + application/json is silently swallowed (no error, no fallback)", async () => {
+  it("JSON error body with 200 + application/json is silently swallowed (no error, no fallback)", async () => {
     const s = setup(() => new Response(JSON.stringify({ error: { message: "model overloaded", type: "server_error" } }), { headers: { "content-type": "application/json" } }));
     try {
       const r = await post(s.app, { stream: true });
@@ -49,7 +49,7 @@ describe("T3-5 200 non-SSE upstream body on a stream request becomes an empty su
       expect(r.status === 200 && text.trim() === "data: [DONE]").toBe(false);
     } finally { s.stop(); }
   });
-  it.failing("upstream ignored stream:true and returned a normal chat.completion JSON -> content lost", async () => {
+  it("upstream ignored stream:true and returned a normal chat.completion JSON -> content lost", async () => {
     const s = setup(() => Response.json({ id: "x", object: "chat.completion", created: 1, model: "gpt-4o", choices: [{ index: 0, message: { role: "assistant", content: "real answer" }, finish_reason: "stop" }], usage: { prompt_tokens: 1, completion_tokens: 2, total_tokens: 3 } }));
     try {
       const r = await post(s.app, { stream: true });
@@ -57,11 +57,11 @@ describe("T3-5 200 non-SSE upstream body on a stream request becomes an empty su
       expect(text.includes("real answer") || text.includes("error")).toBe(true); // BUG: neither
     } finally { s.stop(); }
   });
-  it.failing("with fallback, an empty 200 stream from target A is not failed over to target B", async () => {
+  it("with fallback, an empty 200 stream from target A is not failed over to target B", async () => {
     const good = Bun.serve({ port: 0, hostname: "127.0.0.1", fetch: () => sse([chunk("from-B", "stop"), "data: [DONE]\n\n"]) });
-    const s = setup(() => new Response("", { headers: { "content-type": "text/event-stream" } }), {
-      strategy: { mode: "fallback", targets: ["up", "b"] },
-    } as never);
+    const s = setup(() => new Response("", { headers: { "content-type": "text/event-stream" } }));
+    // Config is validated at construction (3.8): add target b before switching to fallback.
+    (s.config as { strategy: unknown }).strategy = { mode: "fallback", targets: ["up", "b"] };
     (s.config.targets as unknown[]).push({ name: "b", provider: "openai", apiKey: "sk", baseURL: `http://127.0.0.1:${good.port}/v1`, models: ["gpt-4o"] });
     const { Gateway } = await import("@/gateway");
     const { createApp } = await import("@/app");

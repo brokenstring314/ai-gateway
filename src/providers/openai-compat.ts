@@ -26,7 +26,7 @@ import type {
 } from "./types.js";
 import type { CompatibilityConfig } from "../config/types.js";
 import { enforceUnsupportedParams } from "./capabilities.js";
-import { parseSSEStream } from "./sse-parser.js";
+import { chunkFromJsonResponse, parseSSEStream } from "./sse-parser.js";
 import { extractForwardableHeaders } from "./response-headers.js";
 
 export interface OpenAiCompatOptions {
@@ -221,6 +221,13 @@ export function createOpenAICompatProvider(opts: OpenAiCompatOptions): OpenAICom
       const upstreamHeaders = extractForwardableHeaders(response.headers);
       if (upstreamHeaders !== undefined) {
         ctx.upstreamHeaders = upstreamHeaders;
+      }
+
+      // A 200 JSON body on a stream request (an error, or an upstream that
+      // ignored stream:true) must not become an empty "successful" stream (T3-5).
+      if (/\bjson\b/i.test(response.headers.get("content-type") ?? "")) {
+        yield await chunkFromJsonResponse(response, ctx.signal, opts.name);
+        return;
       }
 
       yield* parseSSEStream(response.body, ctx.signal, opts.name);

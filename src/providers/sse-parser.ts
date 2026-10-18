@@ -5,8 +5,23 @@
  *   data: {"id":"...","choices":[...]}\n\n
  *   data: [DONE]\n\n
  *
- * Handles comment lines, partial UTF-8 reads, multi-line data events, and
- * graceful abort via AbortSignal.
+ * Hardening (refactor plan PR 2.5; T3-3, T3-4, T3-5, T3-10):
+ *  - lines end on \r\n, \r or \n (WHATWG SSE), also when a \r\n pair is split
+ *    across two network reads;
+ *  - incremental scan: each read is scanned once, a partial line is kept as a
+ *    list of pieces (no re-split of a growing buffer, O(n) overall);
+ *  - a single line or event larger than MAX_SSE_EVENT_CHARS (4 MiB) aborts the
+ *    stream with an error instead of growing memory without bound;
+ *  - `data: [DONE]` ends the stream at once: the upstream body is cancelled
+ *    and anything after it is ignored;
+ *  - EOF without [DONE] and without any finish_reason is a truncated stream
+ *    (error), not a clean completion;
+ *  - malformed JSON in a data event, an `event: error` event, or an `{error}`
+ *    payload is an error, never silently skipped;
+ *  - non-object entries in `choices` (e.g. choices:[null]) are ignored.
+ *
+ * Also handles comment lines, partial UTF-8 reads, multi-line data events,
+ * and graceful abort via AbortSignal.
  */
 
 import type { StreamChunk, ChatMessage } from "./types.js";
@@ -23,6 +38,31 @@ function abortError(): DOMException {
 /** Sentinel value marking the end of an SSE stream. */
 const DONE_SENTINEL = "[DONE]";
 
+/** Upper bound for one SSE line, and for one event's joined data (chars ≈ bytes). */
+export const MAX_SSE_EVENT_CHARS = 4 * 1024 * 1024;
+
+/** Machine-readable reason carried by a ReadableStreamError. */
+export type StreamErrorCode =
+  | "upstream_stream_error"
+  | "upstream_stream_truncated"
+  | "upstream_empty_stream"
+  | "upstream_invalid_response"
+  | "upstream_event_too_large";
+
+export class ReadableStreamError extends Error {
+  override name = "ReadableStreamError";
+  readonly code: StreamErrorCode;
+  constructor(message: string, code: StreamErrorCode = "upstream_stream_error") {
+    super(message);
+    this.code = code;
+  }
+}
+
+/** True for the error raised when an upstream stream ended before completion. */
+export function isTruncatedStreamError(err: unknown): boolean {
+  return err instanceof ReadableStreamError && err.code === "upstream_stream_truncated";
+}
+
 /**
  * Parse a ReadableStream of bytes into an async iterable of StreamChunk objects.
  */
@@ -33,10 +73,7 @@ export async function* parseSSEStream(
 ): AsyncGenerator<StreamChunk> {
   const decoder = new TextDecoder();
   const reader = body.getReader();
-  let buffer = "";
-  // Parser state persists across reads: an event's data lines and its
-  // blank-line terminator may arrive in different network reads.
-  const state: ParserState = { dataLines: [], providerName };
+  const parser = new SSEParser(providerName);
   let consumed = false;
 
   try {
@@ -70,25 +107,32 @@ export async function* parseSSEStream(
         break;
       }
 
-      buffer += decoder.decode(result.value, { stream: true });
-      const [newBuffer, chunks] = processBuffer(buffer, state);
-      buffer = newBuffer;
+      const chunks = parser.feed(decoder.decode(result.value, { stream: true }));
       for (const chunk of chunks) {
         yield chunk;
       }
+      // [DONE]: stop now. `consumed` stays false, so finally cancels the
+      // upstream body (it may keep the socket open after [DONE]).
+      if (parser.done) return;
     }
 
     // EOF: treat the trailing partial line as complete and flush any pending
     // event that was not terminated by a blank line.
-    buffer += decoder.decode();
-    const [, finalChunks] = processBuffer(buffer + "\n\n", state);
-    for (const chunk of finalChunks) {
+    for (const chunk of parser.end(decoder.decode())) {
       yield chunk;
+    }
+    if (!parser.done && !parser.sawFinishReason) {
+      throw new ReadableStreamError(
+        parser.chunkCount === 0
+          ? "upstream stream ended without any event"
+          : "upstream closed stream before completion (no finish_reason or [DONE])",
+        parser.chunkCount === 0 ? "upstream_empty_stream" : "upstream_stream_truncated",
+      );
     }
   } finally {
     if (!consumed) {
-      // Consumer stopped early or an error occurred: cancel the upstream body
-      // so the connection is not leaked.
+      // Consumer stopped early, [DONE] arrived, or an error occurred: cancel
+      // the upstream body so the connection is not leaked.
       try {
         await reader.cancel();
       } catch {
@@ -99,62 +143,181 @@ export async function* parseSSEStream(
   }
 }
 
-interface ParserState {
-  dataLines: string[];
-  providerName: string;
-}
+const LF = 10;
+const CR = 13;
 
-/** Process line buffer: split on \n, accumulate data lines, parse events. */
-function processBuffer(buffer: string, state: ParserState): [string, StreamChunk[]] {
-  const lines = buffer.split("\n");
-  const remainder = lines.pop() ?? "";
-  const chunks: StreamChunk[] = [];
+/**
+ * Incremental SSE parser: feed decoded text, get complete chunks back.
+ * Stops (and ignores further input) once `data: [DONE]` was seen.
+ */
+export class SSEParser {
+  /** `data: [DONE]` was seen. */
+  done = false;
+  /** Some choice carried a finish_reason. */
+  sawFinishReason = false;
+  /** Chunks emitted so far. */
+  chunkCount = 0;
 
-  for (const line of lines) {
-    const trimmed = line.trimEnd();
+  private pieces: string[] = [];
+  private pendingChars = 0;
+  private pendingCR = false;
+  private dataLines: string[] = [];
+  private dataChars = 0;
+  private eventType = "";
+  private out: StreamChunk[] = [];
 
-    if (trimmed === "") {
-      if (state.dataLines.length > 0) {
-        const parsed = parseSSEEvent(state.dataLines, state.providerName);
-        if (parsed !== null) chunks.push(parsed);
-        state.dataLines = [];
-      }
-      continue;
+  constructor(private readonly providerName = "upstream") {}
+
+  feed(text: string): StreamChunk[] {
+    this.out = [];
+    if (this.done) return this.out;
+    let i = 0;
+    if (this.pendingCR) {
+      // A \r ended the previous read; a leading \n completes that \r\n.
+      this.pendingCR = false;
+      if (text.charCodeAt(0) === LF) i = 1;
     }
+    const n = text.length;
+    while (i < n && !this.done) {
+      let j = i;
+      while (j < n) {
+        const c = text.charCodeAt(j);
+        if (c === LF || c === CR) break;
+        j++;
+      }
+      if (j === n) {
+        this.appendPartial(text.slice(i));
+        break;
+      }
+      const tail = text.slice(i, j);
+      const line = this.pieces.length > 0 ? this.pieces.join("") + tail : tail;
+      if (this.pieces.length > 0) this.checkSize(this.pendingChars + tail.length);
+      this.pieces = [];
+      this.pendingChars = 0;
+      if (text.charCodeAt(j) === CR) {
+        if (j + 1 < n) {
+          if (text.charCodeAt(j + 1) === LF) j++;
+        } else {
+          this.pendingCR = true;
+        }
+      }
+      i = j + 1;
+      this.processLine(line);
+    }
+    return this.out;
+  }
 
-    if (trimmed.startsWith(":")) continue;
+  /** End of input: the trailing partial line is a line, a pending event is dispatched. */
+  end(text = ""): StreamChunk[] {
+    const chunks = this.feed(text);
+    if (this.done) return chunks;
+    this.out = chunks;
+    if (this.pieces.length > 0) {
+      const line = this.pieces.join("");
+      this.pieces = [];
+      this.pendingChars = 0;
+      this.processLine(line);
+    }
+    if (!this.done) this.dispatch();
+    return this.out;
+  }
 
-    if (trimmed.startsWith("data:")) {
-      state.dataLines.push(trimmed.slice(5).trimStart());
-      continue;
+  private appendPartial(s: string): void {
+    if (s === "") return;
+    this.pendingChars += s.length;
+    this.checkSize(this.pendingChars);
+    this.pieces.push(s);
+  }
+
+  private checkSize(chars: number): void {
+    if (chars > MAX_SSE_EVENT_CHARS) {
+      throw new ReadableStreamError(
+        `upstream SSE line/event exceeds ${MAX_SSE_EVENT_CHARS} bytes`,
+        "upstream_event_too_large",
+      );
     }
   }
 
-  return [remainder, chunks];
+  private processLine(line: string): void {
+    if (line === "") {
+      this.dispatch();
+      return;
+    }
+    if (line.charCodeAt(0) === 58 /* ':' */) return; // comment
+    const colon = line.indexOf(":");
+    const field = colon === -1 ? line : line.slice(0, colon);
+    let value = colon === -1 ? "" : line.slice(colon + 1);
+    if (value.charCodeAt(0) === 32 /* ' ' */) value = value.slice(1);
+    if (field === "data") {
+      this.dataChars += value.length + 1;
+      this.checkSize(this.dataChars);
+      this.dataLines.push(value);
+    } else if (field === "event") {
+      this.eventType = value.trim();
+    }
+    // id / retry / unknown fields: ignored.
+  }
+
+  private dispatch(): void {
+    const eventType = this.eventType;
+    const lines = this.dataLines;
+    this.eventType = "";
+    this.dataLines = [];
+    this.dataChars = 0;
+    if (lines.length === 0) return;
+    const raw = lines.join("\n").trim();
+    if (raw === DONE_SENTINEL) {
+      this.done = true;
+      return;
+    }
+    const chunk = parseSSEEvent(raw, eventType, this.providerName);
+    if (chunk === null) return;
+    this.chunkCount++;
+    if (chunk.choices.some((c) => c.finishReason)) this.sawFinishReason = true;
+    this.out.push(chunk);
+  }
 }
 
-function parseSSEEvent(dataLines: string[], providerName: string): StreamChunk | null {
-  const raw = dataLines.join("\n");
-  if (raw === DONE_SENTINEL) return null;
+function errorMessageOf(parsed: unknown): string | undefined {
+  if (typeof parsed === "string") return parsed || undefined;
+  if (typeof parsed !== "object" || parsed === null) return undefined;
+  const o = parsed as Record<string, unknown>;
+  const errVal = o["error"];
+  if (typeof errVal === "string" && errVal) return errVal;
+  if (typeof errVal === "object" && errVal !== null && typeof (errVal as Record<string, unknown>)["message"] === "string") {
+    return (errVal as Record<string, string>)["message"];
+  }
+  if (typeof o["message"] === "string" && o["message"]) return o["message"] as string;
+  return undefined;
+}
 
+function upstreamStreamError(providerName: string, parsed: unknown, fallback: string): ProviderError {
+  const message = errorMessageOf(parsed) ?? fallback;
+  const errVal = typeof parsed === "object" && parsed !== null ? (parsed as Record<string, unknown>)["error"] : undefined;
+  return new ProviderError(providerName, 502, `stream error: ${message}`, {
+    origin: "upstream",
+    upstream: typeof errVal === "object" && errVal !== null ? (errVal as Record<string, unknown>) : { message },
+  });
+}
+
+function parseSSEEvent(raw: string, eventType: string, providerName: string): StreamChunk | null {
   let parsed: unknown;
+  let parseFailed = false;
   try {
     parsed = JSON.parse(raw);
   } catch {
-    return null;
+    parseFailed = true;
+  }
+
+  if (eventType === "error") {
+    throw upstreamStreamError(providerName, parseFailed ? raw : parsed, "upstream stream error");
+  }
+  if (parseFailed) {
+    throw new ReadableStreamError("malformed JSON in upstream SSE event", "upstream_invalid_response");
   }
 
   if (typeof parsed === "object" && parsed !== null && "error" in parsed && !("choices" in parsed)) {
-    const errVal = (parsed as Record<string, unknown>)["error"];
-    const message = typeof errVal === "string"
-      ? errVal
-      : typeof errVal === "object" && errVal !== null && typeof (errVal as Record<string, unknown>)["message"] === "string"
-        ? (errVal as Record<string, string>)["message"]!
-        : "upstream stream error";
-    throw new ProviderError(providerName, 502, `stream error: ${message}`, {
-      origin: "upstream",
-      upstream: typeof errVal === "object" && errVal !== null ? (errVal as Record<string, unknown>) : { message },
-    });
+    throw upstreamStreamError(providerName, parsed, "upstream stream error");
   }
 
   if (typeof parsed !== "object" || parsed === null || !("choices" in parsed)) {
@@ -164,17 +327,73 @@ function parseSSEEvent(dataLines: string[], providerName: string): StreamChunk |
   return normalizeChunk(parsed as Record<string, unknown>);
 }
 
+/**
+ * A 200 response with a JSON body on a stream request (T3-5): an upstream
+ * that ignored `stream: true` and answered with a chat.completion becomes
+ * one synthetic chunk; an error body becomes an error; anything else is an
+ * invalid response.
+ */
+export function chunkFromJsonBody(text: string, providerName = "upstream"): StreamChunk {
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(text);
+  } catch {
+    throw new ReadableStreamError("upstream returned a non-SSE body on a stream request", "upstream_invalid_response");
+  }
+  if (typeof parsed !== "object" || parsed === null) {
+    throw new ReadableStreamError("upstream returned a non-SSE body on a stream request", "upstream_invalid_response");
+  }
+  const o = parsed as Record<string, unknown>;
+  if ("error" in o && !("choices" in o)) throw upstreamStreamError(providerName, o, "upstream error");
+  if (!Array.isArray(o["choices"])) {
+    throw new ReadableStreamError("upstream returned a non-SSE body on a stream request", "upstream_invalid_response");
+  }
+  const choices = (o["choices"] as unknown[]).map((c) => {
+    if (typeof c !== "object" || c === null) return c;
+    const r = c as Record<string, unknown>;
+    return { ...r, delta: r["delta"] ?? r["message"] };
+  });
+  const chunk = normalizeChunk({ ...o, object: "chat.completion.chunk", choices });
+  if (chunk.choices.length === 0 || !chunk.choices.some((c) => c.finishReason)) {
+    // Mark the synthetic chunk as complete: the whole answer is here.
+    for (const c of chunk.choices) c.finishReason ||= "stop";
+  }
+  return chunk;
+}
+
+/** Read a JSON body returned on a stream request and turn it into one chunk (see chunkFromJsonBody). */
+export async function chunkFromJsonResponse(
+  response: Response,
+  signal: AbortSignal | undefined | null,
+  providerName = "upstream",
+): Promise<StreamChunk> {
+  let text: string;
+  try {
+    text = await response.text();
+  } catch (err) {
+    if (signal?.aborted || isAbortError(err)) throw abortError();
+    throw new ReadableStreamError(`upstream body read failed: ${err instanceof Error ? err.message : String(err)}`);
+  }
+  return chunkFromJsonBody(text, providerName);
+}
+
 function normalizeChunk(raw: Record<string, unknown>): StreamChunk {
   const rawChoices = raw["choices"];
   const choices = Array.isArray(rawChoices)
-    ? (rawChoices as Record<string, unknown>[]).map((c, i) => ({
-        index: typeof c["index"] === "number" ? (c["index"] as number) : i,
-        delta: normalizeDeltaMessage(c["delta"]),
-        finishReason: normalizeFinishReason(String(c["finish_reason"] ?? "")),
-      }))
+    ? (rawChoices as unknown[]).flatMap((entry, i) => {
+        if (typeof entry !== "object" || entry === null) return [];
+        const c = entry as Record<string, unknown>;
+        return [{
+          index: typeof c["index"] === "number" ? (c["index"] as number) : i,
+          delta: normalizeDeltaMessage(c["delta"]),
+          finishReason: normalizeFinishReason(String(c["finish_reason"] ?? "")),
+        }];
+      })
     : [];
 
-  const usageRaw = raw["usage"] as Record<string, number> | undefined;
+  const usageRaw = typeof raw["usage"] === "object" && raw["usage"] !== null
+    ? (raw["usage"] as Record<string, number>)
+    : undefined;
 
   return {
     id: String(raw["id"] ?? ""),
@@ -209,7 +428,10 @@ function normalizeDeltaMessage(raw: unknown): ChatMessage {
 
   const toolCalls = r["tool_calls"];
   if (Array.isArray(toolCalls)) {
-    message.toolCalls = (toolCalls as Record<string, unknown>[]).map((tc, i) => ({
+    message.toolCalls = (toolCalls as unknown[])
+      .map((tc, i) => [tc, i] as const)
+      .filter((e): e is readonly [Record<string, unknown>, number] => typeof e[0] === "object" && e[0] !== null)
+      .map(([tc, i]) => ({
       id: String(tc["id"] ?? ""),
       type: "function" as const,
       function: {
@@ -239,8 +461,4 @@ function normalizeFinishReason(raw: string): string {
     content_filtered: "content_filter",
   };
   return map[raw] ?? raw;
-}
-
-export class ReadableStreamError extends Error {
-  override name = "ReadableStreamError";
 }

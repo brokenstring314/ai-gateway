@@ -40,6 +40,7 @@ import { type ConcurrencyLimiter, ConcurrencyLimitError } from "../routing/concu
 import { retryWithBackoff, RetryExhaustedError } from "../routing/retry.js";
 import { classifyAttemptError, isFailoverEligible, isTimeoutAbort } from "./outcome.js";
 import { GatewayError, gatewayTimeout, mostMeaningful } from "./errors.js";
+import { ReadableStreamError } from "../providers/sse-parser.js";
 
 export type ProviderLookup = (name: string) => IProvider | undefined;
 
@@ -159,6 +160,10 @@ export class TargetExecutor {
         started = true;
         yield chunk;
       }
+      // A stream that ends without a single chunk produced no answer: a
+      // failed attempt (breaker failure, eligible for failover), never an
+      // empty "success" (T3-5).
+      if (!started) throw new ReadableStreamError(`${name}: upstream stream ended without any chunk`, "upstream_empty_stream");
       settled = true;
       this.settle(a, "success");
     } catch (err) {
