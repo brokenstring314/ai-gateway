@@ -1,7 +1,8 @@
 /**
  * Admin API — log viewing handlers.
  *
- * GET    /admin/logs       — list persisted request log entries (RequestLogStore)
+ * GET    /admin/logs       — list persisted request log entries (RequestLogStore);
+ *                            filters: stage, model, provider, since, status=error|ok, limit, offset
  * GET    /admin/logs/stats — aggregated stats over persisted request log entries
  * DELETE /admin/logs       — purge persisted request log entries older than `before`
  *
@@ -67,6 +68,7 @@ interface LogFilters {
   model?: string;
   provider?: string;
   since?: Date;
+  status?: "error" | "ok";
 }
 
 function parseFilters(c: Context): LogFilters {
@@ -77,6 +79,8 @@ function parseFilters(c: Context): LogFilters {
   if (stage !== undefined && stage !== "") filters.stage = stage;
   if (model !== undefined && model !== "") filters.model = model;
   if (provider !== undefined && provider !== "") filters.provider = provider;
+  const status = c.req.query("status");
+  if (status === "error" || status === "ok") filters.status = status;
   const sinceRaw = c.req.query("since");
   if (sinceRaw !== undefined && sinceRaw !== "") {
     const since = new Date(sinceRaw);

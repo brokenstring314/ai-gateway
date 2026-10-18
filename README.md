@@ -560,7 +560,9 @@ All admin endpoints require the `X-Admin-Secret` header (or `Authorization: Bear
 | GET    | `/admin/keys`          | List API keys (redacted)               |
 | POST   | `/admin/keys`          | Add a new API key                      |
 | DELETE | `/admin/keys/:id`      | Delete an API key by index             |
-| GET    | `/admin/logs`          | View recent log entries                |
+| GET    | `/admin/logs`          | Request log, newest first; `limit` (≤200), `offset`, filters `stage` (surface), `model`, `provider` (target), `since`, `status=error\|ok` |
+| GET    | `/admin/logs/stats`    | Counts by surface/target/model, errors, tokens (same filters) |
+| GET    | `/admin/status`        | Console overview: caller `scopes`, `circuitBreakers` per target, `upstreamAvailable`, `mcpServers`, in-process request summary (count, 4xx/5xx, error rate, latency mean/p50/p95) |
 
 The config is read-only at runtime: there is no hot reload and no config write API (removed in 0.2.0; the old write routes answer `410 config_api_removed`). To change config, edit the file and restart (rolling restart behind a load balancer). `SIGHUP` is logged and ignored.
 
@@ -597,6 +599,23 @@ A key created without `scopes` (or with `[]`) gets `["inference"]`: admin access
 - `auth.keys` are configured.
 
 Inference-only or `read_only` store keys do not retire them (otherwise creating a client key first would lock you out of the admin API). The check runs on every request, so the bootstrap key stops working the moment the first admin key is created. Startup prints a warning while the bootstrap key is live, and the gateway logs `[auth] ADMIN_BOOTSTRAP_KEY / ADMIN_BOOTSTRAP_READ_ONLY_KEY disabled: <reason>` when it is refused (at startup or at runtime). Remove the variables from the environment once you have an admin credential. Without a key store (embedded `createApp(gateway, config)`) they are never accepted.
+
+### Admin console
+
+A small built-in web console at **`/admin/dashboard`** (no build step, no framework, no external assets):
+
+| Page | Shows | Data from |
+| ---- | ----- | --------- |
+| Overview (`/admin/dashboard`) | Readiness, per-target circuit breakers, `upstreamAvailable`, MCP server states, request counts / error rate / latency, requests by surface, target and model; refreshes every 15 s | `/readyz`, `/admin/status`, `/admin/logs/stats` |
+| API keys (`/admin/dashboard/keys`) | Key list with scopes, status, expiry, usage. Admins can create keys (scopes `inference` / `read_only` / `admin`, optional expiry; the new key is shown once), rotate and revoke. `read_only` sees the list only | `/admin/keys` |
+| Request logs (`/admin/dashboard/logs`) | Paginated log (50 per page), filter by surface, target, model, status (ok/error) and time | `/admin/logs` |
+| Config (`/admin/dashboard/config`) | The running config, secrets scrubbed, read-only | `/admin/config` |
+
+**Sign in** at `/admin/dashboard/login` with an `admin` or `read_only` key from the key store (or the `adminSecret`). The key stays in that tab's `sessionStorage` and is sent as `Authorization: Bearer`; no cookies are used. Closing the tab or "Sign out" forgets it. Inference-only keys are refused (403).
+
+The HTML pages and `/admin/static/console.{js,css}` are served without auth because they contain no data (a browser navigation cannot carry a Bearer header); every number on them comes from the authenticated admin API above. Pages carry a strict CSP (`default-src 'none'; script-src 'self'; style-src 'self'; connect-src 'self'; frame-ancestors 'none'`, no inline script), and the script only inserts API data as text, never as HTML. Expose `/admin/*` only on networks you trust, as with the rest of the admin API.
+
+The request numbers on Overview come from two places: "Logged requests" and the per-surface tables from the request-log store (survives restarts); "Upstream-served" and latency from this process's Prometheus registry since start (latency percentiles are histogram bucket bounds). Use `/metrics` for history.
 
 ### Response Headers
 
@@ -1362,7 +1381,7 @@ bun run test:watch
 | `ferrogw serve`                               | `ai-gateway serve -c config.yaml`      |
 | 29 providers (incl. Anthropic/Gemini/Bedrock) | 20+ OpenAI-compatible providers        |
 | Non-OpenAI-wire translation                   | Not supported (by design)              |
-| Dashboard UI                                  | Not included                           |
+| Dashboard UI                                  | Minimal admin console (`/admin/dashboard`) |
 | `NonOpenAIWireProvider` proxy rejection       | Generic fallback with `baseURL`        |
 | `sync.Pool` context pooling                   | Standard JS patterns                   |
 | `httputil.ReverseProxy` pass-through          | Not included                           |

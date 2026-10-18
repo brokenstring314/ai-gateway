@@ -190,6 +190,14 @@
 
 ### Security
 
+- **Console page shells under `/admin/dashboard` no longer require admin
+  auth**: they carry no data, and all data comes from the authenticated admin
+  API. The CSP header the old dashboard sub-app set on every response
+  (including `/v1/*`) is now limited to console pages and assets.
+- **`GET /admin/keys` (list) is open to `read_only`**, like every other admin
+  GET (`GET /admin/keys/:id` already was). It never returns plaintext; create,
+  update, delete, revoke and rotate stay `admin`-only.
+
 - **`ADMIN_BOOTSTRAP_KEY` / `ADMIN_BOOTSTRAP_READ_ONLY_KEY` are retired once a
   real admin credential exists**: a usable admin key in the key store,
   `adminSecret`, or `auth.keys`. Previously they stayed valid as long as the
@@ -214,6 +222,22 @@
 ### Added
 
 - Licensed under Apache-2.0 (`LICENSE`); `NOTICE` credits Ferro Labs AI Gateway (Apache-2.0), whose design this project derives from. Both files are shipped in the Docker image.
+- **Admin console** at `/admin/dashboard` replaces the placeholder dashboard
+  (which rendered fixed demo numbers). Four pages backed by the admin API:
+  Overview (readiness, per-target circuit breakers, `upstreamAvailable`, MCP
+  server states, request counts / error rate / latency), API keys (list;
+  admins create with scopes and expiry, see the new key once, rotate,
+  revoke), Request logs (paginated, filter by surface, target, model, status,
+  time) and Config (scrubbed, read-only). Sign-in takes an `admin` or
+  `read_only` key, kept in `sessionStorage` and sent as Bearer (no cookies).
+  Server-rendered shell plus one vanilla JS file and one CSS file from
+  `src/dashboard/static`, strict CSP (`script-src 'self'`, no inline script),
+  API data inserted as text only, no external assets. Removed the placeholder
+  Providers, Analytics, Playground and Getting started pages and
+  `/admin/static/style.css` / `dashboard.js`.
+- `GET /admin/status`: caller scopes, circuit breakers, `upstreamAvailable`,
+  MCP states and an in-process request summary (`Metrics.requestSummary()`).
+- `GET /admin/logs` and `/admin/logs/stats` accept `status=error|ok`.
 
 - `Gateway.execute(surface, req, ctx)` and `Gateway.executeStream(surface,
   req, ctx)` run any surface (`core/surfaces/*`) through the pipeline.

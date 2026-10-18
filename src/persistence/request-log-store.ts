@@ -24,6 +24,8 @@ export interface RequestLogQuery {
   model?: string;
   provider?: string;
   since?: Date;
+  /** "error": entries with an error message (or stage on_error); "ok": the rest. */
+  status?: "error" | "ok";
 }
 
 export interface RequestLogListResult {
@@ -126,6 +128,9 @@ GROUP BY COALESCE(NULLIF(model, ''), 'unknown')`;
 // WHERE clause builder
 // ---------------------------------------------------------------------------
 
+/** Same definition of "error" as the stats query. */
+const ERROR_PREDICATE = "(error_message IS NOT NULL AND error_message <> '') OR stage = 'on_error'";
+
 interface WhereClauseResult {
   whereSQL: string;
   args: SQLQueryBindings[];
@@ -136,6 +141,7 @@ function buildWhereClause(query: {
   model?: string;
   provider?: string;
   since?: Date;
+  status?: "error" | "ok";
 }): WhereClauseResult {
   const clauses: string[] = [];
   const args: SQLQueryBindings[] = [];
@@ -155,6 +161,11 @@ function buildWhereClause(query: {
   if (query.since) {
     clauses.push("created_at >= ?");
     args.push(query.since.toISOString());
+  }
+  if (query.status === "error") {
+    clauses.push(`(${ERROR_PREDICATE})`);
+  } else if (query.status === "ok") {
+    clauses.push(`NOT (${ERROR_PREDICATE})`);
   }
 
   const whereSQL = clauses.length > 0 ? ` WHERE ${clauses.join(" AND ")}` : "";

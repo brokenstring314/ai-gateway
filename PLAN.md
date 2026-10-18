@@ -268,5 +268,5 @@ ai-gateway-rewrite/
 - ❌ Anthropic/Gemini/Bedrock/Cohere/Vertex AI 协议翻译
 - ❌ Native AOT / 单二进制编译
 - ❌ PostgreSQL 后端（先用内存/SQLite）
-- ❌ Dashboard UI
+- ❌ 完整 Dashboard UI（0.2.0 只有精简管理控制台：概览、密钥、日志、只读配置）
 - ❌ 性能压测优化

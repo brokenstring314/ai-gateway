@@ -114,47 +114,37 @@ describe("Wave 3 wiring (integration)", () => {
     expect(text).toContain("ai_gateway_tokens_input_total");
   });
 
-  it("dashboard requires admin auth", async () => {
-    const res = await app.request("/admin/dashboard");
-    expect(res.status).toBe(401);
-  });
-
-  it("dashboard renders with admin secret", async () => {
-    const res = await app.request("/admin/dashboard", {
-      headers: { "X-Admin-Secret": "test-admin-secret-1234" },
-    });
-    expect(res.status).toBe(200);
-    expect(res.headers.get("Content-Security-Policy")).toContain("script-src 'self'");
-    const html = await res.text();
-    expect(html).toContain("Gateway overview");
-    expect(html).not.toMatch(/<script(?![^>]*\bsrc=)[^>]*>/);
-    expect(html).not.toMatch(/\son\w+="/);
-  });
-
-  it("dashboard static CSS is served", async () => {
-    const res = await app.request("/admin/static/style.css", {
-      headers: { "X-Admin-Secret": "test-admin-secret-1234" },
-    });
-    expect(res.status).toBe(200);
-    expect(res.headers.get("Content-Type")).toContain("text/css");
-  });
-
-  it("dashboard static JS is served", async () => {
-    const res = await app.request("/admin/static/dashboard.js", {
-      headers: { "X-Admin-Secret": "test-admin-secret-1234" },
-    });
-    expect(res.status).toBe(200);
-    expect(res.headers.get("Content-Type")).toContain("javascript");
-  });
-
-  it("all 8 dashboard pages render", async () => {
-    const pages = ["", "/keys", "/logs", "/config", "/providers", "/analytics", "/playground", "/getting-started"];
-    for (const page of pages) {
-      const res = await app.request(`/admin/dashboard${page}`, {
-        headers: { "X-Admin-Secret": "test-admin-secret-1234" },
-      });
+  it("console shells are public, carry no data, and set the strict CSP", async () => {
+    for (const page of ["", "/keys", "/logs", "/config", "/login"]) {
+      const res = await app.request(`/admin/dashboard${page}`);
       expect(res.status).toBe(200);
+      expect(res.headers.get("Content-Security-Policy")).toContain("script-src 'self'");
+      const html = await res.text();
+      expect(html).not.toMatch(/<script(?![^>]*\bsrc=)[^>]*>/);
+      expect(html).not.toMatch(/\son\w+="/);
+      expect(html).not.toContain("sk-target");
     }
+  });
+
+  it("removed placeholder pages are gone", async () => {
+    for (const page of ["/providers", "/analytics", "/playground", "/getting-started"]) {
+      expect((await app.request(`/admin/dashboard${page}`)).status).not.toBe(200);
+    }
+  });
+
+  it("console data endpoint requires admin auth", async () => {
+    expect((await app.request("/admin/status")).status).toBe(401);
+    const res = await app.request("/admin/status", { headers: { "X-Admin-Secret": "test-admin-secret-1234" } });
+    expect(res.status).toBe(200);
+  });
+
+  it("console static assets are served", async () => {
+    const css = await app.request("/admin/static/console.css");
+    expect(css.status).toBe(200);
+    expect(css.headers.get("Content-Type")).toContain("text/css");
+    const js = await app.request("/admin/static/console.js");
+    expect(js.status).toBe(200);
+    expect(js.headers.get("Content-Type")).toContain("javascript");
   });
 
   it("admin keys API works end-to-end with SQLite store", async () => {
