@@ -56,6 +56,24 @@
     chat token usage is exported as `ai_gateway_tokens_{input,output}_total`;
   - `IDiscoveryProvider` (no implementation), and `scrubConfigJson` (only
     used by the removed config history).
+- **Provider presets are one table** (`src/core/provider-presets.ts`). The 22
+  `providers/definitions/*.ts` factories and their `createOpenAI()`,
+  `createMistral()`, … exports are removed; embedders use
+  `createProviderFromTarget(target, compatibility?)` or
+  `createOpenAICompatProvider()`. `cloudflare` and `databricks` have no
+  default `baseURL` any more (the old defaults were not usable URLs) and an
+  unknown provider without `baseURL` fails at startup with a clear message.
+  `openrouter` targets now send `HTTP-Referer`/`X-Title`; perplexity
+  `citations`/`search_results` are kept in response metadata. The pass-through
+  proxy now uses the preset base URL when a target has no `baseURL`.
+- **`compatibility.onUnsupportedParam` now works.** Capability checks are keyed
+  on `target.provider` instead of the target name (they never matched before),
+  the configured mode is passed to every provider (it was always `warn`), and
+  `drop` removes every unsupported field (snake/camel mismatch fixed). The
+  `developer` role check now runs. With `reject`, unsupported parameters give a
+  400 listing their wire names. (Closes T3-8, T3-9 header part.)
+- **`${VAR}` in `targets[].baseURL` is accepted by the schema** and validated as
+  an http(s) URL after expansion. (Closes C3-10.)
 
 ### Security
 

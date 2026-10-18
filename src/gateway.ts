@@ -24,7 +24,8 @@ import type {
   Usage,
 } from "./providers/types.js";
 import { ProviderRegistry } from "./providers/registry.js";
-import { createOpenAICompatProvider, ProviderError } from "./providers/openai-compat.js";
+import { ProviderError } from "./providers/openai-compat.js";
+import { createProviderFromTarget } from "./core/provider-presets.js";
 import type { IStrategy, StrategyMode } from "./routing/types.js";
 import { createStrategy } from "./routing/strategy-factory.js";
 import { resolveStrategyMode } from "./config/removed.js";
@@ -35,7 +36,6 @@ import { PluginRejectionError } from "./plugins/error.js";
 import type { IPlugin, Stage } from "./plugins/types.js";
 import { buildPluginsFromConfig } from "./plugins/builtins/from-config.js";
 import type { GatewayConfig, TargetConfig } from "./config/types.js";
-import { expandTargetEnvRefs } from "./config/envref.js";
 import { getMetrics } from "./metrics/metrics.js";
 import { getTracer } from "./observability/otel-tracer.js";
 import { getRequestLogger } from "./observability/request-log.js";
@@ -62,165 +62,6 @@ type McpServerRuntimeConfig = GatewayConfig["mcpServers"] extends readonly (infe
       timeoutSeconds?: number;
       required?: boolean;
     };
-
-// ── Provider factory registry ──
-
-/** Factory function that creates a provider from a TargetConfig. */
-type ProviderFactory = (target: TargetConfig) => IProvider;
-
-const PROVIDER_FACTORIES: Record<string, ProviderFactory> = {
-  openai: (t) => createOpenAICompatProvider({
-    name: t.name,
-    baseURL: t.baseURL ?? "https://api.openai.com/v1",
-    apiKey: t.apiKey,
-    models: t.models,
-  }),
-  deepseek: (t) => createOpenAICompatProvider({
-    name: t.name,
-    baseURL: t.baseURL ?? "https://api.deepseek.com/v1",
-    apiKey: t.apiKey,
-    models: t.models,
-  }),
-  groq: (t) => createOpenAICompatProvider({
-    name: t.name,
-    baseURL: t.baseURL ?? "https://api.groq.com/openai/v1",
-    apiKey: t.apiKey,
-    models: t.models,
-  }),
-  mistral: (t) => createOpenAICompatProvider({
-    name: t.name,
-    baseURL: t.baseURL ?? "https://api.mistral.ai/v1",
-    apiKey: t.apiKey,
-    models: t.models,
-  }),
-  xai: (t) => createOpenAICompatProvider({
-    name: t.name,
-    baseURL: t.baseURL ?? "https://api.x.ai/v1",
-    apiKey: t.apiKey,
-    models: t.models,
-  }),
-  qwen: (t) => createOpenAICompatProvider({
-    name: t.name,
-    baseURL: t.baseURL ?? "https://dashscope.aliyuncs.com/compatible-mode/v1",
-    apiKey: t.apiKey,
-    models: t.models,
-  }),
-  moonshot: (t) => createOpenAICompatProvider({
-    name: t.name,
-    baseURL: t.baseURL ?? "https://api.moonshot.cn/v1",
-    apiKey: t.apiKey,
-    models: t.models,
-  }),
-  together: (t) => createOpenAICompatProvider({
-    name: t.name,
-    baseURL: t.baseURL ?? "https://api.together.xyz/v1",
-    apiKey: t.apiKey,
-    models: t.models,
-  }),
-  fireworks: (t) => createOpenAICompatProvider({
-    name: t.name,
-    baseURL: t.baseURL ?? "https://api.fireworks.ai/inference/v1",
-    apiKey: t.apiKey,
-    models: t.models,
-  }),
-  deepinfra: (t) => createOpenAICompatProvider({
-    name: t.name,
-    baseURL: t.baseURL ?? "https://api.deepinfra.com/v1/openai",
-    apiKey: t.apiKey,
-    models: t.models,
-  }),
-  ai21: (t) => createOpenAICompatProvider({
-    name: t.name,
-    baseURL: t.baseURL ?? "https://api.ai21.com/studio/v1",
-    apiKey: t.apiKey,
-    models: t.models,
-  }),
-  cerebras: (t) => createOpenAICompatProvider({
-    name: t.name,
-    baseURL: t.baseURL ?? "https://api.cerebras.ai/v1",
-    apiKey: t.apiKey,
-    models: t.models,
-  }),
-  sambanova: (t) => createOpenAICompatProvider({
-    name: t.name,
-    baseURL: t.baseURL ?? "https://api.sambanova.ai/v1",
-    apiKey: t.apiKey,
-    models: t.models,
-  }),
-  novita: (t) => createOpenAICompatProvider({
-    name: t.name,
-    baseURL: t.baseURL ?? "https://api.novita.ai/v3/openai",
-    apiKey: t.apiKey,
-    models: t.models,
-  }),
-  nvidia_nim: (t) => createOpenAICompatProvider({
-    name: t.name,
-    baseURL: t.baseURL ?? "https://integrate.api.nvidia.com/v1",
-    apiKey: t.apiKey,
-    models: t.models,
-  }),
-  ollama: (t) => createOpenAICompatProvider({
-    name: t.name,
-    baseURL: t.baseURL ?? "http://localhost:11434/v1",
-    apiKey: t.apiKey || "ollama",
-    models: t.models,
-  }),
-  openrouter: (t) => createOpenAICompatProvider({
-    name: t.name,
-    baseURL: t.baseURL ?? "https://openrouter.ai/api/v1",
-    apiKey: t.apiKey,
-    models: t.models,
-  }),
-  perplexity: (t) => createOpenAICompatProvider({
-    name: t.name,
-    baseURL: t.baseURL ?? "https://api.perplexity.ai",
-    apiKey: t.apiKey,
-    models: t.models,
-  }),
-  replicate: (t) => createOpenAICompatProvider({
-    name: t.name,
-    baseURL: t.baseURL ?? "https://api.replicate.com/v1",
-    apiKey: t.apiKey,
-    models: t.models,
-  }),
-  cloudflare: (t) => createOpenAICompatProvider({
-    name: t.name,
-    baseURL: t.baseURL ?? "https://api.cloudflare.com/client/v4/accounts",
-    apiKey: t.apiKey,
-    models: t.models,
-  }),
-  databricks: (t) => createOpenAICompatProvider({
-    name: t.name,
-    baseURL: t.baseURL ?? "https://.databricks.com/serving-endpoints",
-    apiKey: t.apiKey,
-    models: t.models,
-  }),
-  huggingface: (t) => createOpenAICompatProvider({
-    name: t.name,
-    baseURL: t.baseURL ?? "https://api-inference.huggingface.co/v1",
-    apiKey: t.apiKey,
-    models: t.models,
-  }),
-};
-
-function createProviderFromTarget(rawTarget: TargetConfig): IProvider {
-  // Resolve ${VAR} references at construction time (config keeps templates).
-  const target = expandTargetEnvRefs(rawTarget);
-  const factory = PROVIDER_FACTORIES[target.provider];
-  if (!factory) {
-    // Fallback: treat as generic OpenAI-compatible with explicit baseURL
-    if (target.baseURL) {
-      return createOpenAICompatProvider({
-        name: target.name,
-        baseURL: target.baseURL,
-        apiKey: target.apiKey,
-        models: target.models,
-      });
-    }
-    throw new Error(`Unknown provider "${target.provider}" and no baseURL provided for target "${target.name}"`);
-  }
-  return factory(target);
-}
 
 // ── Config → Strategy config bridge ──
 
@@ -302,7 +143,7 @@ export class Gateway {
     this.concurrencyLimiters = new ConcurrencyLimiterRegistry();
 
     for (const target of config.targets) {
-      const provider = createProviderFromTarget(target);
+      const provider = createProviderFromTarget(target, config.compatibility?.onUnsupportedParam);
       this.registry.register(provider);
       if (target.circuitBreaker) {
         this.circuitBreakers.getOrCreate(target.name, target.circuitBreaker);

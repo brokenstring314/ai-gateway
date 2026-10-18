@@ -34,36 +34,6 @@ export const ProviderCapability = {
 
 export type ProviderCapability = (typeof ProviderCapability)[keyof typeof ProviderCapability];
 
-/** Human-readable name for each capability (used in warnings/errors). */
-const CAPABILITY_LABELS: Record<ProviderCapability, string> = {
-  temperature: "temperature",
-  top_p: "topP",
-  n: "n",
-  stream: "stream",
-  stop: "stop",
-  max_tokens: "maxTokens",
-  max_completion_tokens: "maxCompletionTokens",
-  presence_penalty: "presencePenalty",
-  frequency_penalty: "frequencyPenalty",
-  logit_bias: "logitBias",
-  user: "user",
-  seed: "seed",
-  tools: "tools",
-  tool_choice: "toolChoice",
-  response_format: "responseFormat",
-  logprobs: "logprobs",
-  top_logprobs: "topLogprobs",
-  stream_options: "streamOptions",
-  vision: "vision",
-  developer_role: "developerRole",
-};
-
-/** Reverse label → capability mapping for param names. */
-const LABEL_TO_CAPABILITY: Record<string, ProviderCapability> = {};
-for (const [cap, label] of Object.entries(CAPABILITY_LABELS)) {
-  LABEL_TO_CAPABILITY[label] = cap as ProviderCapability;
-}
-
 /**
  * The full set of capabilities — default capability set for a fully-featured
  * OpenAI-compatible provider.
@@ -204,145 +174,67 @@ export function enforceUnsupportedParams(
   providerName: string,
   request: ChatCompletionRequest,
   mode: CompatibilityConfig["onUnsupportedParam"],
+  /** Name used in messages (the target); defaults to providerName. */
+  displayName: string = providerName,
 ): CapabilityEnforcementResult {
   const capabilities = getCapabilities(providerName);
-  const unsupported: string[] = [];
+  // Unsupported request fields, by their ChatCompletionRequest (camelCase) key.
+  const unsupportedFields: Array<keyof ChatCompletionRequest> = [];
+  // Unsupported features inside messages (cannot be dropped field-wise).
+  const unsupportedFeatures: string[] = [];
 
   for (const [field, capability] of Object.entries(FIELD_TO_CAPABILITY)) {
     const key = field as keyof ChatCompletionRequest;
     const value = request[key];
     if (value === undefined || value === null) continue;
-
-    // Special case: tools is empty array — treat as absent.
+    // An empty tools array is treated as absent.
     if (key === "tools" && Array.isArray(value) && value.length === 0) continue;
-
-    // Special case: developer role check.
-    if (key === "messages") {
-      const msgs = request.messages;
-      if (msgs) {
-        const hasDeveloper = msgs.some((m) => m.role === "developer");
-        if (hasDeveloper && !capabilities.has(ProviderCapability.DeveloperRole)) {
-          unsupported.push("developer_role (message role)");
-        }
-      }
-      continue;
-    }
-
-    if (!capabilities.has(capability)) {
-      unsupported.push(LABEL_TO_CAPABILITY[field] ?? field);
-    }
+    if (!capabilities.has(capability)) unsupportedFields.push(key);
   }
 
-  // Check for vision content in messages.
-  if (!capabilities.has(ProviderCapability.Vision)) {
-    const hasVision = request.messages?.some(
-      (m) => Array.isArray(m.content) && m.content.some((p) => p.type === "image_url"),
-    );
-    if (hasVision) {
-      unsupported.push("vision");
-    }
+  const hasDeveloper = request.messages?.some((m) => m.role === "developer") ?? false;
+  if (hasDeveloper && !capabilities.has(ProviderCapability.DeveloperRole)) {
+    unsupportedFeatures.push("developer_role");
+  }
+  const hasVision =
+    request.messages?.some((m) => Array.isArray(m.content) && m.content.some((p) => p.type === "image_url")) ?? false;
+  if (hasVision && !capabilities.has(ProviderCapability.Vision)) {
+    unsupportedFeatures.push("vision");
   }
 
-  if (unsupported.length === 0) {
+  // Wire (snake_case) parameter names, as the client sent them.
+  const labels = [...unsupportedFields.map((f) => FIELD_TO_CAPABILITY[f as string] ?? String(f)), ...unsupportedFeatures];
+  if (labels.length === 0) {
     return { action: "ok", request };
   }
 
   switch (mode) {
     case "warn": {
-      console.warn(
-        `[${providerName}] unsupported params (passing through): ${unsupported.join(", ")}`,
-      );
+      console.warn(`[${displayName}] unsupported params (passing through): ${labels.join(", ")}`);
       return { action: "ok", request };
     }
     case "drop": {
-      const cleaned = dropUnsupportedFields(request, unsupported);
-      return { action: "dropped", request: cleaned, dropped: unsupported };
+      const cleaned: ChatCompletionRequest = { ...request };
+      for (const field of unsupportedFields) delete cleaned[field];
+      if (unsupportedFeatures.includes("developer_role")) {
+        // Closest equivalent for providers without the developer role.
+        cleaned.messages = cleaned.messages.map((m) => (m.role === "developer" ? { ...m, role: "system" } : m));
+      }
+      if (unsupportedFeatures.includes("vision")) {
+        // Image parts can't be dropped without changing the prompt's meaning.
+        console.warn(`[${displayName}] vision content is not supported (passing through)`);
+      }
+      return { action: "dropped", request: cleaned, dropped: labels };
     }
     case "reject": {
-      return {
-        action: "rejected",
-        reason: `${providerName} does not support: ${unsupported.join(", ")}`,
-      };
+      return { action: "rejected", reason: `${displayName} does not support: ${labels.join(", ")}` };
     }
     default: {
-      // Exhaustive check.
       const _exhaustive: never = mode;
       void _exhaustive;
       return { action: "ok", request };
     }
   }
-}
-
-/**
- * Return a copy of the request with unsupported fields removed/set to undefined.
- */
-function dropUnsupportedFields(
-  request: ChatCompletionRequest,
-  unsupported: string[],
-): ChatCompletionRequest {
-  const copy = { ...request };
-
-  for (const cap of unsupported) {
-    switch (cap) {
-      case "temperature":
-        delete copy.temperature;
-        break;
-      case "topP":
-        delete copy.topP;
-        break;
-      case "n":
-        delete copy.n;
-        break;
-      case "stream":
-        delete copy.stream;
-        break;
-      case "stop":
-        delete copy.stop;
-        break;
-      case "maxTokens":
-        delete copy.maxTokens;
-        break;
-      case "maxCompletionTokens":
-        delete copy.maxCompletionTokens;
-        break;
-      case "presencePenalty":
-        delete copy.presencePenalty;
-        break;
-      case "frequencyPenalty":
-        delete copy.frequencyPenalty;
-        break;
-      case "logitBias":
-        delete copy.logitBias;
-        break;
-      case "user":
-        delete copy.user;
-        break;
-      case "seed":
-        delete copy.seed;
-        break;
-      case "tools":
-        delete copy.tools;
-        break;
-      case "toolChoice":
-        delete copy.toolChoice;
-        break;
-      case "responseFormat":
-        delete copy.responseFormat;
-        break;
-      case "logprobs":
-        delete copy.logprobs;
-        break;
-      case "topLogprobs":
-        delete copy.topLogprobs;
-        break;
-      case "streamOptions":
-        delete copy.streamOptions;
-        break;
-      // vision and developer_role are not top-level fields; handled earlier.
-    }
-  }
-
-  return copy;
 }
 
 /** Check if a provider supports a specific capability. */

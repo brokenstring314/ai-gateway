@@ -50,26 +50,11 @@ export {
 } from "./capabilities.js";
 export type { CapabilityEnforcementResult } from "./capabilities.js";
 
-// Provider factories
-export { createOpenAI } from "./definitions/openai.js";
-export { createDeepSeek } from "./definitions/deepseek.js";
-export { createGroq } from "./definitions/groq.js";
-export { createMistral } from "./definitions/mistral.js";
-export { createXAI } from "./definitions/xai.js";
-export { createQwen } from "./definitions/qwen.js";
-export { createMoonshot } from "./definitions/moonshot.js";
-export { createTogether } from "./definitions/together.js";
-export { createFireworks } from "./definitions/fireworks.js";
-export { createDeepInfra } from "./definitions/deepinfra.js";
-export { createAI21 } from "./definitions/ai21.js";
-export { createCerebras } from "./definitions/cerebras.js";
-export { createSambanova } from "./definitions/sambanova.js";
-export { createNovita } from "./definitions/novita.js";
-export { createNvidiaNim } from "./definitions/nvidia-nim.js";
-export { createOllama } from "./definitions/ollama.js";
-export { createOpenRouter } from "./definitions/openrouter.js";
-export { createPerplexity } from "./definitions/perplexity.js";
-export { createReplicate } from "./definitions/replicate.js";
-export { createCloudflare } from "./definitions/cloudflare.js";
-export { createDatabricks } from "./definitions/databricks.js";
-export { createHuggingFace } from "./definitions/huggingface.js";
+// Provider presets (one table; replaces the per-provider definitions)
+export {
+  PROVIDER_PRESETS,
+  createProviderFromTarget,
+  getPreset,
+  presetId,
+} from "../core/provider-presets.js";
+export type { ProviderPreset } from "../core/provider-presets.js";
