@@ -113,6 +113,9 @@ server:
   idleTimeoutSeconds: 255   # Bun idle timeout; 0 = never, max/default 255
   sseHeartbeatSeconds: 5    # SSE ": ping" comment while a stream is idle; 0 = off
   streamIdleTimeoutSeconds: 120  # end a stream when upstream sends nothing this long; 0 = off
+  perIpRateLimit:           # per-client-IP token bucket on /v1/*; OFF unless rps > 0
+    rps: 50                 #   sustained requests/second per IP (env RATE_LIMIT_RPS overrides)
+    burst: 100              #   bucket size, default 2 × rps (env RATE_LIMIT_BURST overrides)
   streamMaxDurationSeconds: 0    # hard cap on one stream's duration; 0 = off (default)
 
 passthroughProxy:
@@ -233,6 +236,32 @@ AI_GATEWAY_MAX_REQUEST_BYTES=20971520
 ```
 
 String fields like `apiKey` and `adminSecret` are never auto-converted to numbers.
+
+### Operational Environment Variables
+
+These are read directly from the environment (not via `AI_GATEWAY_*`):
+
+| Variable | Default | Meaning |
+| --- | --- | --- |
+| `GATEWAY_DATA_DIR` | `.data` (relative to the working directory) | Where the SQLite databases live (see below). Put it on a persistent volume. |
+| `GATEWAY_ENV` | unset | `production` turns on the startup safety guard: refuses `auth.enabled: false`, `ALLOW_UNAUTHENTICATED_PROXY=true`, an `adminSecret` shorter than 16 chars, and starting with no client key at all (no `auth.keys` and an empty key store). |
+| `ADMIN_BOOTSTRAP_KEY` | unset | First-run admin credential; refused once a real admin credential exists (see [Key scopes](#key-scopes-key-store-mode)). |
+| `ADMIN_BOOTSTRAP_READ_ONLY_KEY` | unset | Same, with `read_only` scope. |
+| `ALLOW_UNAUTHENTICATED_PROXY` | `false` | `true` lets the opt-in pass-through proxy forward requests without a client key. Refused when `GATEWAY_ENV=production`. |
+| `RATE_LIMIT_RPS` | unset (limiter off) | Per-client-IP limit on `/v1/*`, requests/second. Overrides `server.perIpRateLimit.rps`. `0` disables. |
+| `RATE_LIMIT_BURST` | 2 × rps | Per-IP bucket size. Overrides `server.perIpRateLimit.burst`. |
+| `TRUSTED_PROXIES` | `127.0.0.1,::1` | Comma-separated IPs/CIDRs whose `X-Forwarded-For` / `X-Real-IP` are trusted for the per-IP limiter. Set it to your load balancer's range, otherwise every request behind it shares the LB's IP. |
+| `SHUTDOWN_GRACE_MS` | `10000` | How long SIGTERM/SIGINT waits for in-flight requests before closing. |
+| `OTEL_EXPORTER_OTLP_ENDPOINT` | unset | OTLP HTTP endpoint when `observability.tracing.otlpEndpoint` is not set. |
+| `OTEL_TRACES_SAMPLER` | unset | `always_on`, `always_off` or `traceidratio` (uses `sampleRatio`); other values are ignored. |
+
+**Per-IP rate limiting** is off by default. When the gateway is exposed directly, enable it with `server.perIpRateLimit` (or `RATE_LIMIT_RPS`); behind a load balancer, also set `TRUSTED_PROXIES`. Over-limit requests get `429` with `{"error": {"code": "rate_limited", ...}}` and a `Retry-After` header (seconds). Buckets are per process and idle ones are evicted.
+
+**Data directory (`GATEWAY_DATA_DIR`, default `./.data`)** contains:
+
+- `api-keys.sqlite` — the API key store: SHA-256 hashes of keys (never the keys themselves), display prefixes, names, scopes, expiry and usage counters. Losing it revokes every store key; anyone who can write to it can mint keys, so keep it private (`chmod 700` the directory).
+- `request-logs.sqlite` — request log for `/admin/logs`: trace id, model, provider, token counts and error messages (no prompts or completions). Error messages can quote upstream responses.
+- `gateway-config.sqlite` — only from versions before 0.2.0; ignored (a warning is printed) and safe to delete.
 
 ---
 

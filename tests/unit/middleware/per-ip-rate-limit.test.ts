@@ -177,15 +177,14 @@ describe("perIpRateLimitMiddleware", () => {
     expect((await app.request("/", { headers: { "x-client-ip": "10.0.0.1" } })).status).toBe(200);
   });
 
-  it("uses default rps 20 / burst 40 when no options are given", async () => {
+  it("is off by default (no rps configured)", async () => {
     const clock = makeClock();
     const limit = perIpRateLimitMiddleware({ nowMs: clock.nowMs });
     const app = createApp(limit);
 
-    for (let i = 0; i < 40; i++) {
+    for (let i = 0; i < 200; i++) {
       expect((await app.request("/")).status).toBe(200);
     }
-    expect((await app.request("/")).status).toBe(429);
-    expect(limit.size()).toBe(1);
+    expect(limit.size()).toBe(0);
   });
 });

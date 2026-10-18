@@ -142,6 +142,11 @@ export interface GatewayConfig {
     streamIdleTimeoutSeconds?: number;
     /** Hard cap on a streaming response's total duration in seconds (0 = off). Default 0. */
     streamMaxDurationSeconds?: number;
+    /**
+     * Per-client-IP token bucket on /v1/*. Off unless rps > 0. burst defaults
+     * to 2 × rps. RATE_LIMIT_RPS / RATE_LIMIT_BURST override these.
+     */
+    perIpRateLimit?: { rps?: number; burst?: number };
   };
   /**
    * Pass-through proxy for /v1/* routes without a dedicated handler
