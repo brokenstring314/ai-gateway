@@ -1001,11 +1001,11 @@ export class Gateway {
           breaker.release(permit);
           return err;
         }
-        breaker.recordFailure();
+        breaker.recordFailure(permit);
         return timeoutError(name);
       }
       if (isAbortError(err) || ctx.signal?.aborted) {
-        if (started) breaker.recordSuccess();
+        if (started) breaker.recordSuccess(permit);
         else breaker.release(permit);
         return err;
       }
@@ -1013,7 +1013,7 @@ export class Gateway {
         breaker.release(permit);
         return err;
       }
-      breaker.recordFailure();
+      breaker.recordFailure(permit);
       return err;
     };
 
@@ -1026,7 +1026,7 @@ export class Gateway {
         const entry = enter();
         try {
           const res = await provider.complete(ctx, req);
-          entry?.breaker.recordSuccess();
+          entry?.breaker.recordSuccess(entry.permit);
           return res;
         } catch (err) {
           throw fail(entry, ctx, err);
@@ -1059,7 +1059,7 @@ export class Gateway {
             yield chunk;
           }
           settled = true;
-          entry?.breaker.recordSuccess();
+          entry?.breaker.recordSuccess(entry.permit);
         } catch (err) {
           settled = true;
           throw fail(entry, ctx, err, started);
@@ -1067,7 +1067,7 @@ export class Gateway {
           if (!settled && entry) {
             // Consumer stopped early. With output, upstream was healthy;
             // without any, there is no signal: return the probe permit.
-            if (started) entry.breaker.recordSuccess();
+            if (started) entry.breaker.recordSuccess(entry.permit);
             else entry.breaker.release(entry.permit);
           }
         }
@@ -1078,7 +1078,7 @@ export class Gateway {
       const entry = enter();
       try {
         const res = await fn();
-        entry?.breaker.recordSuccess();
+        entry?.breaker.recordSuccess(entry.permit);
         return res;
       } catch (err) {
         throw fail(entry, ctx, err);

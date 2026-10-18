@@ -157,6 +157,13 @@
 
 ### Fixes
 
+- Circuit breaker settlement is permit-based: `recordSuccess(permit)` /
+  `recordFailure(permit)` only count while the breaker is still in the
+  generation the permit was issued in. Requests admitted before an outage can
+  no longer close a HALF_OPEN breaker without a probe, re-open it, or keep
+  pushing the OPEN window forward (C3-6). Calls without a permit keep the old
+  behavior.
+
 - **CORS preflight reflects the requested headers** (B3-8). It allowed only
   `Content-Type`, `Authorization` and `X-Request-Id`, so browser calls through
   the official openai SDK (`x-stainless-*`, `openai-organization`,

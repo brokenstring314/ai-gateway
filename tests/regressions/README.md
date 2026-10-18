@@ -15,7 +15,7 @@ fixed by 1.4 while this suite was being written).
 | sec/s3-6-passthrough-method-fallthrough | S3-6 | 2.8 |
 | core/limiter-queue-timeout-opens-breaker | C3-3 | 2.2 |
 | core/budget-race | C3-5 | 3.6 |
-| core/breaker-stale-outcome, core/breaker-fuzz (I3/I4) | C3-6 | 2.2 |
+| core/breaker-stale-outcome, core/breaker-fuzz (I3/I4) | C3-6 — fixed (permit-based settlement), now regression tests | 2.2 |
 | core/prev-scopes-and-logstore | round-2: initRequestLogger never called | 2.3 |
 | core/prev/mcp-loop | round-2: MCP depth error 500 (M2), MCP usage undercount (M3) | 2.7 |
 | stream/stream-lifecycle | T3-3, T3-4, T3-5 | 2.5 |
