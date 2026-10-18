@@ -354,6 +354,7 @@ describe("createOpenAICompatProvider", () => {
     it("sets stream: true in the request", async () => {
       mockFetchStream([
         'data: {"id":"chat-1","object":"chat.completion.chunk","created":1234,"model":"test-model","choices":[]}\n\n',
+        "data: [DONE]\n\n",
       ]);
 
       const p = makeProvider();
@@ -377,6 +378,7 @@ describe("createOpenAICompatProvider", () => {
     it("applies bodyTransform for streaming requests", async () => {
       mockFetchStream([
         'data: {"id":"chat-1","object":"chat.completion.chunk","created":1234,"model":"test-model","choices":[]}\n\n',
+        "data: [DONE]\n\n",
       ]);
 
       const p = createOpenAICompatProvider({

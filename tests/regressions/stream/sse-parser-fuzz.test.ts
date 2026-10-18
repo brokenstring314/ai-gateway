@@ -34,37 +34,48 @@ describe("sanity (PASS expected): random byte splits incl. multibyte UTF-8, CRLF
 });
 
 describe("T3-10 SSE parser robustness bugs", () => {
-  it.failing("CR-only line terminators (valid per WHATWG SSE) are parsed", async () => {
-    const out = await collect([enc.encode(ev("a", "\r") + ev("b", "\r"))]);
+  it("CR-only line terminators (valid per WHATWG SSE) are parsed", async () => {
+    const out = await collect([enc.encode(ev("a", "\r") + ev("b", "\r") + "data: [DONE]\r\r")]);
     expect(out).toEqual(["a", "b"]); // BUG: [] — whole stream silently dropped
   });
-  it.failing("a malformed JSON event surfaces an error instead of being silently skipped", async () => {
+  it("a malformed JSON event surfaces an error instead of being silently skipped", async () => {
     const raw = ev("a") + 'data: {"id":"c","choices":[{"index":0,"delta":{"content":"LOST\n\n' + ev("b");
     let err: unknown = null;
     const out: string[] = [];
     try { for await (const ch of parseSSEStream(bytesStream([enc.encode(raw)]))) out.push(ch.choices[0]?.delta?.content ?? ""); } catch (e) { err = e; }
     expect(err !== null || out.length === 3).toBe(true); // BUG: ["a","b"], content silently lost
   });
-  it.failing("choices:[null] (known) does not throw TypeError", async () => {
+  it("choices:[null] (known) does not throw TypeError", async () => {
     let err: unknown = null;
     try { await collect([enc.encode('data: {"id":"c","choices":[null]}\n\n')]); } catch (e) { err = e; }
     expect(err === null || (err as Error).name !== "TypeError").toBe(true);
   });
-  it.failing("event: error with a non-OpenAI error payload is not swallowed", async () => {
+  it("event: error with a non-OpenAI error payload is not swallowed", async () => {
     let err: unknown = null;
     try { await collect([enc.encode(ev("a") + 'event: error\ndata: {"type":"error","message":"overloaded"}\n\n')]); } catch (e) { err = e; }
     expect(err).not.toBeNull(); // BUG: dropped; stream ends "cleanly"
   });
-  it.failing("single huge line is O(n) — 8 MiB line in 1 KiB reads parses in < 1s (unbounded buffer + O(n^2) re-split)", async () => {
-    const payload = "x".repeat(8 * 1024 * 1024);
-    const buf = enc.encode(ev(payload));
+  // Fixed in 2.5: the scan is incremental (O(n)) and one line/event is capped
+  // at MAX_SSE_EVENT_CHARS (4 MiB), so an 8 MiB line is rejected quickly
+  // instead of blocking the event loop for seconds.
+  it("single huge line is O(n): a 3 MiB line in 1 KiB reads parses in < 1s", async () => {
+    const payload = "x".repeat(3 * 1024 * 1024);
+    const buf = enc.encode(ev(payload) + "data: [DONE]\n\n");
     const parts: Uint8Array[] = [];
     for (let i = 0; i < buf.length; i += 1024) parts.push(buf.slice(i, i + 1024));
     const t0 = performance.now();
     const out = await collect(parts);
     const ms = performance.now() - t0;
-    console.log(`8 MiB single-line event in 1 KiB reads: ${ms.toFixed(0)} ms`);
     expect(out[0]!.length).toBe(payload.length);
-    expect(ms).toBeLessThan(1000); // BUG: buffer.split("\n") over the whole growing buffer on every read
+    expect(ms).toBeLessThan(1000);
+  }, 120000);
+  it("an 8 MiB line (over the 4 MiB cap) is rejected with an error, fast", async () => {
+    const buf = enc.encode(ev("x".repeat(8 * 1024 * 1024)));
+    const parts: Uint8Array[] = [];
+    for (let i = 0; i < buf.length; i += 1024) parts.push(buf.slice(i, i + 1024));
+    const t0 = performance.now();
+    const err = await collect(parts).then(() => null, (e: unknown) => e);
+    expect((err as { code?: string })?.code).toBe("upstream_event_too_large");
+    expect(performance.now() - t0).toBeLessThan(1000);
   }, 120000);
 });

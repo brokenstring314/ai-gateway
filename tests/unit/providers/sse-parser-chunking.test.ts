@@ -9,21 +9,23 @@ function streamOf(parts: string[]): ReadableStream<Uint8Array> {
   const enc = new TextEncoder();
   return new ReadableStream({ start(c) { for (const p of parts) c.enqueue(enc.encode(p)); c.close(); } });
 }
-const ev = (content: string) => JSON.stringify({ id: "1", choices: [{ index: 0, delta: { content } }] });
+const ev = (content: string, finish?: string) => JSON.stringify({ id: "1", choices: [{ index: 0, delta: { content }, ...(finish ? { finish_reason: finish } : {}) }] });
+const DONE = "data: [DONE]\n\n";
 async function collect(s: ReadableStream<Uint8Array>) { const out: string[] = []; for await (const c of parseSSEStream(s)) out.push(c.choices[0]?.delta.content ?? ""); return out; }
 
 describe("parseSSEStream chunk boundaries", () => {
   it("keeps an event whose blank-line terminator arrives in the next read", async () => {
-    expect(await collect(streamOf([`data: ${ev("A")}\n`, `\ndata: ${ev("B")}\n\n`]))).toEqual(["A", "B"]);
+    expect(await collect(streamOf([`data: ${ev("A")}\n`, `\ndata: ${ev("B")}\n\n`, DONE]))).toEqual(["A", "B"]);
   });
 
   it("keeps multi-line data split across reads", async () => {
-    expect(await collect(streamOf([`data: {"id":"1",\n`, `data: "choices":[{"index":0,"delta":{"content":"M"}}]}\n`, `\n`]))).toEqual(["M"]);
+    expect(await collect(streamOf([`data: {"id":"1",\n`, `data: "choices":[{"index":0,"delta":{"content":"M"}}]}\n`, `\n`, DONE]))).toEqual(["M"]);
   });
 
   it("flushes the final event at EOF without a trailing blank line", async () => {
-    expect(await collect(streamOf([`data: ${ev("A")}\n\ndata: ${ev("B")}\n`]))).toEqual(["A", "B"]);
-    expect(await collect(streamOf([`data: ${ev("C")}`]))).toEqual(["C"]);
+    // The last event carries finish_reason, so EOF without [DONE] is a complete stream.
+    expect(await collect(streamOf([`data: ${ev("A")}\n\ndata: ${ev("B", "stop")}\n`]))).toEqual(["A", "B"]);
+    expect(await collect(streamOf([`data: ${ev("C", "stop")}`]))).toEqual(["C"]);
   });
 
   it("raises ProviderError on a mid-stream error event", async () => {

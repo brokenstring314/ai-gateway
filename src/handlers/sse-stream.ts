@@ -143,8 +143,9 @@ export function createSseStream<T>(opts: SseStreamOptions<T>): ReadableStream<Ui
           cleanup();
           const gatewayError = toGatewayError(err);
           logGatewayError(gatewayError, "stream");
+          // No [DONE] after an error: the client must be able to tell the
+          // answer is incomplete (truncated stream, broken event, …; T3-4).
           controller.enqueue(encoder.encode(errorToSseEvent(gatewayError)));
-          controller.enqueue(encoder.encode(DONE_MESSAGE));
           controller.close();
           return;
         } finally {

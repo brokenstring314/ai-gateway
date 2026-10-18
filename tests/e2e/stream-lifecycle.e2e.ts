@@ -32,7 +32,7 @@ describe("stream lifecycle", () => {
   });
 
   // T3-3 (open): the gateway waits for upstream EOF after [DONE] and forwards post-[DONE] data.
-  it.failing("[DONE] ends the client stream immediately", async () => {
+  it("[DONE] ends the client stream immediately", async () => {
     up.enqueue("done_then_garbage");
     const t0 = Date.now();
     const r = await postJson(gw, "/v1/chat/completions", body);
@@ -44,7 +44,7 @@ describe("stream lifecycle", () => {
   });
 
   // T3-4 (open): EOF without finish_reason/[DONE] is reported as a clean completion.
-  it.failing("truncated upstream stream ends with an error event, not [DONE]", async () => {
+  it("truncated upstream stream ends with an error event, not [DONE]", async () => {
     up.enqueue("truncated");
     const r = await postJson(gw, "/v1/chat/completions", body);
     const { text } = await readFor(r, 3000);
@@ -78,7 +78,7 @@ describe("stream lifecycle", () => {
   }, 10000);
 
   // T3-5 (open): a non-SSE 200 on a stream request becomes an empty successful stream.
-  it.failing("200 application/json on a stream request is not turned into an empty stream", async () => {
+  it("200 application/json on a stream request is not turned into an empty stream", async () => {
     up.enqueue("json_on_stream");
     const r = await postJson(gw, "/v1/chat/completions", body);
     const text = await r.text();

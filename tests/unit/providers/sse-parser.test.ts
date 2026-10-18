@@ -2,11 +2,14 @@
  * Unit tests for the SSE stream parser.
  */
 import { describe, it, expect } from "bun:test";
-import { parseSSEStream } from "@/providers/sse-parser";
+import { parseSSEStream, ReadableStreamError } from "@/providers/sse-parser";
 import type { StreamChunk } from "@/providers/types";
 
 /** Helper: create a ReadableStream from a string and collect all parsed chunks. */
-async function collectStreamChunks(input: string, signal?: AbortSignal): Promise<StreamChunk[]> {
+async function collectStreamChunks(input: string, signal?: AbortSignal, terminate = true): Promise<StreamChunk[]> {
+  // A well-formed stream ends with [DONE] (EOF without it and without any
+  // finish_reason is a truncated stream, see "truncation" below).
+  if (terminate) input += "data: [DONE]\n\n";
   const encoder = new TextEncoder();
   const stream = new ReadableStream<Uint8Array>({
     start(controller) {
@@ -27,6 +30,7 @@ async function collectFromChunks(
   chunks: string[],
   signal?: AbortSignal,
 ): Promise<StreamChunk[]> {
+  chunks = [...chunks, "data: [DONE]\n\n"];
   const encoder = new TextEncoder();
   let closed = false;
   const stream = new ReadableStream<Uint8Array>({
@@ -130,7 +134,7 @@ describe("parseSSEStream", () => {
       'data: {"id":"chat-1","object":"chat.completion.chunk","created":1234,"model":"gpt-4","choices":[{"index":0,"delta":{"content":"',
     );
     const suffix = encoder.encode(
-      '"},"finish_reason":null}]}\n\n',
+      '"},"finish_reason":"stop"}]}\n\n',
     );
 
     // Split the 4-byte character between two chunks.
@@ -198,21 +202,17 @@ describe("parseSSEStream", () => {
     expect(chunks[0]!.usage!.completionTokens).toBe(5);
   });
 
-  it("gracefully handles malformed JSON", async () => {
+  it("a malformed JSON event is a stream error, not silently skipped (T3-10)", async () => {
     const input = [
       'data: {"id":"chat-1","object":"chat.completion.chunk","created":1234,"model":"gpt-4","choices":[{"index":0,"delta":{"content":"ok"},"finish_reason":null}]}\n',
       "\n",
       "data: {not valid json}\n",
       "\n",
-      'data: {"id":"chat-2","object":"chat.completion.chunk","created":1234,"model":"gpt-4","choices":[{"index":0,"delta":{"content":"still works"},"finish_reason":"stop"}]}\n',
-      "\n",
     ].join("");
 
-    const chunks = await collectStreamChunks(input);
-    // First and third events should parse, second (malformed) is skipped.
-    expect(chunks).toHaveLength(2);
-    expect(chunks[0]!.choices[0]?.delta?.content).toBe("ok");
-    expect(chunks[1]!.choices[0]?.delta?.content).toBe("still works");
+    const err = await collectStreamChunks(input).then(() => null, (e: unknown) => e);
+    expect(err).toBeInstanceOf(ReadableStreamError);
+    expect((err as ReadableStreamError).code).toBe("upstream_invalid_response");
   });
 
   it("handles the legacy completions delta format (no role)", async () => {
@@ -240,8 +240,8 @@ describe("parseSSEStream", () => {
     expect(toolCalls![0]!.function.arguments).toBe('{"city":"NYC"}');
   });
 
-  it("passes through an empty stream without error", async () => {
-    const chunks = await collectStreamChunks("");
-    expect(chunks).toHaveLength(0);
+  it("an empty stream (EOF, no events) is an error (T3-5)", async () => {
+    const err = await collectStreamChunks("", undefined, false).then(() => null, (e: unknown) => e);
+    expect((err as ReadableStreamError).code).toBe("upstream_empty_stream");
   });
 });
