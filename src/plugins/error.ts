@@ -11,6 +11,8 @@ export class PluginRejectionError extends Error {
     public readonly status: number = DEFAULT_PLUGIN_REJECTION_STATUS,
     /** Seconds the client should wait before retrying (Retry-After), when known. */
     public readonly retryAfterSeconds?: number,
+    /** OpenAI-shaped error `code` / `type` to answer with (default plugin_rejected / plugin_rejection). */
+    public readonly details: { readonly code?: string; readonly type?: string } = {},
   ) {
     super(`Plugin rejected at ${stage}: ${reason}`);
     this.name = "PluginRejectionError";

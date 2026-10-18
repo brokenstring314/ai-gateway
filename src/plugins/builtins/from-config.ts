@@ -13,6 +13,7 @@ import { CachePlugin } from "./cache.js";
 import { MaxTokenPlugin } from "./max-token.js";
 import { RateLimitPlugin } from "./rate-limit.js";
 import { WordFilterPlugin } from "./word-filter.js";
+import { PiiSecretGuardPlugin, resolveGuardConfig } from "./pii-secret-guard/index.js";
 
 export interface PluginRegistration {
   readonly stage: Stage;
@@ -118,6 +119,15 @@ export function buildPluginsFromConfig(
         }
         const mode = raw["mode"] === "redact" ? "redact" : "reject";
         out.push({ stage: "before_request", plugin: new WordFilterPlugin({ blocklist, mode }) });
+        break;
+      }
+      case "pii-secret-guard": {
+        // Invalid config throws (validate / startup report it first, see config/validate.ts).
+        const cfg = resolveGuardConfig(entry.config ?? {});
+        if (cfg.scanRequest)
+          out.push({ stage: "before_request", plugin: new PiiSecretGuardPlugin(cfg, "before_request") });
+        if (cfg.scanResponse)
+          out.push({ stage: "after_request", plugin: new PiiSecretGuardPlugin(cfg, "after_request") });
         break;
       }
       case "max-token": {

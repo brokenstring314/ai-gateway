@@ -238,6 +238,28 @@
 - `GET /admin/status`: caller scopes, circuit breakers, `upstreamAvailable`,
   MCP states and an in-process request summary (`Metrics.requestSummary()`).
 - `GET /admin/logs` and `/admin/logs/stats` accept `status=error|ok`.
+- **`pii-secret-guard` plugin** (guardrail): detects secrets (`sk-` /
+  `sk-ant-` keys incl. DeepSeek-style, AWS access/secret keys, GitHub, Slack,
+  Google, Stripe, JWT, PEM private keys, high-entropy `api_key=` /
+  `password=` assignments) and PII (email, phone incl. CN mobile and E.164,
+  CN ID with check digit, credit card with Luhn, IBAN, US SSN, opt-in IPv4)
+  in chat, completions, embeddings and pass-through requests (content
+  strings, content parts, tool-call arguments; NFKC + zero-width stripped).
+  Per default / category / entity action: `block` (400 `secret_detected` /
+  `pii_detected`, value never echoed), `redact` (typed placeholders such as
+  `[EMAIL]`, `[SECRET:github_token]`; blocked on pass-through) or `log`.
+  Allowlist, custom patterns, surfaces, roles, optional non-streaming
+  response scanning (422; streaming responses are not scanned). Request log
+  `guardrail` records carry entity types only; new metric
+  `guardrail_detections_total`; response blocks count in
+  `plugin_blocked_total{outcome="response_rejected"}`. Strict config schema
+  checked by `validate`. Design adapted from ferro-labs/ai-gateway
+  `pii-redact` / `secret-scan` (Apache-2.0).
+- Plugin rejections can carry their own OpenAI error `code` / `type`
+  (`PluginResult` reject `code` / `type`, `PluginRejectionError.details`);
+  the default stays `plugin_rejected` / `plugin_rejection`.
+- Plugin metadata `_surfaceName` (chat, completions, embeddings, images,
+  passthrough) and `_streaming` are set for every request.
 
 - `Gateway.execute(surface, req, ctx)` and `Gateway.executeStream(surface,
   req, ctx)` run any surface (`core/surfaces/*`) through the pipeline.

@@ -23,6 +23,7 @@ import { getRequestLogger, type RequestLogEntry } from "../observability/request
 import { createPluginContext, settlePluginContext, type InternalPluginContext } from "../plugins/context.js";
 import { PluginRejectionError } from "../plugins/error.js";
 import type { PluginManager } from "../plugins/manager.js";
+import { GUARDRAIL_METADATA_KEY, type GuardrailRecord } from "../plugins/builtins/pii-secret-guard/plugin.js";
 import type { ChatCompletionRequest, IProvider, RequestContext, StreamChunk, Usage } from "../providers/types.js";
 import { CircuitOpenError } from "../routing/circuit-breaker.js";
 import { ConcurrencyLimitError } from "../routing/concurrency-limiter.js";
@@ -124,6 +125,10 @@ export class Pipeline {
     const resolved = surface.withModel(req, this.deps.aliases[requestedModel] ?? requestedModel);
     const pluginCtx = createPluginContext(surface.toPluginView(resolved), ctx);
     if (surface.pluginSurfaceTag) pluginCtx.metadata["_surface"] = surface.pluginSurfaceTag;
+    // Which surface (chat, completions, embeddings, images, passthrough) and
+    // whether it streams, for plugins that scope themselves (pii-secret-guard).
+    pluginCtx.metadata["_surfaceName"] = surface.name;
+    if (surface.logLabel.endsWith("_stream")) pluginCtx.metadata["_streaming"] = true;
     const span = getTracer().startSpan(SPAN_NAMES[surface.logLabel] ?? `gateway.${surface.logLabel}`, {
       "request.model": requestedModel,
     });
@@ -303,6 +308,9 @@ export class Pipeline {
     if (usage)
       entry.tokens = { prompt: usage.promptTokens, completion: usage.completionTokens, total: usage.totalTokens };
     if (usageEstimated) entry.usageEstimated = true;
+    // Guardrail detections: plugin, direction, action and entity TYPES only (never values).
+    const guardrail = pc.metadata[GUARDRAIL_METADATA_KEY];
+    if (Array.isArray(guardrail) && guardrail.length > 0) entry.guardrail = guardrail as GuardrailRecord[];
     if (outcome.kind === "rejected" || outcome.kind === "short_circuit") {
       const rejection =
         outcome.kind === "rejected" && outcome.error instanceof PluginRejectionError ? outcome.error : undefined;
@@ -314,6 +322,11 @@ export class Pipeline {
     } else if (error !== undefined) {
       entry.error = messageOf(error);
       entry.status = toGatewayError(error).status;
+      // An after-request plugin rejected the response (pii-secret-guard response scanning).
+      if (pluginError instanceof PluginRejectionError && pluginError.plugin) {
+        entry.plugin = pluginError.plugin;
+        getMetrics().recordPluginBlocked(pluginError.plugin, "response_rejected", surface.logLabel);
+      }
     } else {
       entry.status = 200;
     }

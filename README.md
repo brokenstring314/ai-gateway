@@ -2,7 +2,7 @@
 
 A high-performance OpenAI-compatible API gateway built with TypeScript, Bun, and Hono.
 
-Route requests across 20+ LLM providers through a single unified endpoint, with 4 routing strategies, 5 built-in plugins, circuit breakers, retry with backoff, MCP agentic tool calling, and full observability.
+Route requests across 20+ LLM providers through a single unified endpoint, with 4 routing strategies, 6 built-in plugins (incl. a PII & secret guardrail), circuit breakers, retry with backoff, MCP agentic tool calling, and full observability.
 
 ---
 
@@ -642,6 +642,7 @@ URLs never appear in the body; the failing target is in the
 | Invalid JSON / validation | 400 | `invalid_json` / `validation_failed` |
 | Model not served by any target | 404 | `model_not_found` |
 | Plugin rejection (word-filter, …) | 403 | `plugin_rejected` |
+| `pii-secret-guard` block (request / response) | 400 / 422 | `secret_detected` / `pii_detected` |
 | `rate-limit` / `budget` plugin rejection | 429 + `Retry-After` (rate-limit) | `plugin_rejected` |
 | Upstream 4xx (400, 404, 413, 422, …) | same status | upstream `code`; upstream `message`/`type`/`param` kept |
 | Upstream 429 | 429 + upstream `Retry-After` | upstream `code` (default `rate_limit_exceeded`) |
@@ -881,6 +882,49 @@ plugins:
 ```
 
 Matching is case-insensitive on Unicode NFKC-normalized text, so compatibility look-alikes (Kelvin sign `K`, fullwidth `ｋｉｌｌ`, long `ſ`) are caught. In `mode: redact` the matched words become `***` (the affected text is forwarded in NFKC form); if a word is detected but cannot be redacted, the request is rejected. It is a coarse substring filter: zero-width characters and homoglyphs from other scripts still bypass it.
+
+#### PII & Secret Guard
+
+Guardrail that detects personal data and credentials and **blocks**, **redacts** or **logs** them.
+
+```yaml
+plugins:
+  - name: pii-secret-guard
+    stage: before_request
+    type: guardrail
+    config:
+      action: block                 # default for every detection: block | redact | log (default: block)
+      categories:                   # optional, overrides `action` per category
+        secret: block
+        pii: redact
+      entityActions:                # optional, overrides category/default; naming an entity also enables it
+        ipv4: log
+        phone: log
+      # entities: [email, phone, credit_card]   # optional: scan only these built-ins (default: all except ipv4)
+      allowlist: ["@example\\.com$"] # regexes tested against each matched VALUE; a match is ignored
+      patterns:                     # optional operator-defined detectors
+        - { name: employee_id, pattern: "EMP-\\d{6}", category: pii, action: redact }
+      surfaces: [chat, completions, embeddings, passthrough]   # default: all four
+      roles: [system, user, assistant, tool, developer]        # default: all
+      direction: request            # request (default) | response | both
+      scanToolArguments: true       # scan assistant tool-call arguments (default: true)
+      entropyThreshold: 3.5         # bits/char for generic `api_key=` / `password=` values (default: 3.5)
+```
+
+| Category | Entities |
+| --- | --- |
+| `secret` | `private_key` (PEM blocks), `anthropic_key` (`sk-ant-…`), `openai_key` (`sk-…`, also DeepSeek and other OpenAI-compatible keys), `aws_access_key` (`AKIA`/`ASIA`), `aws_secret_key` (in an `aws…secret… =` assignment), `github_token` (`ghp_`/`gho_`/`ghu_`/`ghs_`/`ghr_`/`github_pat_`), `slack_token` (`xox*-`, `xapp-`), `google_api_key` (`AIza…`), `stripe_key` (`sk_/rk_` `live/test`), `jwt`, `generic_secret` (`api_key=` / `password:` / `client_secret=` … with a value above `entropyThreshold`) |
+| `pii` | `email`, `phone` (CN mobile `1[3-9]x` with optional `+86`, E.164, formatted international, US), `cn_id` (18-digit PRC ID, GB 11643 check digit + valid date), `credit_card` (Luhn + issuer prefix), `iban` (mod-97), `ssn` (US, `123-45-6789` form), `ipv4` (opt-in) |
+
+- **What is scanned:** every message whose role is in `roles` — string content, every text content part and, unless `scanToolArguments: false`, assistant tool-call arguments. `/v1/completions` `prompt` and `/v1/embeddings` `input` are scanned as user messages; pass-through routes scan the text the proxy extracts (`messages` / `input` / `prompt` / `instructions`). Text is compared in Unicode NFKC form (like word-filter) with zero-width and bidi-control characters removed, so fullwidth digits and `s\u200Bk-…` are caught. Validators (Luhn, ID check digit, IBAN mod-97, JWT header, entropy) cut false positives; when two findings overlap the more specific one wins (`api_key=sk-…` is an `openai_key`).
+- **block** answers `400` with `code: "secret_detected"` or `"pii_detected"` (`type: "invalid_request_error"`); the message names entity types only and never echoes the value. Any block in a request wins over redact/log.
+- **redact** replaces the value with a typed placeholder — `[EMAIL]`, `[PHONE]`, `[CN_ID]`, `[CREDIT_CARD]`, `[SECRET:github_token]`, `[CUSTOM:employee_id]` — and forwards the text in NFKC form. Tool-call arguments stay valid JSON (if a redaction would break them the request is blocked). Pass-through routes cannot forward a rewritten body, so there a redact detection is **blocked** instead.
+- **log** forwards the request unchanged and records the detection.
+- **Responses** (`direction: response | both`): non-streaming chat and completions responses are scanned (message content and tool-call arguments); block answers `422` with the same codes, redact rewrites the response the client receives. **Streaming responses are not scanned**: a block decided after chunks reached the client cannot be undone, and safe chunk-boundary scanning would mean holding back output. Request scanning applies to streaming requests as usual. List this plugin before `cache` so a redacted response is what gets cached.
+- **Observability:** the request log gets `guardrail: [{plugin, direction, action, entities}]` (entity types only, never matched text); `ai_gateway_guardrail_detections_total{entity,category,action,direction}` counts detections; blocks increment `ai_gateway_plugin_blocked_total` (`outcome="plugin_rejected"` for requests, `"response_rejected"` for responses).
+- The config has a strict schema: unknown keys, entities, actions, surfaces, roles or invalid regexes fail `ai-gateway validate` and startup.
+
+Design adapted from ferro-labs/ai-gateway's `pii-redact` and `secret-scan` plugins (Apache-2.0); see NOTICE.
 
 #### Max Token
 
@@ -1304,7 +1348,7 @@ src/
 │   ├── manager.ts             # Plugin execution with fail-open/closed
 │   ├── context.ts             # PluginContext
 │   ├── error.ts               # PluginRejectionError
-│   └── builtins/              # 5 built-in plugins
+│   └── builtins/              # 6 built-in plugins
 │       ├── rate-limit.ts
 │       ├── cache.ts
 │       ├── word-filter.ts

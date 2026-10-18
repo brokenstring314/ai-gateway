@@ -154,8 +154,8 @@ export function toGatewayError(err: unknown, opts: ToGatewayErrorOptions = {}): 
     return new GatewayError("plugin_rejected", {
       status: inner.status,
       message: inner.reason,
-      type: "plugin_rejection",
-      code: "plugin_rejected",
+      type: inner.details.type ?? "plugin_rejection",
+      code: inner.details.code ?? "plugin_rejected",
       retryAfter: inner.retryAfterSeconds !== undefined ? String(inner.retryAfterSeconds) : undefined,
       cause: inner,
     });

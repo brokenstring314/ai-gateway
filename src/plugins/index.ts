@@ -8,6 +8,7 @@ export {
   WordFilterPlugin,
   MaxTokenPlugin,
   BudgetPlugin,
+  PiiSecretGuardPlugin,
   createBuiltinPlugin,
   buildPluginsFromConfig,
 } from "./builtins/index.js";
@@ -17,6 +18,7 @@ export type {
   WordFilterConfig,
   MaxTokenConfig,
   BudgetConfig,
+  PiiSecretGuardInput,
   BuiltinPluginName,
   BuiltinPluginConfig,
 } from "./builtins/index.js";

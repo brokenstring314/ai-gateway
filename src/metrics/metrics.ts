@@ -117,6 +117,7 @@ export class Metrics {
   private readonly rateLimitRejections: Counter<string>;
   private readonly requestCostUsd: Counter<string>;
   private readonly pluginBlocked: Counter<string>;
+  private readonly guardrailDetections: Counter<string>;
 
   /** Active circuit breaker state per provider, used to zero stale states. */
   private readonly breakerStates = new Map<string, string>();
@@ -195,6 +196,13 @@ export class Metrics {
       registers: [this.registry],
     });
 
+    this.guardrailDetections = new Counter({
+      name: `${prefix}_guardrail_detections_total`,
+      help: "PII / secret detections by guardrail plugins, by entity type (values are never recorded)",
+      labelNames: ["entity", "category", "action", "direction"],
+      registers: [this.registry],
+    });
+
     if (options.enableDefaultMetrics) {
       collectDefaultMetrics({ register: this.registry, prefix });
     }
@@ -264,6 +272,16 @@ export class Metrics {
       plugin: sanitizeLabel(plugin),
       outcome: sanitizeLabel(outcome),
       surface: sanitizeLabel(surface),
+    });
+  }
+
+  /** Record one guardrail detection (entity type only; never the matched value). */
+  recordGuardrailDetection(entity: string, category: string, action: string, direction: string): void {
+    this.guardrailDetections.inc({
+      entity: sanitizeLabel(entity),
+      category: sanitizeLabel(category),
+      action: sanitizeLabel(action),
+      direction: sanitizeLabel(direction),
     });
   }
 

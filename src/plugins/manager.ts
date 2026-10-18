@@ -48,6 +48,7 @@ export class PluginManager implements IPluginManager {
           plugin.name,
           result.status,
           result.retryAfterSeconds,
+          { code: result.code, type: result.type },
         );
       }
 

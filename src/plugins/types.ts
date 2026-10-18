@@ -32,9 +32,11 @@ export type PluginResult =
   /**
    * Block the request. `status` is the HTTP status answered (default 403;
    * the rate-limit and budget plugins use 429); `retryAfterSeconds` becomes
-   * the Retry-After header.
+   * the Retry-After header; `code` / `type` override the OpenAI-shaped
+   * error's default `plugin_rejected` / `plugin_rejection` (guardrails use
+   * e.g. `pii_detected` / `invalid_request_error`).
    */
-  | { action: "reject"; reason: string; status?: number; retryAfterSeconds?: number }
+  | { action: "reject"; reason: string; status?: number; retryAfterSeconds?: number; code?: string; type?: string }
   | { action: "modify"; request?: ChatCompletionRequest; response?: ChatCompletionResponse };
 
 export interface IPluginManager {

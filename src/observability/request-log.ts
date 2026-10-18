@@ -28,6 +28,13 @@ export interface RequestLogEntry {
   surface?: string;
   /** Set when a before-request plugin ended the request without an upstream call. */
   outcome?: "plugin_rejected" | "plugin_short_circuit";
+  /** Guardrail detections (pii-secret-guard): entity TYPES and the action taken, never matched text. */
+  guardrail?: {
+    plugin: string;
+    direction: "request" | "response";
+    action: "blocked" | "redacted" | "logged";
+    entities: readonly string[];
+  }[];
 }
 
 export interface RequestLogConfig {
