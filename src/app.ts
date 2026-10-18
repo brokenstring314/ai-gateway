@@ -23,6 +23,7 @@ import { getNormalizedPath } from "./server/route-path.js";
 import { PluginRejectionError } from "./plugins/error.js";
 import { isClientAuthEnabled } from "./config/production-safety.js";
 import { adminAuthMiddleware } from "./middleware/auth.js";
+import { createBootstrapGate, type BootstrapGate } from "./auth/bootstrap.js";
 import type { KeyStore } from "./persistence/key-store.js";
 import { perIpRateLimitMiddleware } from "./middleware/per-ip-rate-limit.js";
 import { parseTrustedProxies, resolveClientIp } from "./middleware/trusted-proxy.js";
@@ -68,6 +69,16 @@ export function createApp(
   options?: Omit<CreateAppOptions, "keyStore">,
 ): AppType {
   const app: AppType = new Hono<AppEnv>({ getPath: getNormalizedPath });
+
+  // One gate for every route: bootstrap keys stop working as soon as a real
+  // admin credential exists (store admin key, adminSecret or auth.keys).
+  const bootstrap: BootstrapGate = options?.bootstrap ?? createBootstrapGate({
+    bootstrapKey: options?.bootstrapKey,
+    bootstrapReadOnlyKey: options?.bootstrapReadOnlyKey,
+    keyStore,
+    adminSecret: () => options?.adminSecret ?? config.adminSecret,
+    configKeys: () => config.auth?.keys,
+  });
 
   // ── Middleware (order matters) ──
   app.use("*", recoverMiddleware());
@@ -125,6 +136,7 @@ export function createApp(
       keyStore,
       bootstrapKey: options?.bootstrapKey,
       bootstrapReadOnlyKey: options?.bootstrapReadOnlyKey,
+      bootstrap,
       skipPaths: ["/health", "/metrics", "/livez", "/readyz"],
       configKeys: () => config.auth?.keys,
     }));
@@ -217,6 +229,7 @@ export function createApp(
     adminSecret: options?.adminSecret,
     bootstrapKey: options?.bootstrapKey,
     bootstrapReadOnlyKey: options?.bootstrapReadOnlyKey,
+    bootstrap,
   });
   app.route("/admin", adminApp);
 
@@ -227,6 +240,7 @@ export function createApp(
       adminSecret: options?.adminSecret ?? config.adminSecret,
       bootstrapKey: options?.bootstrapKey,
       bootstrapReadOnlyKey: options?.bootstrapReadOnlyKey,
+      bootstrap,
     });
     app.use("/admin/dashboard", dashboardAuth);
     app.use("/admin/dashboard/*", dashboardAuth);

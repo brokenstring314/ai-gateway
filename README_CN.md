@@ -473,7 +473,13 @@ curl -X POST \
 
 未提供 `scopes`（或为 `[]`）创建的密钥默认为 `["inference"]`；管理员权限必须显式指定 `"scopes": ["admin"]`。其他取值（非数组、非字符串元素、未知名称）在创建和更新时均返回 400。旧版本中未指定作用域创建的密钥存储为 `["admin"]`，请用 `GET /admin/keys` 检查，并用 `PUT /admin/keys/:id {"scopes": ["inference"]}` 降级。
 
-`ADMIN_BOOTSTRAP_KEY` / `ADMIN_BOOTSTRAP_READ_ONLY_KEY` 仅在密钥库为空时有效（`auth.keys` 不计入），因此在创建第一个密钥之前一直有效；在此期间启动时会打印警告。
+`ADMIN_BOOTSTRAP_KEY` / `ADMIN_BOOTSTRAP_READ_ONLY_KEY` 只用于首次启动。只有在**还没有任何真正的管理员凭据**时才接受（分别授予 `admin` / `read_only` 权限），只要满足以下任一条件就会被拒绝：
+
+- 密钥库中存在可用的 admin 密钥（active、未吊销、未过期），例如执行过 `POST /admin/keys {"name": "ops", "scopes": ["admin"]}`；
+- 配置了 `adminSecret`；
+- 配置了 `auth.keys`。
+
+只有 inference 或 `read_only` 权限的密钥不会让它们失效（否则先创建客户端密钥会把你锁在管理 API 之外）。每个请求都会重新检查，因此创建第一个 admin 密钥后 bootstrap 密钥立即失效。bootstrap 密钥有效期间启动时会打印警告；被拒绝时（启动时或运行中）会记录日志 `[auth] ADMIN_BOOTSTRAP_KEY / ADMIN_BOOTSTRAP_READ_ONLY_KEY disabled: <原因>`。拿到管理员凭据后请把这两个变量从环境中删除。没有密钥库时（嵌入式 `createApp(gateway, config)`）它们永远不被接受。
 
 ### 响应头
 

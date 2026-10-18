@@ -105,18 +105,19 @@ describe("ai-gateway serve CLI uses the main bootstrap", () => {
 });
 
 describe("clientCredentialWarning", () => {
-  const empty = { isEmpty: () => true };
-  const full = { isEmpty: () => false };
+  const empty = { isEmpty: () => true, hasActiveAdminKey: () => false };
+  const full = { isEmpty: () => false, hasActiveAdminKey: () => true };
   it("warns when auth is on and nothing can authenticate", () => {
     expect(clientCredentialWarning(cfg(), empty, undefined)).toContain("no client keys");
   });
-  it("warns that the bootstrap admin key stays live while the store is empty, even with auth.keys", () => {
-    const w = clientCredentialWarning(cfg({ auth: { keys: ["k"] } }), empty, "boot");
+  it("warns that the bootstrap admin key is live while no admin credential exists", () => {
+    const w = clientCredentialWarning(cfg(), empty, "boot");
     expect(w).toContain("ADMIN_BOOTSTRAP_KEY");
   });
-  it("silent once the store has keys, or auth is off", () => {
+  it("silent once an admin credential exists, or auth is off with nothing to warn about", () => {
     expect(clientCredentialWarning(cfg(), full, "boot")).toBeUndefined();
-    expect(clientCredentialWarning(cfg({ auth: { enabled: false } }), empty, "boot")).toBeUndefined();
+    expect(clientCredentialWarning(cfg({ auth: { keys: ["k"] } }), empty, "boot")).toBeUndefined();
+    expect(clientCredentialWarning(cfg({ auth: { enabled: false } }), empty, undefined)).toBeUndefined();
     expect(clientCredentialWarning(cfg({ auth: { keys: ["k"] } }), empty, undefined)).toBeUndefined();
   });
 });

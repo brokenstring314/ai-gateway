@@ -491,7 +491,13 @@ When the server runs with the API key store (`ai-gateway serve` / `bun src/index
 
 A key created without `scopes` (or with `[]`) gets `["inference"]`: admin access must be requested explicitly with `"scopes": ["admin"]`. Any other value (non-array, non-string entries, unknown names) is rejected with 400 on create and update. Keys created by older versions without scopes were stored as `["admin"]`; review them with `GET /admin/keys` and downgrade with `PUT /admin/keys/:id {"scopes": ["inference"]}`.
 
-`ADMIN_BOOTSTRAP_KEY` / `ADMIN_BOOTSTRAP_READ_ONLY_KEY` are accepted only while the key store is empty (`auth.keys` do not count), so they remain valid until the first key is created; startup prints a warning while that is the case.
+`ADMIN_BOOTSTRAP_KEY` / `ADMIN_BOOTSTRAP_READ_ONLY_KEY` exist only for the first run. They are accepted (with `admin` / `read_only` scope) only while **no real admin credential exists**, and are refused as soon as any of these holds:
+
+- the key store has a usable admin key (active, not revoked, not expired), e.g. after `POST /admin/keys {"name": "ops", "scopes": ["admin"]}`;
+- `adminSecret` is configured;
+- `auth.keys` are configured.
+
+Inference-only or `read_only` store keys do not retire them (otherwise creating a client key first would lock you out of the admin API). The check runs on every request, so the bootstrap key stops working the moment the first admin key is created. Startup prints a warning while the bootstrap key is live, and the gateway logs `[auth] ADMIN_BOOTSTRAP_KEY / ADMIN_BOOTSTRAP_READ_ONLY_KEY disabled: <reason>` when it is refused (at startup or at runtime). Remove the variables from the environment once you have an admin credential. Without a key store (embedded `createApp(gateway, config)`) they are never accepted.
 
 ### Response Headers
 

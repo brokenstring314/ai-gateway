@@ -18,3 +18,13 @@
   load balancer). Delete `.data/gateway-config.sqlite`.
   (Closes B3-5, S3-4, the history part of S3-5, and the non-atomic reload
   issue from round 2.)
+
+### Security
+
+- **`ADMIN_BOOTSTRAP_KEY` / `ADMIN_BOOTSTRAP_READ_ONLY_KEY` are retired once a
+  real admin credential exists**: a usable admin key in the key store,
+  `adminSecret`, or `auth.keys`. Previously they stayed valid as long as the
+  key store was empty, so deployments using `adminSecret` or `auth.keys` kept a
+  live admin backdoor. They still work on a first run with nothing configured,
+  and inference-only store keys no longer retire them. The gateway logs
+  `[auth] ... disabled: <reason>` when they are refused.

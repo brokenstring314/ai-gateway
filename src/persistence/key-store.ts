@@ -311,6 +311,29 @@ export class KeyStore {
     return row === null;
   }
 
+  /**
+   * True if at least one usable admin-scoped key exists (active, not
+   * revoked, not expired). Used to retire ADMIN_BOOTSTRAP_KEY once a real
+   * admin credential has been created.
+   */
+  hasActiveAdminKey(now: Date = new Date()): boolean {
+    const rows = this.db
+      .query("SELECT scopes, expires_at FROM api_keys WHERE active = 1 AND revoked_at IS NULL")
+      .all() as Array<{ scopes: string; expires_at: string | null }>;
+    for (const row of rows) {
+      let scopes: unknown;
+      try {
+        scopes = JSON.parse(row.scopes);
+      } catch {
+        continue;
+      }
+      if (!Array.isArray(scopes) || !scopes.includes("admin")) continue;
+      if (row.expires_at !== null && now > new Date(row.expires_at)) continue;
+      return true;
+    }
+    return false;
+  }
+
   // -------------------------------------------------------------------------
   // Get
   // -------------------------------------------------------------------------

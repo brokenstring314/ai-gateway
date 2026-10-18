@@ -18,7 +18,11 @@ function makeConfig(extra: Partial<GatewayConfig> = {}): GatewayConfig {
 }
 
 async function makeApp(opts: { bootstrapReadOnlyKey?: string } = {}) {
-  const config = makeConfig();
+  // Bootstrap keys are only live while no real admin credential exists, so
+  // the bootstrap cases run without adminSecret.
+  const config = opts.bootstrapReadOnlyKey !== undefined
+    ? makeConfig({ adminSecret: undefined })
+    : makeConfig();
   const keyStore = await KeyStore.create(new Database(":memory:"));
   const logStore = await RequestLogStore.create(new Database(":memory:"));
   const app = createApp(new Gateway(config), config, undefined, keyStore, {
