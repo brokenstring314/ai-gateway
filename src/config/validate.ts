@@ -12,7 +12,11 @@ export interface ConfigIssue {
   message: string;
 }
 
-type CheckedConfig = Pick<GatewayConfig, "targets" | "strategy">;
+type CheckedConfig = Pick<GatewayConfig, "targets" | "strategy"> & Partial<Pick<GatewayConfig, "plugins">>;
+
+function positive(v: unknown): boolean {
+  return typeof v === "number" && Number.isFinite(v) && v > 0;
+}
 
 /** Every cross-reference problem in a config; empty when it is consistent. */
 export function configReferenceIssues(cfg: CheckedConfig): ConfigIssue[] {
@@ -30,6 +34,22 @@ export function configReferenceIssues(cfg: CheckedConfig): ConfigIssue[] {
     names.add(t.name);
     const problem = baseURLProblem(t);
     if (problem !== undefined) issues.push({ path: ["targets", i, "baseURL"], message: problem });
+  });
+
+  // A budget without any cost rate charges $0 per request and never enforces (C3-5).
+  (cfg.plugins ?? []).forEach((p, i) => {
+    if (p.enabled === false || p.name.trim().toLowerCase().replace(/_/g, "-") !== "budget") return;
+    const raw = (p.config ?? {}) as Record<string, unknown>;
+    if (positive(raw["costPer1kInput"]) || positive(raw["costPer1kOutput"])) return;
+    const unpriced = targets.filter((t) => !positive(t.costPer1kInputTokens) && !positive(t.costPer1kOutputTokens));
+    if (targets.length > 0 && unpriced.length === 0) return;
+    issues.push({
+      path: ["plugins", i, "config"],
+      message:
+        "budget plugin has no cost rates: set config.costPer1kInput / costPer1kOutput, or costPer1kInputTokens / " +
+        `costPer1kOutputTokens on every target (unpriced: ${unpriced.map((t) => t.name).join(", ")}); ` +
+        "without rates every request costs $0 and the budget never enforces",
+    });
   });
 
   const known = () => [...names].join(", ");

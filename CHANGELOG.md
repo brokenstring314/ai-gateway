@@ -173,6 +173,17 @@
   `enabled: true` alone keeps the main port).
   *Migration:* if you had `enabled: false` and scraped `/metrics` anyway,
   set `enabled: true`.
+- **Budget reserves before and settles after** (C3-5, 3.6). A request
+  reserves its estimated cost (prompt + `max_tokens`, or the new
+  `reserveOutputTokens`, default 1024) and is charged its actual cost; while
+  other requests of the key are in flight it is admitted only if the estimate
+  fits next to their reservations (50 concurrent $1 requests against a $1
+  budget: 1 succeeds, was 50). A budget with no cost rates (none on the
+  plugin, and some target without `costPer1k*Tokens`) is a config error;
+  without plugin rates the serving target's rates are charged. The 429 reason
+  includes in-flight reservations.
+  *Migration:* add `costPer1kInput` / `costPer1kOutput` to the budget plugin,
+  or `costPer1kInputTokens` / `costPer1kOutputTokens` to every target.
 - **Request-log entries carry `surface` and `status` on every request**, and a
   failed request is logged once with the provider that failed (was
   `"unknown"`). `McpCallDepthError` is now a `GatewayError`.

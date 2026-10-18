@@ -888,7 +888,17 @@ plugins:
       dailyBudget: 100          # Daily spend limit in USD
       costPer1kInput: 0.01     # Cost per 1K input tokens
       costPer1kOutput: 0.03    # Cost per 1K output tokens
+      reserveOutputTokens: 1024 # optional: output tokens reserved when a request sets no max_tokens
 ```
+
+Each request reserves its estimated cost (prompt ≈ 4 chars/token plus its
+`max_tokens`, or `reserveOutputTokens`) before it is sent and is charged its
+actual cost afterwards; the reservation is released however the request ends.
+While other requests of the same key are in flight, a request is admitted only
+if its estimate fits next to their reservations, so concurrency cannot
+overshoot the budget. Without `costPer1kInput` / `costPer1kOutput` the
+serving target's `costPer1kInputTokens` / `costPer1kOutputTokens` are used;
+a budget with no rates anywhere is a config error (it would never enforce).
 
 #### Logger (removed in 0.2.0)
 
