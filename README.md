@@ -729,6 +729,8 @@ plugins:
       caseSensitive: false      # Default: false
 ```
 
+Matching is case-insensitive on Unicode NFKC-normalized text, so compatibility look-alikes (Kelvin sign `K`, fullwidth `ｋｉｌｌ`, long `ſ`) are caught. In `mode: redact` the matched words become `***` (the affected text is forwarded in NFKC form); if a word is detected but cannot be redacted, the request is rejected. It is a coarse substring filter: zero-width characters and homoglyphs from other scripts still bypass it.
+
 #### Max Token
 
 Caps token count and message count in requests.

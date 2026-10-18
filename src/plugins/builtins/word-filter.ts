@@ -6,11 +6,37 @@ export interface WordFilterConfig {
   readonly mode: "reject" | "redact";
 }
 
+/**
+ * Text is compared in one canonical form: Unicode NFKC (folds compatibility
+ * characters such as the Kelvin sign U+212A, fullwidth letters and
+ * ligatures) and then lower-cased. Redaction runs on the NFKC text with a
+ * Unicode-aware case-insensitive RegExp, and if a blocked word is still
+ * detected after redaction the request is rejected instead of being
+ * forwarded unchanged.
+ *
+ * Substring filters remain bypassable (zero-width characters, homoglyphs
+ * from other scripts); treat this plugin as a coarse filter, not a security
+ * boundary.
+ */
+function canonical(text: string): string {
+  return text.normalize("NFKC").toLowerCase();
+}
+
+function escapeRegExp(text: string): string {
+  return text.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+}
+
 export class WordFilterPlugin implements IPlugin {
   readonly name = "word-filter";
   readonly stage = "before_request" as const;
+  private readonly canonicalWords: string[];
+  private readonly redactPatterns: RegExp[];
 
-  constructor(private readonly config: WordFilterConfig) {}
+  constructor(private readonly config: WordFilterConfig) {
+    const words = config.blocklist.filter((w) => typeof w === "string" && w !== "");
+    this.canonicalWords = words.map(canonical);
+    this.redactPatterns = words.map((w) => new RegExp(escapeRegExp(w.normalize("NFKC")), "giu"));
+  }
 
   async execute(ctx: PluginContext): Promise<PluginResult> {
     const blocked = this.messagesContainBlockedWord(ctx.request.messages);
@@ -25,6 +51,11 @@ export class WordFilterPlugin implements IPlugin {
 
     // Redact mode: replace blocked words in all messages
     const redactedMessages = ctx.request.messages.map((msg) => this.redactMessage(msg));
+    // Detection and redaction disagree (some case/normalization edge the
+    // RegExp cannot express): never forward the blocked word, reject instead.
+    if (this.messagesContainBlockedWord(redactedMessages)) {
+      return { action: "reject", reason: "Content blocked by word filter" };
+    }
     const newRequest: ChatCompletionRequest = {
       ...ctx.request,
       messages: redactedMessages,
@@ -50,8 +81,9 @@ export class WordFilterPlugin implements IPlugin {
   }
 
   private containsBlockedWord(text: string): boolean {
-    const lower = text.toLowerCase();
-    return this.config.blocklist.some((word) => lower.includes(word.toLowerCase()));
+    if (this.canonicalWords.length === 0) return false;
+    const normalized = canonical(text);
+    return this.canonicalWords.some((word) => normalized.includes(word));
   }
 
   private redactMessage(msg: ChatMessage): ChatMessage {
@@ -70,11 +102,12 @@ export class WordFilterPlugin implements IPlugin {
     return msg;
   }
 
+  /** Text without a blocked word is returned untouched; otherwise its NFKC form, redacted. */
   private redactText(text: string): string {
-    let result = text;
-    for (const word of this.config.blocklist) {
-      const escaped = word.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
-      result = result.replace(new RegExp(escaped, "gi"), "***");
+    if (!this.containsBlockedWord(text)) return text;
+    let result = text.normalize("NFKC");
+    for (const pattern of this.redactPatterns) {
+      result = result.replace(pattern, "***");
     }
     return result;
   }
