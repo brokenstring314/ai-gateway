@@ -13,7 +13,9 @@ import type { Gateway } from "../gateway.js";
 import type { ChatCompletionRequest, RequestContext, StreamChunk } from "../providers/types.js";
 import { mergeForwardedHeaders } from "../providers/response-headers.js";
 import { ProviderError } from "../providers/openai-compat.js";
-import { startSseHeartbeat, heartbeatIntervalMs, type SseHeartbeat } from "./sse-heartbeat.js";
+import { heartbeatIntervalMs } from "./sse-heartbeat.js";
+import { linkAbortSignals } from "./abort.js";
+import { createSseStream, streamIdleTimeoutMs, streamMaxDurationMs } from "./sse-stream.js";
 import { PluginRejectionError } from "../plugins/error.js";
 import {
   createOpenAIWireStreamSerializer,
@@ -77,14 +79,6 @@ const ChatCompletionRequestSchema = z.object({
   streamOptions: z.object({ includeUsage: z.boolean() }).optional(),
 });
 
-// ── SSE helpers ──
-
-function serializeChunk(toWire: (chunk: StreamChunk) => unknown, chunk: StreamChunk): string {
-  return `data: ${JSON.stringify(toWire(chunk))}\n\n`;
-}
-
-const DONE_MESSAGE = "data: [DONE]\n\n";
-
 // ── Error response helper ──
 
 function errorResponse(c: Context, status: ContentfulStatusCode, message: string, type: string, code?: string) {
@@ -106,19 +100,6 @@ function handleGatewayError(c: Context, err: unknown) {
     return errorResponse(c, 403, err.reason, "plugin_rejection", "plugin_rejected");
   }
   return errorResponse(c, 500, "Internal server error", "internal_error");
-}
-
-/** Abort `controller` when any of `sources` aborts; returns its signal. */
-function linkAbortSignals(controller: AbortController, sources: (AbortSignal | undefined)[]): AbortSignal {
-  for (const src of sources) {
-    if (!src) continue;
-    if (src.aborted) {
-      controller.abort(src.reason);
-      break;
-    }
-    src.addEventListener("abort", () => controller.abort(src.reason), { once: true });
-  }
-  return controller.signal;
 }
 
 // ── Handler ──
@@ -177,50 +158,17 @@ export function registerChatHandler(app: AppType, gateway: Gateway): void {
         }
 
         const providerName = firstChunk?.model ?? "unknown";
-        let cancelled = false;
-        let heartbeat: SseHeartbeat | undefined;
-        const heartbeatMs = heartbeatIntervalMs(gateway.getConfig?.()?.server?.sseHeartbeatSeconds);
+        const serverCfg = gateway.getConfig?.()?.server;
+        const toWire = createOpenAIWireStreamSerializer();
         return new Response(
-          new ReadableStream({
-            async start(controller) {
-              const encoder = new TextEncoder();
-              const toWire = createOpenAIWireStreamSerializer();
-              heartbeat = startSseHeartbeat(controller, heartbeatMs);
-              try {
-                if (firstChunk !== undefined) {
-                  controller.enqueue(encoder.encode(serializeChunk(toWire, firstChunk)));
-                  heartbeat.touch();
-                }
-                for await (const chunk of iterator) {
-                  if (cancelled) return;
-                  controller.enqueue(encoder.encode(serializeChunk(toWire, chunk)));
-                  heartbeat.touch();
-                }
-                if (cancelled) return;
-                controller.enqueue(encoder.encode(DONE_MESSAGE));
-                controller.close();
-              } catch (err) {
-                if (cancelled) return;
-                const message = err instanceof Error ? err.message : String(err);
-                controller.enqueue(encoder.encode(`data: ${JSON.stringify({ error: { message, type: "stream_error" } })}\n\n`));
-                controller.enqueue(encoder.encode(DONE_MESSAGE));
-                controller.close();
-              } finally {
-                heartbeat?.stop();
-              }
-            },
-            async cancel() {
-              // Client went away: abort the upstream request and stop the
-              // provider iterator so no more upstream tokens are produced.
-              cancelled = true;
-              heartbeat?.stop();
-              upstreamAbort.abort();
-              try {
-                await iterator.return?.(undefined);
-              } catch {
-                // ignore
-              }
-            },
+          createSseStream<StreamChunk>({
+            iterator,
+            firstChunk,
+            serialize: toWire,
+            upstreamAbort,
+            heartbeatMs: heartbeatIntervalMs(serverCfg?.sseHeartbeatSeconds),
+            idleTimeoutMs: streamIdleTimeoutMs(serverCfg?.streamIdleTimeoutSeconds),
+            maxDurationMs: streamMaxDurationMs(serverCfg?.streamMaxDurationSeconds),
           }),
           {
             status: 200,

@@ -95,3 +95,26 @@ describe("N9 SSE idle timeout / heartbeat", () => {
     expect(text).toContain("[DONE]");
   });
 });
+
+describe("heartbeat respects backpressure", () => {
+  it("does not enqueue pings while the stream queue is full", async () => {
+    const { startSseHeartbeat } = await import("@/handlers/sse-heartbeat");
+    let enq = 0;
+    const ctrl = { desiredSize: 0, enqueue: () => { enq++; } } as unknown as ReadableStreamDefaultController<Uint8Array>;
+    const hb = startSseHeartbeat(ctrl, 20);
+    await Bun.sleep(120);
+    expect(enq).toBe(0);
+    (ctrl as unknown as { desiredSize: number }).desiredSize = 1;
+    await Bun.sleep(80);
+    hb.stop();
+    expect(enq).toBeGreaterThan(0);
+  });
+});
+
+describe("stream timeout config", () => {
+  it("accepts server.streamIdleTimeoutSeconds / streamMaxDurationSeconds", () => {
+    const cfg = parseConfig({ strategy: { mode: "single", targets: ["a"] }, targets: [{ name: "a", provider: "openai", apiKey: "k", models: ["m"] }], server: { streamIdleTimeoutSeconds: 30, streamMaxDurationSeconds: 600 } } as never);
+    expect(cfg.server?.streamIdleTimeoutSeconds).toBe(30);
+    expect(cfg.server?.streamMaxDurationSeconds).toBe(600);
+  });
+});

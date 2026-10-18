@@ -35,6 +35,9 @@ export function startSseHeartbeat(
   let stopped = false;
   const timer = setInterval(() => {
     if (stopped || Date.now() - last < intervalMs) return;
+    // Backpressure: only ping when the queue has room, so a client that has
+    // stopped reading never makes the heartbeat grow the buffer.
+    if ((controller.desiredSize ?? 0) <= 0) return;
     try {
       controller.enqueue(ping);
       last = Date.now();

@@ -112,6 +112,8 @@ server:
   host: "0.0.0.0"          # Bind address (default: 0.0.0.0)
   idleTimeoutSeconds: 255   # Bun idle timeout; 0 = never, max/default 255
   sseHeartbeatSeconds: 5    # SSE ": ping" comment while a stream is idle; 0 = off
+  streamIdleTimeoutSeconds: 120  # end a stream when upstream sends nothing this long; 0 = off
+  streamMaxDurationSeconds: 0    # hard cap on one stream's duration; 0 = off (default)
 
 passthroughProxy:
   enabled: false            # forward other /v1/* routes upstream (see API Endpoints)

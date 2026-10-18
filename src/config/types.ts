@@ -165,6 +165,13 @@ export interface GatewayConfig {
     idleTimeoutSeconds?: number;
     /** SSE `: ping` heartbeat interval while a stream is idle (0 = off). Default 5. */
     sseHeartbeatSeconds?: number;
+    /**
+     * Abort a streaming response when the upstream sends nothing for this
+     * many seconds after the SSE response started (0 = off). Default 120.
+     */
+    streamIdleTimeoutSeconds?: number;
+    /** Hard cap on a streaming response's total duration in seconds (0 = off). Default 0. */
+    streamMaxDurationSeconds?: number;
   };
   /**
    * Pass-through proxy for /v1/* routes without a dedicated handler

@@ -236,6 +236,10 @@ export const GatewayConfigSchema = z.object({
       idleTimeoutSeconds: z.number().int().min(0).max(255).optional(),
       // SSE `: ping` heartbeat interval while a stream is idle (0 = off).
       sseHeartbeatSeconds: z.number().min(0).optional(),
+      // Upstream idle timeout for SSE streams once the response started
+      // (seconds, 0 = off, default 120) and optional max stream duration.
+      streamIdleTimeoutSeconds: z.number().min(0).optional(),
+      streamMaxDurationSeconds: z.number().min(0).optional(),
     })
     .optional(),
   // Opt-in pass-through proxy for other /v1/* routes (see config/types.ts).
