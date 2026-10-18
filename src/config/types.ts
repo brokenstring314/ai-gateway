@@ -139,6 +139,12 @@ export interface McpServerConfig {
   command?: string;
   args?: string[];
   env?: Record<string, string>;
+  /**
+   * Gateway environment passed to the stdio subprocess. Default: only a small
+   * allowlist (PATH, HOME, LANG, TMPDIR, ...). A list adds those variable
+   * names; `true` passes the whole environment (secrets included).
+   */
+  inheritEnv?: boolean | string[];
   url?: string;
   headers?: Record<string, string>;
   allowedTools?: string[];
