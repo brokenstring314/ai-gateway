@@ -161,7 +161,10 @@ export function createApp(
       beforeForward: async (c, bodyText) => {
         try {
           await gateway.runPassthroughBeforePlugins(
-            { metadata: { apiKey: (c.get as unknown as (k: string) => unknown)("apiKey") } },
+            {
+              traceId: c.req.header("X-Request-Id") ?? crypto.randomUUID(),
+              metadata: { apiKey: (c.get as unknown as (k: string) => unknown)("apiKey") },
+            },
             bodyText,
           );
           return undefined;

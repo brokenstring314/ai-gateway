@@ -8,6 +8,10 @@ import type { PluginContext } from "./types.js";
 
 export interface InternalPluginContext extends PluginContext {
   _shortCircuited: boolean;
+  /** Name of the before-request plugin that short-circuited, if any. */
+  _shortCircuitedBy?: string;
+  /** Names of the before-request plugins that returned a modified request. */
+  _modifiedBy?: string[];
 }
 
 /**

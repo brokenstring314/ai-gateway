@@ -16,6 +16,7 @@ export class MetricsRegistry {
   private readonly requestsTotal = new Map<string, number>();
   private readonly tokensInputTotal = new Map<string, number>();
   private readonly tokensOutputTotal = new Map<string, number>();
+  private readonly pluginBlockedTotal = new Map<string, number>();
 
   // Histograms (stored as individual observations for quantile estimation)
   private readonly requestDurationMs = new Map<string, number[]>();
@@ -38,6 +39,20 @@ export class MetricsRegistry {
       this.tokensInputTotal.set(reqKey, (this.tokensInputTotal.get(reqKey) ?? 0) + tokens.promptTokens);
       this.tokensOutputTotal.set(reqKey, (this.tokensOutputTotal.get(reqKey) ?? 0) + tokens.completionTokens);
     }
+  }
+
+  /**
+   * Record a request a before-request plugin ended without an upstream call
+   * (rejected, or short-circuited with its own response).
+   */
+  recordPluginBlocked(plugin: string, outcome: string, surface: string): void {
+    const key = JSON.stringify([plugin, outcome, surface]);
+    this.pluginBlockedTotal.set(key, (this.pluginBlockedTotal.get(key) ?? 0) + 1);
+  }
+
+  /** Count of plugin-blocked requests for one label set (for tests / introspection). */
+  getPluginBlockedCount(plugin: string, outcome: string, surface: string): number {
+    return this.pluginBlockedTotal.get(JSON.stringify([plugin, outcome, surface])) ?? 0;
   }
 
   /** Format all metrics in Prometheus text exposition format. */
@@ -67,6 +82,13 @@ export class MetricsRegistry {
       lines.push(`ai_gateway_tokens_output_total{provider="${provider}",model="${model}"} ${value}`);
     }
 
+    lines.push("# HELP ai_gateway_plugin_blocked_total Requests ended by a before-request plugin without an upstream call");
+    lines.push("# TYPE ai_gateway_plugin_blocked_total counter");
+    for (const [key, value] of this.pluginBlockedTotal) {
+      const [plugin, outcome, surface] = JSON.parse(key) as [string, string, string];
+      lines.push(`ai_gateway_plugin_blocked_total{plugin="${plugin}",outcome="${outcome}",surface="${surface}"} ${value}`);
+    }
+
     // --- Histograms ---
 
     lines.push("# HELP ai_gateway_request_duration_ms Request duration in milliseconds");
@@ -90,6 +112,7 @@ export class MetricsRegistry {
     this.requestsTotal.clear();
     this.tokensInputTotal.clear();
     this.tokensOutputTotal.clear();
+    this.pluginBlockedTotal.clear();
     this.requestDurationMs.clear();
     this.providerDurationMs.clear();
   }

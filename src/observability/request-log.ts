@@ -17,6 +17,14 @@ export interface RequestLogEntry {
     total: number;
   };
   error?: string;
+  /** HTTP status the gateway answered with (set for plugin-blocked requests). */
+  status?: number;
+  /** Before-request plugin that rejected or short-circuited the request. */
+  plugin?: string;
+  /** Which API surface the request came in on (chat, chat_stream, embedding, image, passthrough). */
+  surface?: string;
+  /** Set when a before-request plugin ended the request without an upstream call. */
+  outcome?: "plugin_rejected" | "plugin_short_circuit";
 }
 
 export interface RequestLogConfig {

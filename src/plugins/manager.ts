@@ -29,6 +29,7 @@ export class PluginManager implements IPluginManager {
       const result = await plugin.execute(ctx);
 
       if (internalCtx._shortCircuited) {
+        internalCtx._shortCircuitedBy ??= plugin.name;
         break;
       }
 
@@ -36,16 +37,18 @@ export class PluginManager implements IPluginManager {
         // Must go through shortCircuit() so _shortCircuited is set; the
         // gateway checks that flag to skip the upstream call.
         ctx.shortCircuit(result.response);
+        internalCtx._shortCircuitedBy = plugin.name;
         break;
       }
 
       if (result.action === "reject") {
-        throw new PluginRejectionError("before_request", result.reason);
+        throw new PluginRejectionError("before_request", result.reason, plugin.name);
       }
 
       if (result.action === "modify") {
         if (result.request) {
           applyRequest(ctx, result.request);
+          (internalCtx._modifiedBy ??= []).push(plugin.name);
         }
         if (result.response) {
           ctx.response = result.response;
