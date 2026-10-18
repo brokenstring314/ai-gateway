@@ -8,6 +8,7 @@
  */
 
 import type { McpServerConfig } from "../config/types.js";
+import { VERSION } from "../version.js";
 import type {
   McpTool,
   McpServerOptions,
@@ -148,7 +149,7 @@ export class McpClient {
         {
           protocolVersion: "2025-03-26",
           capabilities: {},
-          clientInfo: { name: "ai-gateway", version: "0.1.0" },
+          clientInfo: { name: "ai-gateway", version: VERSION },
         },
         { timeoutMs: this.timeoutMs, label: `MCP server "${this.config.name}" initialize` },
       );
