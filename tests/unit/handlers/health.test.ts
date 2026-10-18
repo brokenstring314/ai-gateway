@@ -25,7 +25,7 @@ describe("Health probes", () => {
 
     const res = await app.request("/health");
     expect(res.status).toBe(200);
-    const body = await res.json();
+    const body = (await res.json()) as TestJson;
     expect(body.status).toBe("ok");
   });
 
@@ -44,7 +44,7 @@ describe("Health probes", () => {
 
     const res = await app.request("/readyz");
     expect(res.status).toBe(200);
-    const body = await res.json();
+    const body = (await res.json()) as TestJson;
     expect(body.status).toBe("ok");
   });
 
@@ -55,7 +55,7 @@ describe("Health probes", () => {
 
     const res = await app.request("/readyz");
     expect(res.status).toBe(503);
-    const body = await res.json();
+    const body = (await res.json()) as TestJson;
     expect(body.status).toBe("not ready");
   });
 });

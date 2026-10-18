@@ -25,7 +25,7 @@ describe("breaker outcome classification", () => {
   it("S2: hung upstream hitting requestTimeout never trips the breaker", async () => {
     const server = Bun.serve({ port: 0, fetch: async () => { await Bun.sleep(3000); return new Response("{}"); } });
     try {
-      const cfg = mkCfg(server.port, { requestTimeout: "1s" });
+      const cfg = mkCfg(server.port!, { requestTimeout: "1s" });
       const gw = new Gateway(cfg);
       const app = createApp(gw, cfg);
       for (let i = 0; i < 3; i++) {
@@ -44,7 +44,7 @@ describe("breaker outcome classification", () => {
       },
     }), { headers: { "content-type": "text/event-stream" } }) });
     try {
-      const cfg = mkCfg(server.port);
+      const cfg = mkCfg(server.port!);
       const gw = new Gateway(cfg);
       const app = createApp(gw, cfg);
       for (let i = 0; i < 2; i++) {
@@ -61,7 +61,7 @@ describe("breaker outcome classification", () => {
   it("S4: caller-caused upstream 400s open the breaker for everyone", async () => {
     const server = Bun.serve({ port: 0, fetch: () => new Response(JSON.stringify({ error: { message: "bad tool schema", type: "invalid_request_error" } }), { status: 400, headers: { "content-type": "application/json" } }) });
     try {
-      const cfg = mkCfg(server.port);
+      const cfg = mkCfg(server.port!);
       const gw = new Gateway(cfg);
       const app = createApp(gw, cfg);
       for (let i = 0; i < 2; i++) {

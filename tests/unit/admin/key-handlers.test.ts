@@ -1,6 +1,7 @@
 import { describe, it, expect, beforeEach, afterEach } from "bun:test";
 import { Database } from "bun:sqlite";
 import { Hono } from "hono";
+import type { AdminAppEnv } from "@/admin/handlers";
 import {
   SCOPE_ADMIN,
   SCOPE_READ_ONLY,
@@ -31,8 +32,8 @@ function createAdminApp(keyStore: KeyStore): Hono {
   return app;
 }
 
-function createScopedApp(scopes: string[] | undefined): Hono {
-  const app = new Hono();
+function createScopedApp(scopes: string[] | undefined): Hono<AdminAppEnv> {
+  const app = new Hono<AdminAppEnv>();
   app.use("/admin/keys", async (c, next) => {
     if (scopes !== undefined) c.set("keyScopes", scopes);
     await next();
@@ -62,7 +63,7 @@ describe("key handlers", () => {
       body: JSON.stringify({ name: "test-key" }),
     });
     expect(res.status).toBe(201);
-    const body = await res.json();
+    const body = (await res.json()) as TestJson;
     expect(body.key.startsWith("fgw_")).toBe(true);
     expect(body.key).toHaveLength(68);
     expect(body.keyDisplay).toContain("...");
@@ -79,7 +80,7 @@ describe("key handlers", () => {
       body: JSON.stringify({ name: "empty-scopes", scopes: [] }),
     });
     expect(res.status).toBe(201);
-    const body = await res.json();
+    const body = (await res.json()) as TestJson;
     expect(body.scopes).toEqual(["inference"]);
   });
 
@@ -91,7 +92,7 @@ describe("key handlers", () => {
       body: JSON.stringify({ name: "ro-key", scopes: ["read_only"] }),
     });
     expect(res.status).toBe(201);
-    const body = await res.json();
+    const body = (await res.json()) as TestJson;
     expect(body.scopes).toEqual(["read_only"]);
   });
 
@@ -104,7 +105,7 @@ describe("key handlers", () => {
       body: JSON.stringify({ name: "expiring", expiresAt }),
     });
     expect(res.status).toBe(201);
-    const body = await res.json();
+    const body = (await res.json()) as TestJson;
     const stored = keyStore.get(body.id);
     expect(stored?.expiresAt).not.toBeNull();
   });
@@ -117,7 +118,7 @@ describe("key handlers", () => {
       body: JSON.stringify({}),
     });
     expect(res.status).toBe(400);
-    const body = await res.json();
+    const body = (await res.json()) as TestJson;
     expect(body.error.code).toBe("invalid_request");
   });
 
@@ -127,7 +128,7 @@ describe("key handlers", () => {
     const app = createAdminApp(keyStore);
     const res = await app.request("/keys");
     expect(res.status).toBe(200);
-    const body = await res.json();
+    const body = (await res.json()) as TestJson;
     expect(body.total).toBe(2);
     for (const k of body.keys) {
       expect(k.key).toBeUndefined();
@@ -142,7 +143,7 @@ describe("key handlers", () => {
     const app = createAdminApp(keyStore);
     const res = await app.request(`/keys/${created.id}`);
     expect(res.status).toBe(200);
-    const body = await res.json();
+    const body = (await res.json()) as TestJson;
     expect(body.id).toBe(created.id);
     expect(body.name).toBe("single");
     expect(body.key).toBeUndefined();
@@ -153,7 +154,7 @@ describe("key handlers", () => {
     const app = createAdminApp(keyStore);
     const res = await app.request("/keys/does-not-exist");
     expect(res.status).toBe(404);
-    const body = await res.json();
+    const body = (await res.json()) as TestJson;
     expect(body.error.code).toBe("key_not_found");
   });
 
@@ -166,7 +167,7 @@ describe("key handlers", () => {
       body: JSON.stringify({ name: "renamed", scopes: ["read_only"] }),
     });
     expect(res.status).toBe(200);
-    const body = await res.json();
+    const body = (await res.json()) as TestJson;
     expect(body.name).toBe("renamed");
     expect(body.scopes).toEqual(["read_only"]);
     expect(keyStore.get(created.id)?.name).toBe("renamed");
@@ -188,7 +189,7 @@ describe("key handlers", () => {
     const app = createAdminApp(keyStore);
     const res = await app.request(`/keys/${created.id}`, { method: "DELETE" });
     expect(res.status).toBe(200);
-    const body = await res.json();
+    const body = (await res.json()) as TestJson;
     expect(body.deleted).toBe(true);
     expect(keyStore.get(created.id)).toBeNull();
   });
@@ -209,7 +210,7 @@ describe("key handlers", () => {
     const app = createScopedApp([SCOPE_READ_ONLY]);
     const res = await app.request("/admin/keys");
     expect(res.status).toBe(403);
-    const body = await res.json();
+    const body = (await res.json()) as TestJson;
     expect(body.error.message).toBe("Insufficient scope");
     expect(body.error.type).toBe("authorization_error");
     expect(body.error.code).toBe("insufficient_scope");

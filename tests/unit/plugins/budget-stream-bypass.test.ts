@@ -66,7 +66,7 @@ describe("N6 streaming runs after-request plugins / logs / metrics", () => {
       ...mockProvider(newCalls()),
       async *completeStream(_c: RequestContext, r: ChatCompletionRequest): AsyncGenerator<StreamChunk> {
         yield { id: "s1", object: "chat.completion.chunk", created: 1, model: r.model, choices: [{ index: 0, delta: { role: "assistant", content: "he" }, finishReason: "" }] };
-        yield { id: "s1", object: "chat.completion.chunk", created: 1, model: r.model, choices: [{ index: 0, delta: { content: "llo" }, finishReason: "stop" }] };
+        yield { id: "s1", object: "chat.completion.chunk", created: 1, model: r.model, choices: [{ index: 0, delta: { role: "assistant", content: "llo" }, finishReason: "stop" }] };
         yield { id: "s1", object: "chat.completion.chunk", created: 1, model: r.model, choices: [], usage: { promptTokens: 7, completionTokens: 3, totalTokens: 10 } };
       },
     } as unknown as IProvider;
@@ -83,7 +83,7 @@ describe("N6 streaming runs after-request plugins / logs / metrics", () => {
       ...mockProvider(newCalls()),
       async *completeStream(_c: RequestContext, r: ChatCompletionRequest): AsyncGenerator<StreamChunk> {
         for (let i = 0; i < 100; i++) {
-          yield { id: "s2", object: "chat.completion.chunk", created: 1, model: r.model, choices: [{ index: 0, delta: { content: "abcd" }, finishReason: "" }] };
+          yield { id: "s2", object: "chat.completion.chunk", created: 1, model: r.model, choices: [{ index: 0, delta: { role: "assistant", content: "abcd" }, finishReason: "" }] };
         }
       },
     } as unknown as IProvider;
@@ -100,7 +100,7 @@ describe("N6 streaming runs after-request plugins / logs / metrics", () => {
     const provider = {
       ...mockProvider(newCalls()),
       async *completeStream(_c: RequestContext, r: ChatCompletionRequest): AsyncGenerator<StreamChunk> {
-        yield { id: "s3", object: "chat.completion.chunk", created: 1, model: r.model, choices: [{ index: 0, delta: { content: "abcd" }, finishReason: "" }] };
+        yield { id: "s3", object: "chat.completion.chunk", created: 1, model: r.model, choices: [{ index: 0, delta: { role: "assistant", content: "abcd" }, finishReason: "" }] };
         throw new Error("boom");
       },
     } as unknown as IProvider;

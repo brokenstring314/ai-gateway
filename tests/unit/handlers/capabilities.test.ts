@@ -25,7 +25,7 @@ describe("Capabilities handler", () => {
 
     const res = await app.request("/v1/capabilities");
     expect(res.status).toBe(200);
-    const body = await res.json();
+    const body = (await res.json()) as TestJson;
     expect(body.providers).toBeDefined();
     expect(body.providers.openai).toBeDefined();
     expect(body.providers.openai.capabilities).toBeInstanceOf(Array);

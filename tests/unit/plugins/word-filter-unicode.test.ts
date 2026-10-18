@@ -12,7 +12,7 @@ async function run(mode: "reject" | "redact", blocklist: string[], content: unkn
 }
 
 function firstContent(res: PluginResult): unknown {
-  return (res as { request: { messages: { content: unknown }[] } }).request.messages[0]?.content;
+  return (res as unknown as { request: { messages: { content: unknown }[] } }).request.messages[0]?.content;
 }
 
 describe("S3-7 word-filter Unicode handling", () => {
@@ -52,7 +52,7 @@ describe("S3-7 word-filter Unicode handling", () => {
       ],
     } as never, { metadata: {} } as never);
     const res = await p.execute(ctx);
-    const msgs = (res as { request: { messages: { content: string }[] } }).request.messages;
+    const msgs = (res as unknown as { request: { messages: { content: string }[] } }).request.messages;
     expect(msgs[0]?.content).toBe("ｆｕｌｌｗｉｄｔｈ stays");
     expect(msgs[1]?.content).toBe("please *** it");
   });

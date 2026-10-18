@@ -30,7 +30,7 @@ describe("streaming tool-call index", () => {
   it("parser keeps the upstream tool_call index on every delta", async () => {
     const idx: number[] = [];
     for await (const c of parseSSEStream(sse(events))) {
-      for (const tc of c.choices[0]?.delta.toolCalls ?? []) idx.push(tc.index ?? -1);
+      for (const tc of c.choices[0]?.delta?.toolCalls ?? []) idx.push(tc.index ?? -1);
     }
     expect(idx).toEqual([0, 1, 1, 0]);
   });

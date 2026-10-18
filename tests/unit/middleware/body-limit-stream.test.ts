@@ -27,7 +27,6 @@ async function postStream(url: string, total: number, headers: Record<string, st
     method: "POST",
     headers,
     body: bigStream(total),
-    // @ts-expect-error bun supports duplex
     duplex: "half",
   });
 }

@@ -54,7 +54,7 @@ function createMockProvider(name: string, models: string[]): IProvider & IStream
         model: req.model,
         choices: [{
           index: 0,
-          delta: { content: ` from ${name}!` },
+          delta: { role: "assistant", content: ` from ${name}!` },
           finishReason: "stop",
         }],
       };
@@ -107,7 +107,7 @@ describe("Integration: Full HTTP lifecycle", () => {
   it("GET /health returns ok", async () => {
     const res = await app.request("/health");
     expect(res.status).toBe(200);
-    const body = await res.json();
+    const body = (await res.json()) as TestJson;
     expect(body.status).toBe("ok");
   });
 
@@ -116,7 +116,7 @@ describe("Integration: Full HTTP lifecycle", () => {
       headers: { Authorization: `Bearer ${apiKey}` },
     });
     expect(res.status).toBe(200);
-    const body = await res.json();
+    const body = (await res.json()) as TestJson;
     expect(body.object).toBe("list");
     expect(body.data.length).toBeGreaterThan(0);
     expect(body.data[0].id).toBeDefined();
@@ -135,7 +135,7 @@ describe("Integration: Full HTTP lifecycle", () => {
       }),
     });
     expect(res.status).toBe(200);
-    const body = await res.json();
+    const body = (await res.json()) as TestJson;
     expect(body.object).toBe("chat.completion");
     expect(body.choices[0].message.content).toContain("Hello from test-provider");
     expect(body.usage.total_tokens).toBe(30);
@@ -171,7 +171,7 @@ describe("Integration: Full HTTP lifecycle", () => {
       body: "not json",
     });
     expect(res.status).toBe(400);
-    const body = await res.json();
+    const body = (await res.json()) as TestJson;
     expect(body.error.type).toBe("invalid_request_error");
   });
 
@@ -187,7 +187,7 @@ describe("Integration: Full HTTP lifecycle", () => {
       }),
     });
     expect(res.status).toBe(400);
-    const body = await res.json();
+    const body = (await res.json()) as TestJson;
     expect(body.error.type).toBe("invalid_request_error");
   });
 
@@ -204,7 +204,7 @@ describe("Integration: Full HTTP lifecycle", () => {
       }),
     });
     expect(res.status).toBe(200);
-    const body = await res.json();
+    const body = (await res.json()) as TestJson;
     expect(body.object).toBe("text_completion");
     expect(typeof body.choices[0].text).toBe("string");
   });
@@ -240,7 +240,7 @@ describe("Integration: Auth middleware", () => {
       }),
     });
     expect(res.status).toBe(401);
-    const body = await res.json();
+    const body = (await res.json()) as TestJson;
     expect(body.error.code).toBe("missing_authorization");
   });
 
@@ -257,7 +257,7 @@ describe("Integration: Auth middleware", () => {
       }),
     });
     expect(res.status).toBe(401);
-    const body = await res.json();
+    const body = (await res.json()) as TestJson;
     expect(body.error.code).toBe("invalid_api_key");
   });
 
@@ -360,7 +360,7 @@ describe("Integration: Admin API", () => {
       headers: { "X-Admin-Secret": "test-admin-secret-1234" },
     });
     expect(res.status).toBe(200);
-    const body = await res.json();
+    const body = (await res.json()) as TestJson;
     expect(body.config.strategy.mode).toBe("single");
   });
 
@@ -369,7 +369,7 @@ describe("Integration: Admin API", () => {
       headers: { "X-Admin-Secret": "test-admin-secret-1234" },
     });
     expect(res.status).toBe(200);
-    const body = await res.json();
+    const body = (await res.json()) as TestJson;
     expect(Array.isArray(body.keys)).toBe(true);
   });
 
@@ -387,7 +387,7 @@ describe("Integration: Admin API", () => {
       headers: { "X-Admin-Secret": "test-admin-secret-1234" },
     });
     expect(res.status).toBe(200);
-    const body = await res.json();
+    const body = (await res.json()) as TestJson;
     expect(Array.isArray(body.entries)).toBe(true);
   });
 

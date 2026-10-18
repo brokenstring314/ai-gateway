@@ -30,7 +30,8 @@ function makeTarget(overrides?: Partial<ProxyTarget>): ProxyTarget {
 
 /** Simple resolver: provider "openai" and model "gpt-4o" both map to the target. */
 function simpleResolver(target: ProxyTarget = makeTarget()): TargetResolver {
-  return ({ provider, model }) => {
+  return (selector) => {
+    const { provider, model } = selector as { provider?: string; model?: string };
     if (provider === "openai") return target;
     if (model === "gpt-4o") return target;
     return undefined;
@@ -143,7 +144,8 @@ describe("resolveProvider", () => {
   });
 
   it("prefers the header over the body model", () => {
-    const resolver: TargetResolver = ({ provider, model }) => {
+    const resolver: TargetResolver = (selector) => {
+      const { provider, model } = selector as { provider?: string; model?: string };
       if (provider === "openai") return makeTarget();
       if (model === "gpt-4o") return makeTarget({ provider: "other", name: "other" });
       return undefined;

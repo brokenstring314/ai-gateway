@@ -35,7 +35,7 @@ describe("authMiddleware", () => {
     const app = createApp();
     const res = await app.request("/v1/chat/completions", { method: "POST" });
     expect(res.status).toBe(401);
-    const body = await res.json();
+    const body = (await res.json()) as TestJson;
     expect(body.error.code).toBe("missing_authorization");
   });
 
@@ -46,7 +46,7 @@ describe("authMiddleware", () => {
       headers: { Authorization: "Basic sk-test" },
     });
     expect(res.status).toBe(401);
-    const body = await res.json();
+    const body = (await res.json()) as TestJson;
     expect(body.error.code).toBe("invalid_authorization");
   });
 
@@ -57,7 +57,7 @@ describe("authMiddleware", () => {
       headers: { Authorization: "Bearer fgw_wrongkey" },
     });
     expect(res.status).toBe(401);
-    const body = await res.json();
+    const body = (await res.json()) as TestJson;
     expect(body.error.code).toBe("invalid_api_key");
   });
 

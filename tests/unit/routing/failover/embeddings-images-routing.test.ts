@@ -21,8 +21,8 @@ function mkAux(cfg: any, modes: Record<string, Mode>) {
       supportsModel: () => true,
       models: () => [],
       complete: async () => { throw new Error("unused"); },
-      embed: async (_ctx: any, req: any) => { calls[n]++; fail(); return { object: "list", data: [], model: req.model, provider: n } as any; },
-      generateImage: async () => { calls[n]++; fail(); return { created: 0, data: [], provider: n } as any; },
+      embed: async (_ctx: any, req: any) => { calls[n] = (calls[n] ?? 0) + 1; fail(); return { object: "list", data: [], model: req.model, provider: n } as any; },
+      generateImage: async () => { calls[n] = (calls[n] ?? 0) + 1; fail(); return { created: 0, data: [], provider: n } as any; },
     } as any);
   }
   return { g, calls };

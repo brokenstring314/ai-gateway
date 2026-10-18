@@ -246,7 +246,6 @@ function toolCallingStrategy(rounds = Infinity): { strategy: ChatCompleter & { m
       if (calls >= rounds) return plainResponse(`resp-${calls}`);
       return responseWithToolCalls(`resp-${calls}`);
     },
-    executeStream: async function* () {},
     selectTargets: () => ["test"],
   };
   return { strategy, callCount: () => calls };

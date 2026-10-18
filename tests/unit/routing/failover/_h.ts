@@ -10,7 +10,7 @@ export function mk(cfg: any, names: string[], modes: Record<string, Mode>, delay
     calls[n] = 0;
     const p: any = { name: n, supportedModels: () => [], supportsModel: () => true, models: () => [] };
     p.complete = async (ctx: any) => {
-      calls[n]++;
+      calls[n] = (calls[n] ?? 0) + 1;
       if (ctx?.signal?.aborted) throw ctx.signal.reason;
       const m = modes[n];
       if (m === "fail") throw Object.assign(new Error("down"), { statusCode: 503 });

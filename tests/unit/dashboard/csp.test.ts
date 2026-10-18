@@ -15,7 +15,7 @@ const pages = [
 describe("dashboard CSP and server-rendered pages", () => {
   const app = createDashboardApp();
 
-  it.each(pages)("returns 200 for %s", async (path) => {
+  it.each([...pages])("returns 200 for %s", async (path: string) => {
     const response = await app.request(path);
     expect(response.status).toBe(200);
   });

@@ -17,7 +17,7 @@ describe("limiter queue wait counted as breaker failure", () => {
     const queued = await Promise.all([1, 2, 3].map(() => code(g.route(withTimeout(50), req))));
     expect(await long).toBe("ok:a");
     expect(queued).toEqual(["429", "429", "429"]); // queue timeout = local overload (429 gateway_overloaded)
-    expect(calls.a).toBe(1); // ...without ever reaching upstream
+    expect(calls["a"]).toBe(1); // ...without ever reaching upstream
     const state = g.getCircuitBreakerRegistry().get("a")!.getState();
     expect(state).toBe("CLOSED"); // was OPEN -> next requests got 503 for 60s
   });

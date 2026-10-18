@@ -73,10 +73,10 @@ describe("retryWithBackoff", () => {
   it("backoff increases exponentially", async () => {
     const delays: number[] = [];
     const originalSetTimeout = globalThis.setTimeout;
-    vi.spyOn(globalThis, "setTimeout").mockImplementation((fn: () => void, ms?: number) => {
+    vi.spyOn(globalThis, "setTimeout").mockImplementation(((fn: () => void, ms?: number) => {
       if (ms !== undefined) delays.push(ms);
       return originalSetTimeout(fn, 0) as ReturnType<typeof setTimeout>;
-    });
+    }) as unknown as typeof setTimeout);
 
     const fn = vi.fn()
       .mockRejectedValueOnce(createStatusError(500))

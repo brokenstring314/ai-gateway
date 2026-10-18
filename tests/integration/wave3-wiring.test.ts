@@ -98,7 +98,7 @@ describe("Wave 3 wiring (integration)", () => {
   it("/readyz returns 200 when gateway is ready", async () => {
     const res = await app.request("/readyz");
     expect(res.status).toBe(200);
-    const body = await res.json();
+    const body = (await res.json()) as TestJson;
     expect(body.status).toBe("ok");
   });
 
@@ -160,7 +160,7 @@ describe("Wave 3 wiring (integration)", () => {
       headers: { Authorization: `Bearer ${apiKey}` },
     });
     expect(res.status).toBe(200);
-    const body = await res.json();
+    const body = (await res.json()) as TestJson;
     expect(body.total).toBe(1);
     expect(body.keys[0].keyDisplay).toBeDefined();
     expect(body.keys[0].key).toBeUndefined();
@@ -173,7 +173,7 @@ describe("Wave 3 wiring (integration)", () => {
       body: "{}",
     });
     expect(res.status).toBe(401);
-    const body = await res.json();
+    const body = (await res.json()) as TestJson;
     expect(body.error.code).toBe("missing_authorization");
   });
 
