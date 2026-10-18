@@ -477,6 +477,8 @@ curl -X POST \
 
 ## 路由策略
 
+所有多目标策略（fallback、loadbalance、least_latency、cost_optimized、conditional、content_based、abtest）都会生成一个**有序候选列表**（首选目标在前），并交给同一个执行器：候选目标熔断器打开、达到并发上限、或出现可切换错误（网络错误、5xx、408、429、401/403/404）时跳过，尝试下一个候选（按各目标自己的 `retry` 配置）。调用方导致的 4xx（400/409/413/422 等）、客户端中断和网关请求超时会直接结束请求。流式请求只在第一个 chunk 之前切换。conditional / content_based 只从命中的目标切换到默认目标。least_latency 中尚无样本的目标优先尝试；刚失败的目标在 30 秒内（或作为候选成功之前）排在最后。
+
 ### Single（单目标）
 
 将所有请求路由到一个目标：

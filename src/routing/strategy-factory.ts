@@ -32,6 +32,8 @@ export interface LoadBalanceTarget {
 
 export interface LoadBalanceConfig {
   readonly targets: readonly LoadBalanceTarget[];
+  /** Per-target retry config used by the shared candidate executor. */
+  readonly retryConfigs?: ReadonlyMap<string, RetryConfig>;
 }
 
 export interface ConditionalRule {
@@ -43,11 +45,17 @@ export interface ConditionalRule {
 export interface ConditionalConfig {
   readonly rules: readonly ConditionalRule[];
   readonly defaultTarget?: string;
+  /** Per-target retry config used by the shared candidate executor. */
+  readonly retryConfigs?: ReadonlyMap<string, RetryConfig>;
 }
 
 export interface LeastLatencyConfig {
   readonly targets: readonly string[];
   readonly windowSize?: number;
+  /** How long a target that just failed is ranked last (default 30000 ms). */
+  readonly failurePenaltyMs?: number;
+  /** Per-target retry config used by the shared candidate executor. */
+  readonly retryConfigs?: ReadonlyMap<string, RetryConfig>;
 }
 
 export type UnpricedStrategy = "fallback" | "skip" | "allow";
@@ -67,6 +75,8 @@ export interface CostOptimizedConfig {
    * "no priced targets" an error; "allow" ranks unpriced targets as zero-cost.
    */
   readonly unpricedStrategy?: UnpricedStrategy;
+  /** Per-target retry config used by the shared candidate executor. */
+  readonly retryConfigs?: ReadonlyMap<string, RetryConfig>;
 }
 
 export interface ContentBasedMapping {
@@ -91,6 +101,8 @@ export interface ContentBasedConfig {
   /** Ordered Go-style content conditions (first match wins). */
   readonly contentConditions?: readonly ContentBasedRule[];
   readonly defaultTarget?: string;
+  /** Per-target retry config used by the shared candidate executor. */
+  readonly retryConfigs?: ReadonlyMap<string, RetryConfig>;
 }
 
 export interface AbTestVariant {
@@ -100,6 +112,8 @@ export interface AbTestVariant {
 
 export interface AbTestConfig {
   readonly variants: readonly AbTestVariant[];
+  /** Per-target retry config used by the shared candidate executor. */
+  readonly retryConfigs?: ReadonlyMap<string, RetryConfig>;
 }
 
 export type StrategyConfig =

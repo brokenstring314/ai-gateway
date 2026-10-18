@@ -495,6 +495,17 @@ The gateway adds these headers to responses:
 
 ## Routing Strategies
 
+Every multi-target strategy (fallback, loadbalance, least_latency,
+cost_optimized, conditional, content_based, abtest) produces an **ordered
+candidate list** (its preferred target first) and runs it through one shared
+executor: a candidate whose circuit breaker is open, that hits its
+concurrency limit, or that fails with a failover-eligible error (network,
+5xx, 408, 429, 401/403/404) is skipped and the next candidate is tried, using
+each target's own `retry` config. Caller-caused 4xx (400/409/413/422...),
+client aborts and the gateway request timeout end the request. Streams fail
+over only before their first chunk. Conditional / content_based fail over
+from the matched target to the default target only.
+
 ### Single
 
 Route all requests to one target:
@@ -563,7 +574,9 @@ strategy:
 
 ### Least Latency
 
-Route to the target with the lowest observed p50 latency:
+Route to the target with the lowest observed p50 latency. Targets with no
+samples yet are tried first (so they get measured); a target that just failed
+is ranked last for 30 s (or until it succeeds as a failover candidate):
 
 ```yaml
 strategy:

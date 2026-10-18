@@ -11,14 +11,18 @@ import type {
   IStreamProvider,
 } from "../providers/types.js";
 import type { AbTestConfig, AbTestVariant } from "./strategy-factory.js";
+import type { RetryConfig } from "../config/types.js";
+import { executeCandidates, streamCandidates, type CandidateHooks } from "./executor.js";
 
 export class AbTestStrategy implements IStrategy {
   public readonly mode: StrategyMode = "abtest";
   private readonly variants: readonly AbTestVariant[];
   private readonly lookup: ProviderLookup;
+  private readonly retryConfigs: ReadonlyMap<string, RetryConfig>;
 
   constructor(lookup: ProviderLookup, config: AbTestConfig) {
     this.lookup = lookup;
+    this.retryConfigs = config.retryConfigs ?? new Map();
     this.variants = config.variants;
   }
 
@@ -30,32 +34,31 @@ export class AbTestStrategy implements IStrategy {
     return [picked, ...others];
   }
 
+  private hooks(): CandidateHooks {
+    return {
+      label: "AbTestStrategy",
+      retryConfigFor: (name) => this.retryConfigs.get(name),
+    };
+  }
+
   async execute(
     ctx: RequestContext,
     req: ChatCompletionRequest,
   ): Promise<ChatCompletionResponse> {
-    const picked = this.pickVariant();
-    const provider = this.lookup(picked.name);
-    if (!provider) {
-      throw new Error(
-        `AbTestStrategy: provider "${picked.name}" not found`,
-      );
-    }
-    return provider.complete(ctx, req);
+    return executeCandidates(ctx, this.selectTargets(req), this.lookup, (p) => p.complete(ctx, req), this.hooks());
   }
 
   async *executeStream(
     ctx: RequestContext,
     req: ChatCompletionRequest,
   ): AsyncIterable<StreamChunk> {
-    const picked = this.pickVariant();
-    const provider = this.lookup(picked.name);
-    if (!provider || !("completeStream" in provider)) {
-      throw new Error(
-        `AbTestStrategy: streaming provider "${picked.name}" not found`,
-      );
-    }
-    yield* (provider as IStreamProvider).completeStream(ctx, req);
+    yield* streamCandidates(
+      ctx,
+      this.selectTargets(req),
+      this.lookup,
+      (p) => (p as IStreamProvider).completeStream(ctx, req),
+      this.hooks(),
+    );
   }
 
   private pickVariant(): AbTestVariant {

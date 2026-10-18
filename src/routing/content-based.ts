@@ -28,6 +28,8 @@ import type {
   ContentBasedMapping,
   ContentBasedRule,
 } from "./strategy-factory.js";
+import type { RetryConfig } from "../config/types.js";
+import { executeCandidates, streamCandidates, type CandidateHooks } from "./executor.js";
 
 interface CompiledCondition {
   readonly rule: ContentBasedRule;
@@ -40,9 +42,11 @@ export class ContentBasedStrategy implements IStrategy {
   private readonly conditions: readonly CompiledCondition[];
   private readonly defaultTarget: string | undefined;
   private readonly lookup: ProviderLookup;
+  private readonly retryConfigs: ReadonlyMap<string, RetryConfig>;
 
   constructor(lookup: ProviderLookup, config: ContentBasedConfig) {
     this.lookup = lookup;
+    this.retryConfigs = config.retryConfigs ?? new Map();
     this.keywords = config.keywords ?? [];
     this.defaultTarget = config.defaultTarget;
 
@@ -85,42 +89,51 @@ export class ContentBasedStrategy implements IStrategy {
     return result;
   }
 
+  private hooks(): CandidateHooks {
+    return {
+      label: "ContentBasedStrategy",
+      retryConfigFor: (name) => this.retryConfigs.get(name),
+    };
+  }
+
   async execute(
     ctx: RequestContext,
     req: ChatCompletionRequest,
   ): Promise<ChatCompletionResponse> {
-    const target = this.resolveTarget(req);
-    const provider = this.lookup(target);
-    if (!provider) {
-      throw new Error(
-        `ContentBasedStrategy: provider "${target}" not found`,
-      );
-    }
-    return provider.complete(ctx, req);
+    return executeCandidates(ctx, this.executionTargets(req), this.lookup, (p) => p.complete(ctx, req), this.hooks());
   }
 
   async *executeStream(
     ctx: RequestContext,
     req: ChatCompletionRequest,
   ): AsyncIterable<StreamChunk> {
-    const target = this.resolveTarget(req);
-    const provider = this.lookup(target);
-    if (!provider || !("completeStream" in provider)) {
-      throw new Error(
-        `ContentBasedStrategy: streaming provider "${target}" not found`,
-      );
-    }
-    yield* (provider as IStreamProvider).completeStream(ctx, req);
-  }
-
-  private resolveTarget(req: ChatCompletionRequest): string {
-    const matched = this.findMatchingTarget(req);
-    if (matched) return matched;
-    if (this.defaultTarget) return this.defaultTarget;
-    throw new Error(
-      "ContentBasedStrategy: no keyword matched and no defaultTarget configured",
+    yield* streamCandidates(
+      ctx,
+      this.executionTargets(req),
+      this.lookup,
+      (p) => (p as IStreamProvider).completeStream(ctx, req),
+      this.hooks(),
     );
   }
+
+  /**
+   * Execution candidates: the matched rule's target, then the default
+   * target as failover. Other rules' targets are not used: they serve
+   * different request content.
+   */
+  private executionTargets(req: ChatCompletionRequest): string[] {
+    const matched = this.findMatchingTarget(req);
+    if (!matched && !this.defaultTarget) {
+      throw new Error(
+        "ContentBasedStrategy: no keyword matched and no defaultTarget configured",
+      );
+    }
+    const out: string[] = [];
+    if (matched) out.push(matched);
+    if (this.defaultTarget && this.defaultTarget !== matched) out.push(this.defaultTarget);
+    return out;
+  }
+
 
   private findMatchingTarget(
     req: ChatCompletionRequest,

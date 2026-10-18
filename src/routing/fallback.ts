@@ -12,8 +12,7 @@ import type {
 } from "../providers/types.js";
 import type { FallbackConfig } from "./strategy-factory.js";
 import type { RetryConfig } from "../config/types.js";
-import { retryWithBackoff } from "./retry.js";
-import { isFailoverEligible } from "./outcome.js";
+import { executeCandidates, streamCandidates, type CandidateHooks } from "./executor.js";
 
 export class FallbackStrategy implements IStrategy {
   public readonly mode: StrategyMode = "fallback";
@@ -31,86 +30,36 @@ export class FallbackStrategy implements IStrategy {
     return [...this.targets];
   }
 
+  private hooks(streaming: boolean): CandidateHooks {
+    return {
+      label: "FallbackStrategy",
+      // No explicit retry config means a single attempt for this target
+      // (Go fallback default: no retries until WithTargetRetry).
+      retryConfigFor: (name) => this.retryConfigs.get(name),
+      exhausted: (lastError) => new FallbackExhaustedError(
+        `FallbackStrategy: all ${this.targets.length} ${streaming ? "streaming " : ""}targets failed`,
+        lastError,
+      ),
+    };
+  }
+
   async execute(
     ctx: RequestContext,
     req: ChatCompletionRequest,
   ): Promise<ChatCompletionResponse> {
-    let lastError: unknown;
-    for (const name of this.targets) {
-      const provider = this.lookup(name);
-      if (!provider) continue;
-      try {
-        // No explicit retry config means a single attempt for this target
-        // (Go fallback default: no retries until WithTargetRetry).
-        const retryCfg = this.retryConfigs.get(name) ?? { attempts: 1 };
-        return await retryWithBackoff(
-          () => provider.complete(ctx, req),
-          retryCfg,
-          ctx.signal,
-        );
-      } catch (err: unknown) {
-        lastError = err;
-        console.error(`FallbackStrategy: target "${name}" failed:`, err instanceof Error ? err.message : String(err));
-        if (!isFailoverEligible(err) || ctx.signal?.aborted) throw err;
-      }
-    }
-    throw new FallbackExhaustedError(
-      `FallbackStrategy: all ${this.targets.length} targets failed`,
-      lastError,
-    );
+    return executeCandidates(ctx, this.targets, this.lookup, (p) => p.complete(ctx, req), this.hooks(false));
   }
 
   async *executeStream(
     ctx: RequestContext,
     req: ChatCompletionRequest,
   ): AsyncIterable<StreamChunk> {
-    let lastError: unknown;
-    for (const name of this.targets) {
-      const provider = this.lookup(name);
-      if (!provider || !("completeStream" in provider)) continue;
-      // Open the stream and pull its first chunk eagerly, so pre-output
-      // failures are retried / failed over. Once output has started, any
-      // error is rethrown as-is: splicing another target's answer onto a
-      // partially delivered one would corrupt the response.
-      let opened: { iterator: AsyncIterator<StreamChunk>; first: IteratorResult<StreamChunk> };
-      try {
-        const retryCfg = this.retryConfigs.get(name) ?? { attempts: 1 };
-        opened = await retryWithBackoff(
-          async () => {
-            const iterator = (provider as IStreamProvider).completeStream(ctx, req)[Symbol.asyncIterator]();
-            const first = await iterator.next();
-            return { iterator, first };
-          },
-          retryCfg,
-          ctx.signal,
-        );
-      } catch (err: unknown) {
-        lastError = err;
-        console.error(`FallbackStrategy: streaming target "${name}" failed:`, err instanceof Error ? err.message : String(err));
-        if (!isFailoverEligible(err) || ctx.signal?.aborted) throw err;
-        continue;
-      }
-
-      const { iterator, first } = opened;
-      if (first.done) return;
-      let finished = false;
-      try {
-        yield first.value;
-        while (true) {
-          const next = await iterator.next();
-          if (next.done) {
-            finished = true;
-            return;
-          }
-          yield next.value;
-        }
-      } finally {
-        if (!finished) await iterator.return?.();
-      }
-    }
-    throw new FallbackExhaustedError(
-      `FallbackStrategy: all ${this.targets.length} streaming targets failed`,
-      lastError,
+    yield* streamCandidates(
+      ctx,
+      this.targets,
+      this.lookup,
+      (p) => (p as IStreamProvider).completeStream(ctx, req),
+      this.hooks(true),
     );
   }
 }

@@ -12,20 +12,29 @@ import type {
   IStreamProvider,
 } from "../providers/types.js";
 import type { LeastLatencyConfig } from "./strategy-factory.js";
+import type { RetryConfig } from "../config/types.js";
+import { executeCandidates, streamCandidates, type CandidateHooks } from "./executor.js";
 
 const DEFAULT_WINDOW_SIZE = 100;
+/** How long a failed target is ranked last (unless it succeeds as a failover candidate). */
+const DEFAULT_FAILURE_PENALTY_MS = 30_000;
 
 export class LeastLatencyStrategy implements IStrategy {
   public readonly mode: StrategyMode = "least_latency";
   private readonly targets: readonly string[];
   private readonly lookup: ProviderLookup;
+  private readonly retryConfigs: ReadonlyMap<string, RetryConfig>;
   private readonly windowSize: number;
   private readonly latencies: Map<string, number[]> = new Map();
+  private readonly lastFailureAt: Map<string, number> = new Map();
+  private readonly failurePenaltyMs: number;
 
   constructor(lookup: ProviderLookup, config: LeastLatencyConfig) {
     this.lookup = lookup;
+    this.retryConfigs = config.retryConfigs ?? new Map();
     this.targets = config.targets;
     this.windowSize = config.windowSize ?? DEFAULT_WINDOW_SIZE;
+    this.failurePenaltyMs = config.failurePenaltyMs ?? DEFAULT_FAILURE_PENALTY_MS;
     for (const name of this.targets) {
       this.latencies.set(name, []);
     }
@@ -35,73 +44,82 @@ export class LeastLatencyStrategy implements IStrategy {
     return this.targetsSortedByLatency();
   }
 
+  private hooks(): CandidateHooks {
+    return {
+      label: "LeastLatencyStrategy",
+      retryConfigFor: (name) => this.retryConfigs.get(name),
+      onSuccess: (name, elapsedMs) => this.recordLatency(name, elapsedMs),
+      onFailure: (name) => this.recordFailure(name),
+    };
+  }
+
   async execute(
     ctx: RequestContext,
     req: ChatCompletionRequest,
   ): Promise<ChatCompletionResponse> {
-    const picked = this.pickByLatency();
-    const provider = this.lookup(picked);
-    if (!provider) {
-      throw new Error(
-        `LeastLatencyStrategy: provider "${picked}" not found`,
-      );
-    }
-
-    const start = performance.now();
-    const response = await provider.complete(ctx, req);
-    const elapsed = performance.now() - start;
-    this.recordLatency(picked, elapsed);
-
-    return response;
+    return executeCandidates(ctx, this.candidates(), this.lookup, (p) => p.complete(ctx, req), this.hooks());
   }
 
   async *executeStream(
     ctx: RequestContext,
     req: ChatCompletionRequest,
   ): AsyncIterable<StreamChunk> {
-    const picked = this.pickByLatency();
-    const provider = this.lookup(picked);
-    if (!provider || !("completeStream" in provider)) {
-      throw new Error(
-        `LeastLatencyStrategy: streaming provider "${picked}" not found`,
-      );
-    }
-
-    const start = performance.now();
-    const stream = (provider as IStreamProvider).completeStream(ctx, req);
-    let firstChunk = true;
-    for await (const chunk of stream) {
-      if (firstChunk) {
-        const elapsed = performance.now() - start;
-        this.recordLatency(picked, elapsed);
-        firstChunk = false;
-      }
-      yield chunk;
-    }
+    yield* streamCandidates(
+      ctx,
+      this.candidates(),
+      this.lookup,
+      (p) => (p as IStreamProvider).completeStream(ctx, req),
+      this.hooks(),
+    );
   }
 
-  private pickByLatency(): string {
-    const sorted = this.targetsSortedByLatency();
-    if (sorted.length === 0) {
+  /**
+   * Candidate order:
+   *  1. healthy targets with no samples yet (unknown latency: explored first,
+   *     in declared order, so a new target gets measured);
+   *  2. healthy measured targets by p50 ascending;
+   *  3. targets that failed within the last failurePenaltyMs (most recent
+   *     failure last). They stay as last-resort failover candidates, and a
+   *     success clears the penalty.
+   * A target that never answers therefore never wins with an empty window
+   * (previously p50 = 0 for "no samples" made a dead target win every pick).
+   */
+  private targetsSortedByLatency(): string[] {
+    const now = Date.now();
+    const unknown: string[] = [];
+    const measured: { name: string; p50: number }[] = [];
+    const penalized: { name: string; at: number }[] = [];
+    for (const name of this.targets) {
+      const failedAt = this.lastFailureAt.get(name);
+      if (failedAt !== undefined && now - failedAt < this.failurePenaltyMs) {
+        penalized.push({ name, at: failedAt });
+        continue;
+      }
+      const p50 = this.computeP50(name);
+      if (p50 === undefined) unknown.push(name);
+      else measured.push({ name, p50 });
+    }
+    measured.sort((a, b) => a.p50 - b.p50);
+    penalized.sort((a, b) => a.at - b.at);
+    return [...unknown, ...measured.map((t) => t.name), ...penalized.map((t) => t.name)];
+  }
+
+  private candidates(): string[] {
+    if (this.targets.length === 0) {
       throw new Error(
         "LeastLatencyStrategy: no targets configured",
       );
     }
-    return sorted[0]!;
+    return this.targetsSortedByLatency();
   }
 
-  private targetsSortedByLatency(): string[] {
-    const withLatency = this.targets.map((name) => ({
-      name,
-      p50: this.computeP50(name),
-    }));
-    withLatency.sort((a, b) => a.p50 - b.p50);
-    return withLatency.map((t) => t.name);
+  private recordFailure(name: string): void {
+    this.lastFailureAt.set(name, Date.now());
   }
 
-  private computeP50(name: string): number {
+  private computeP50(name: string): number | undefined {
     const samples = this.latencies.get(name) ?? [];
-    if (samples.length === 0) return 0;
+    if (samples.length === 0) return undefined;
     const sorted = [...samples].sort((a, b) => a - b);
     const mid = Math.floor(sorted.length / 2);
     return sorted.length % 2 === 0
@@ -110,6 +128,7 @@ export class LeastLatencyStrategy implements IStrategy {
   }
 
   private recordLatency(name: string, ms: number): void {
+    this.lastFailureAt.delete(name);
     const samples = this.latencies.get(name) ?? [];
     samples.push(ms);
     while (samples.length > this.windowSize) {
