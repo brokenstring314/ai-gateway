@@ -48,7 +48,7 @@ The binaries are not code-signed. On macOS, clear the quarantine flag first:
 ### Run from source
 
 ```bash
-git clone <repo-url> && cd ai-gateway-rewrite
+git clone https://github.com/brokenstring314/ai-gateway.git && cd ai-gateway
 bun install
 ```
 
@@ -112,26 +112,28 @@ refused and in-flight requests drain for `SHUTDOWN_GRACE_MS` (default 10000).
 ## CLI Reference
 
 ```
-ai-gateway <command> [options]
+Usage:
+  ai-gateway serve    -c <config.yaml> [-p <port>] [-h <host>]
+  ai-gateway validate -c <config.yaml>
+  ai-gateway keys create [--admin] [--read-only] [--name <name>] [--expires <ISO>] [--json] -c <config.yaml>
+  ai-gateway keys list [--json] -c <config.yaml>
+  ai-gateway keys revoke <id> -c <config.yaml>
+  ai-gateway version
 
 Commands:
   serve      Start the gateway server
-  validate   Validate a config file
-  keys       Manage the API key store directly (create | list | revoke)
-  version    Print version information
+  validate   Validate a config file and report errors
+  keys       Manage the API key store directly (works with the server stopped or running)
+  version    Print version
 
 Options:
-  -c, --config <path>   Path to config file (YAML or JSON)
-  -p, --port <port>     Override server.port (serve)
-  -h, --host <host>     Override server.host (serve)
-  --data-dir <dir>      Data directory (keys; default GATEWAY_DATA_DIR or ./.data)
-  --help                Show help
-  -v, --version         Show version
-
-ai-gateway keys create [--admin] [--read-only] [--name <name>] [--expires <ISO>] [--json] -c <config>
-ai-gateway keys list   [--json] -c <config>
-ai-gateway keys revoke <id> -c <config>
+  -c, --config <path>   Config file path (YAML or JSON)
+  -p, --port <port>     Override server.port
+  -h, --host <host>     Override server.host
+  --data-dir <dir>      (keys) Data directory; default GATEWAY_DATA_DIR or ./.data
 ```
+
+`--help` (or `help`) prints this text, `ai-gateway keys --help` the `keys` options; `--version` / `-v` is the same as `version`. `-h` always means `--host`. Unknown options are an error.
 
 `ai-gateway serve`, `bun src/index.ts serve` and `bun src/cli/index.ts serve` are the same CLI and start the server through one `bootstrap()` (key store, production-safety checks, client auth, OpenTelemetry, graceful shutdown). Embedders can call `bootstrap(configPath, { port, host, dataDir })` from the package entry point; it returns a handle with `stop()`.
 
@@ -178,15 +180,16 @@ server:
   port: 3000                # HTTP port (default: 3000)
   host: "0.0.0.0"          # Bind address (default: 0.0.0.0)
   idleTimeoutSeconds: 255   # Bun idle timeout; 0 = never, max/default 255
-  sseHeartbeatSeconds: 5    # SSE ": ping" comment while a stream is idle; 0 = off
-  streamIdleTimeoutSeconds: 120  # end a stream when upstream sends nothing this long; 0 = off
+  sseHeartbeatSeconds: 5    # SSE ": ping" comment while a stream is idle (default 5); 0 = off
+  streamIdleTimeoutSeconds: 120  # end a stream when upstream sends nothing this long (default 120); 0 = off
+  streamMaxDurationSeconds: 0    # hard cap on one stream's duration; 0 = off (default)
   perIpRateLimit:           # per-client-IP token bucket on /v1/*; OFF unless rps > 0
     rps: 50                 #   sustained requests/second per IP (env RATE_LIMIT_RPS overrides)
     burst: 100              #   bucket size, default 2 × rps (env RATE_LIMIT_BURST overrides)
-  streamMaxDurationSeconds: 0    # hard cap on one stream's duration; 0 = off (default)
 
 passthroughProxy:
   enabled: false            # forward other /v1/* routes upstream (see API Endpoints)
+  # routes: ["POST /v1/responses", "POST /v1/moderations", "POST /v1/audio/*"]  # default allow-list
 
 strategy:
   mode: single              # single | fallback | loadbalance | conditional
@@ -202,20 +205,24 @@ strategy:
 targets:
   - name: openai-main
     provider: openai
-    apiKey: "sk-..."
+    apiKey: "sk-..."                        # may be "${OPENAI_API_KEY}"
     baseURL: "https://api.openai.com/v1"   # Optional, has per-provider defaults
     models: ["gpt-4o", "gpt-4o-mini"]
     weight: 3                               # For loadbalance strategy (0 = drained)
     costPer1kInputTokens: 0.005             # Pricing (budget plugin / metrics)
     costPer1kOutputTokens: 0.015
-    retry:                                  # Per-target retry config
-      attempts: 3                           # Max attempts (default: 1 = no retry)
+    retry:                                  # Per-target retry (no block = 1 attempt, no retry)
+      attempts: 3                           # Max attempts (default when the block is present: 3)
       initialBackoffMs: 100                 # Base backoff in ms (default: 100)
-      onStatusCodes: [429, 500, 502, 503]  # Retryable status codes
+      onStatusCodes: [408, 429, 500, 502, 503, 504]  # Retryable status codes (this is the default)
     circuitBreaker:                         # Per-target circuit breaker
       failureThreshold: 5                   # Consecutive failures before open (default: 5)
       successThreshold: 1                   # Successes in half-open to close (default: 1)
+      maxHalfThreshold: 1                   # Concurrent probes allowed in half-open (default: 1)
       timeoutMs: 30000                      # Open → half-open timeout (default: 30000)
+    concurrency:                            # Per-target concurrency limit (off unless set)
+      maxConcurrency: 20                    # In-flight upstream calls (1–10000)
+      queueSize: 1000                       # Waiting requests beyond that (default: 1000; full → 429)
 
   - name: deepseek-backup
     provider: deepseek
@@ -223,48 +230,46 @@ targets:
     models: ["deepseek-chat"]
 
 auth:
-  enabled: true
+  enabled: true             # on unless explicitly false
   keys:
     - "sk-my-api-key-1"
     - "sk-my-api-key-2"
 
-adminSecret: "a-secure-admin-secret-at-least-8-chars"
+adminSecret: "a-secure-admin-secret-at-least-8-chars"   # 8+ chars (16+ with GATEWAY_ENV=production)
 
 cors:
   enabled: true
   origins:
     - "https://my-app.example.com"
     - "http://localhost:3000"
+  # allowHeaders: [...]     # default: reflect Access-Control-Request-Headers
 
 maxRequestBytes: 10485760       # 10 MB body limit (default)
-requestTimeout: "30s"           # Go-style duration: 30s, 5m, 1h
+requestTimeout: "30s"           # 30s (default), 5m, 1h
 
 aliases:
   fast: "gpt-4o-mini"
   smart: "gpt-4o"
 
-plugins:
+plugins:                        # run in this order; see Plugins for every option
   - name: rate-limit
     stage: before_request
     config:
-      requestsPerSecond: 100
-      burst: 200
-      keyRpm: 60
+      maxRequestsPerMinute: 60
+  - name: word-filter
+    stage: before_request
+    config:
+      blockedWords: ["forbidden", "blocked"]
+      mode: reject              # reject (default) | redact
+  - name: max-token
+    stage: before_request
+    config:
+      maxTokens: 4096
   - name: cache
     stage: before_request
     config:
       maxAge: 300
       maxEntries: 1000
-  - name: word-filter
-    stage: before_request
-    config:
-      blockedWords: ["forbidden", "blocked"]
-      caseSensitive: false
-  - name: max-token
-    stage: before_request
-    config:
-      maxTokens: 4096
-      maxMessages: 100
   - name: budget
     stage: before_request
     config:
@@ -277,16 +282,20 @@ compatibility:
 
 mcpServers:
   - name: my-tools
-    type: stdio
+    type: stdio                 # stdio is the only transport
     command: "node"
-    args: ["my-mcp-server.js"]        # stdio is the only transport
+    args: ["my-mcp-server.js"]
+    # env: {...}  inheritEnv: [...]  allowedTools: [...]
+    # maxCallDepth: 5  timeoutSeconds: 30  required: false
 
 observability:
   tracing:
     enabled: true
-    otlpEndpoint: "http://localhost:4318"
-    otlpProtocol: http          # grpc | http
+    otlpEndpoint: "http://localhost:4318/v1/traces"   # full OTLP/HTTP traces URL
     serviceName: "ai-gateway"
+    sampleRatio: 1.0            # 0–1 (default 1.0)
+    privacyLevel: metadata      # none | metadata (default) | full
+    # headers: {...}  shutdownGrace: "10s"
   metrics:
     enabled: true
     port: 9090
@@ -364,7 +373,7 @@ All providers use the OpenAI-compatible protocol. The gateway adapts request/res
 | `databricks`  | none: set `baseURL` (`https://<workspace>.cloud.databricks.com/serving-endpoints`) |
 | `huggingface` | `https://api-inference.huggingface.co/v1`           |
 
-Any unknown provider with an explicit `baseURL` is treated as a generic OpenAI-compatible endpoint; an unknown provider without one fails at startup. `nvidia-nim` is accepted as an alias of `nvidia_nim`. `openrouter` targets send an `HTTP-Referer` / `X-Title` attribution header. `baseURL` may contain `${VAR}` references (e.g. `"${OPENAI_BASE_URL}"`, `"http://localhost:${PORT}/v1"`); the expanded value must be an http(s) URL.
+Any unknown provider with an explicit `baseURL` is treated as a generic OpenAI-compatible endpoint; an unknown provider without one fails `validate` and startup. Provider names are case-insensitive; `nvidia-nim` and `nim` are aliases of `nvidia_nim`, `x-ai` of `xai`, `dashscope` of `qwen`. `openrouter` targets send an `HTTP-Referer` / `X-Title` attribution header. `baseURL` may contain `${VAR}` references (e.g. `"${OPENAI_BASE_URL}"`, `"http://localhost:${PORT}/v1"`); the expanded value must be an http(s) URL.
 
 Parameter support is looked up by `provider` (the preset), not by the target's `name`, so a target called `my-mistral` with `provider: mistral` gets Mistral's capability checks (see [Compatibility Mode](#compatibility-mode)).
 
@@ -576,7 +585,7 @@ proxy is off by default.
 | ------------- | -------------------------------------------- | ------------ |
 | `GET /health` | General health check                         | 200          |
 | `GET /livez`  | Process liveness (Kubernetes liveness probe). 503 only when a `required` MCP server has failed 5 consecutive reconnect attempts, so the orchestrator restarts the pod | 200 / 503    |
-| `GET /readyz` | Readiness: config + providers loaded, config store and required MCP servers up, not draining. Upstream circuit-breaker state does **not** affect readiness (every replica shares the same upstreams; failing readiness would pull the whole fleet); it is reported in the body as `circuitBreakers` / `upstreamAvailable`. Returns 503 immediately once SIGTERM/SIGINT drain starts, and new requests are refused with 503 during the drain | 200 / 503    |
+| `GET /readyz` | Readiness: config + providers loaded, SQLite stores (key store, request-log store) reachable, required MCP servers up, not draining. Upstream circuit-breaker state does **not** affect readiness (every replica shares the same upstreams; failing readiness would pull the whole fleet); it is reported in the body as `circuitBreakers` / `upstreamAvailable`. Returns 503 immediately once SIGTERM/SIGINT drain starts, and new requests are refused with 503 during the drain | 200 / 503    |
 
 ### Metrics
 
@@ -588,23 +597,33 @@ Prometheus-format metrics including:
 
 - `ai_gateway_requests_total{method, status, provider}` — HTTP request counter
 - `ai_gateway_request_duration_seconds{method, status, provider}` — latency histogram
-- `ai_gateway_tokens_input_total{provider, model}` — input token counter (chat)
-- `ai_gateway_tokens_output_total{provider, model}` — output token counter (chat)
-- `ai_gateway_plugin_blocked_total{plugin, outcome, surface}` — requests ended by a before-request plugin
+- `ai_gateway_tokens_input_total{provider, model}` — input token counter (every surface that reports usage)
+- `ai_gateway_tokens_output_total{provider, model}` — output token counter
+- `ai_gateway_plugin_blocked_total{plugin, outcome, surface}` — requests ended by a plugin
+
+Full list: [Prometheus Metrics](#prometheus-metrics).
 
 ### Admin API
 
-All admin endpoints require the `X-Admin-Secret` header (or `Authorization: Bearer <secret>`) matching the `adminSecret` config field. If no `adminSecret` is configured, admin endpoints return 403.
+Admin endpoints accept, in key-store mode (`ai-gateway serve`): the `adminSecret` (as `X-Admin-Secret` or `Authorization: Bearer`), a key-store key with `admin` or `read_only` scope (`Authorization: Bearer`), or a bootstrap key while it is still allowed (see below). Inference-only keys get 403 `insufficient_scope`; every mutating route needs `admin`. Without a key store (embedded `createApp(gateway, config)`) only `adminSecret` is accepted, and with no `adminSecret` the admin API answers 403 `admin_disabled`.
 
-| Method | Path                   | Description                            |
-| ------ | ---------------------- | -------------------------------------- |
-| GET    | `/admin/config`        | Get current config (secrets redacted: API keys, admin secret, client keys, URL credentials, OTLP headers, MCP env/args, secret-looking plugin config; exact `${VAR}` templates are shown as-is) |
-| GET    | `/admin/keys`          | List API keys (redacted)               |
-| POST   | `/admin/keys`          | Add a new API key                      |
-| DELETE | `/admin/keys/:id`      | Delete an API key by index             |
-| GET    | `/admin/logs`          | Request log, newest first; `limit` (≤200), `offset`, filters `stage` (surface), `model`, `provider` (target), `since`, `status=error\|ok` |
-| GET    | `/admin/logs/stats`    | Counts by surface/target/model, errors, tokens (same filters) |
-| GET    | `/admin/status`        | Console overview: caller `scopes`, `circuitBreakers` per target, `upstreamAvailable`, `mcpServers`, in-process request summary (count, 4xx/5xx, error rate, latency mean/p50/p95) |
+| Method | Path                      | Scope      | Description                            |
+| ------ | ------------------------- | ---------- | -------------------------------------- |
+| GET    | `/admin/config`           | read_only  | Current config (secrets redacted: API keys, admin secret, client keys, URL credentials, OTLP headers, MCP env/args, secret-looking plugin config; exact `${VAR}` templates are shown as-is) |
+| GET    | `/admin/keys`             | read_only  | List API keys (never plaintext)        |
+| GET    | `/admin/keys/usage`       | read_only  | Usage counters: `totalKeys`, `totalUsageCount`, per-key `usageCount` |
+| GET    | `/admin/keys/:id`         | read_only  | One key                                |
+| POST   | `/admin/keys`             | admin      | Create a key (`{"name", "scopes"?, "expiresAt"?}`); the key is returned once |
+| PUT    | `/admin/keys/:id`         | admin      | Update name and scopes (`{"name", "scopes"}`) |
+| POST   | `/admin/keys/:id/revoke`  | admin      | Revoke a key                           |
+| POST   | `/admin/keys/:id/rotate`  | admin      | Replace a key's secret (new key returned once) |
+| DELETE | `/admin/keys/:id`         | admin      | Delete a key                           |
+| GET    | `/admin/logs`             | read_only  | Request log, newest first; `limit` (≤200), `offset`, filters `stage` (surface), `model`, `provider` (target), `since`, `status=error\|ok` |
+| GET    | `/admin/logs/stats`       | read_only  | Counts by surface/target/model, errors, tokens (same filters) |
+| DELETE | `/admin/logs?before=<ISO>`| admin      | Purge persisted log entries older than `before` (optional `stage` / `model` / `provider`) |
+| GET    | `/admin/status`           | read_only  | Console overview: caller `scopes`, `circuitBreakers` per target, `upstreamAvailable`, `mcpServers`, in-process request summary (count, 4xx/5xx, error rate, latency mean/p50/p95) |
+
+Without a key store, `GET` / `POST` / `DELETE /admin/keys` manage the in-memory `auth.keys` list instead (`POST {"key": "sk-..."}`, delete by list index; lost on restart).
 
 The config is read-only at runtime: there is no hot reload and no config write API (removed in 0.2.0; the old write routes answer `410 config_api_removed`). To change config, edit the file and restart (rolling restart behind a load balancer). `SIGHUP` is logged and ignored.
 
@@ -614,11 +633,11 @@ The config is read-only at runtime: there is no hot reload and no config write A
 # Get config
 curl -H "X-Admin-Secret: my-secret" http://localhost:3000/admin/config
 
-# Add a key
+# Create an inference key (key-store mode); the response carries the key once
 curl -X POST \
   -H "X-Admin-Secret: my-secret" \
   -H "Content-Type: application/json" \
-  -d '{"key": "sk-new-key"}' \
+  -d '{"name": "my-app", "scopes": ["inference"]}' \
   http://localhost:3000/admin/keys
 ```
 
@@ -845,12 +864,14 @@ targets:
     retry:
       attempts: 3
       initialBackoffMs: 100
-      onStatusCodes: [429, 500, 502, 503, 504]  # Default
+      onStatusCodes: [408, 429, 500, 502, 503, 504]  # Default
 ```
 
+A target without a `retry` block gets one attempt. With the block, `attempts` defaults to 3.
+
 - **4xx errors (except 429)** are never retried on the same target. 401/403/404 still fail over to the next target (see Fallback); other 4xx indicate a client problem
-- **429 (rate limit)** is retried with backoff
-- **5xx and network errors** are retried
+- **408, 429 and 5xx** in `onStatusCodes` are retried with backoff
+- **Network errors** are retried
 - **AbortSignal** cancellation is respected immediately
 
 ### Circuit Breaker
@@ -881,8 +902,23 @@ CLOSED ──── failureThreshold failures ────→ OPEN
 ```
 
 - **CLOSED**: All requests pass through. Consecutive failures are counted.
-- **OPEN**: All requests rejected with `CircuitOpenError` (503).
-- **HALF_OPEN**: One probe request allowed. Success closes the breaker, failure reopens it.
+- **OPEN**: The target is skipped (failover moves to the next candidate); when every candidate is open the request gets 503 `circuit_open` with `Retry-After`.
+- **HALF_OPEN**: Up to `maxHalfThreshold` (default 1) probe requests allowed. `successThreshold` successes close the breaker, a failure reopens it.
+- Settlement is permit-based: an outcome only counts in the breaker generation its request was admitted in. Client aborts and requests that never left the concurrency queue do not count.
+
+### Concurrency Limit
+
+```yaml
+targets:
+  - name: openai-main
+    provider: openai
+    apiKey: "sk-..."
+    concurrency:
+      maxConcurrency: 20   # in-flight upstream calls for this target
+      queueSize: 1000      # waiting requests (default 1000)
+```
+
+Off unless `maxConcurrency` is set. A request waits in the target's queue for a slot; when the queue is full, or the request deadline fires while it waits, that candidate fails with 429 `gateway_overloaded` (failover to the next candidate still applies) and the breaker is not charged.
 
 ---
 
@@ -927,15 +963,15 @@ plugins:
 
 #### Word Filter
 
-Content guardrail that rejects requests containing blocked words.
+Content guardrail that rejects (or redacts) requests containing blocked words.
 
 ```yaml
 plugins:
   - name: word-filter
     stage: before_request
     config:
-      blockedWords: ["forbidden", "harmful"]
-      caseSensitive: false      # Default: false
+      blockedWords: ["forbidden", "harmful"]   # alias: blocklist; empty list = plugin skipped
+      mode: reject                             # reject (default, 403 plugin_rejected) | redact
 ```
 
 Matching is case-insensitive on Unicode NFKC-normalized text, so compatibility look-alikes (Kelvin sign `K`, fullwidth `ｋｉｌｌ`, long `ſ`) are caught. In `mode: redact` the matched words become `***` (the affected text is forwarded in NFKC form); if a word is detected but cannot be redacted, the request is rejected. It is a coarse substring filter: zero-width characters and homoglyphs from other scripts still bypass it.
@@ -985,15 +1021,14 @@ Design adapted from ferro-labs/ai-gateway's `pii-redact` and `secret-scan` plugi
 
 #### Max Token
 
-Caps token count and message count in requests.
+Caps the output-token limit of each request.
 
 ```yaml
 plugins:
   - name: max-token
     stage: before_request
     config:
-      maxTokens: 4096           # Max output tokens per request; injected when the request sets none (default: 4096)
-      maxMessages: 100          # Max messages in conversation (default: 100)
+      maxTokens: 4096           # Required. Caps max_tokens / max_completion_tokens; injected as max_tokens when the request sets neither
 ```
 
 #### Budget
@@ -1026,10 +1061,10 @@ The `logger` plugin duplicated the gateway's own request log (one JSON line
 per request, see [Structured Logging](#structured-logging)). A `logger` entry
 in `plugins` is ignored with a startup warning; remove it.
 
-### Plugin Error Policy
+### Plugin Config and Error Policy
 
-- **Fail-open**: `logging`, `metrics` — if the plugin throws, the error is swallowed and the request continues
-- **Fail-closed**: `guardrail`, `ratelimit`, `auth`, `transform` — if the plugin throws, the request fails with a 500 error
+- Entries run in the order listed. `stage` is required by the schema, but each built-in registers itself on the stages it needs: `cache` and `budget` on both `before_request` and `after_request`, `pii-secret-guard` per its `direction`, the others on `before_request`. `type` is optional and informational. `enabled: false` skips an entry; names may use `_` instead of `-`. An unknown plugin name is ignored with a warning.
+- **Errors are fail-closed for every plugin:** a plugin that throws fails the request (500 `Internal server error`, logged with the request). There is no fail-open mode.
 
 ---
 
@@ -1062,7 +1097,7 @@ User request → LLM returns tool_calls → Gateway executes tools via MCP
   → Final response returned to user
 ```
 
-- MCP tool calls have a 30-second timeout per call
+- Per-server options: `timeoutSeconds` per tool call (default 30), `maxCallDepth` (default 5, read from the first `mcpServers` entry and applied to the whole loop; exceeding it answers 502 `mcp_depth_exceeded`), `allowedTools` (expose only these tools), `required` (gates `/readyz` / `/livez`, see below)
 - **Crash recovery:** if a stdio server fails to start or its process exits, the gateway reconnects it in the background with exponential backoff (1 s, 2 s, 4 s, … capped at 60 s) and logs every disconnect, failed attempt and recovery (`[mcp] server "name" ...`). Its tools are unavailable while it is down (and `/readyz` is 503 if it is `required`). After 5 consecutive failed attempts of a `required` server, `/livez` returns 503 so Kubernetes restarts the pod instead of keeping a never-ready replica.
 - **Environment:** stdio servers do **not** inherit the gateway's environment. They get only `PATH`, `HOME`, `USER`, `LOGNAME`, `SHELL`, `TERM`, `TZ`, `LANG`, `LANGUAGE`, `LC_ALL`, `LC_CTYPE`, `TMPDIR` (plus the Windows basics `SYSTEMROOT`, `WINDIR`, `COMSPEC`, `PATHEXT`, `TEMP`, `TMP`, `USERPROFILE`, `APPDATA`, `LOCALAPPDATA`) and the server's own `env` map, so provider API keys, `ADMIN_BOOTSTRAP_KEY`, OTLP tokens and cloud credentials never reach third-party MCP packages. Pass what a server needs in `env`, list extra variable names with `inheritEnv: ["HTTPS_PROXY", "NODE_EXTRA_CA_CERTS"]`, or opt back into full inheritance with `inheritEnv: true` (not recommended).
 - MCP tools are injected into **non-streaming** requests only. Streaming requests (`stream: true`) are forwarded without MCP tools and no agentic loop runs, so a streaming client never receives tool_calls for gateway-side tools it did not declare. Use a non-streaming request when you want the gateway to run MCP tools.
@@ -1077,18 +1112,22 @@ User request → LLM returns tool_calls → Gateway executes tools via MCP
 observability:
   tracing:
     enabled: true
-    otlpEndpoint: "http://localhost:4318"
-    otlpProtocol: http
+    otlpEndpoint: "http://localhost:4318/v1/traces"   # or env OTEL_EXPORTER_OTLP_ENDPOINT
     serviceName: "ai-gateway"
+    sampleRatio: 1.0          # or env OTEL_TRACES_SAMPLER
+    privacyLevel: metadata    # none | metadata | full
+    headers: {}               # e.g. auth headers for the collector (scrubbed in /admin/config)
+    shutdownGrace: "10s"      # flush budget on shutdown
 ```
 
-Spans created:
+Spans are exported over **OTLP/HTTP** to `otlpEndpoint` as given (use the full `/v1/traces` URL). `otlpProtocol: grpc | http` is accepted by the schema but has no effect: only the HTTP exporter is implemented. Tracing stays off without `enabled: true` and an endpoint.
 
-- `gateway.route` / `gateway.routeStream` — per-request root span
-- `plugin.before_request.{name}` — per-plugin child spans
-- `plugin.after_request.{name}`
-- `plugin.on_error.{name}`
-- `mcp.call_tool` — per MCP tool invocation
+One root span per request (`request.model` attribute; errors recorded on it):
+
+- `gateway.route` (non-streaming chat), `gateway.routeStream` (streaming chat)
+- `gateway.completions`, `gateway.completions_stream`, `gateway.embedding`, `gateway.image`, `gateway.passthrough`
+
+There are no per-plugin or per-MCP-call child spans.
 
 ### Prometheus Metrics
 
@@ -1113,8 +1152,9 @@ Without an `observability.metrics` block, `/metrics` stays on the main port.
 | `ai_gateway_provider_errors_total` | counter | `provider`, `error_type` (every failed upstream attempt, including ones that failed over) |
 | `ai_gateway_circuit_breaker_state` | gauge   | `provider`, `state` (1 = current state) |
 | `ai_gateway_mcp_server_up`       | gauge     | `server` |
-| `ai_gateway_rate_limit_rejections_total` | counter | `provider` |
-| `ai_gateway_plugin_blocked_total` | counter  | `plugin`, `outcome`, `surface` |
+| `ai_gateway_rate_limit_rejections_total` | counter | `provider` (`none`: rejections by the `rate-limit` plugin) |
+| `ai_gateway_plugin_blocked_total` | counter  | `plugin`, `outcome` (`plugin_rejected`, `plugin_short_circuit`, `response_rejected`), `surface` |
+| `ai_gateway_guardrail_detections_total` | counter | `entity`, `category`, `action`, `direction` |
 
 ### Structured Logging
 
@@ -1128,9 +1168,13 @@ Every request is logged exactly once as structured JSON to stdout (and to the re
   "provider": "openai-main",
   "strategy": "single",
   "durationMs": 1500,
-  "tokens": {"prompt": 15, "completion": 8, "total": 23}
+  "surface": "chat",
+  "tokens": {"prompt": 15, "completion": 8, "total": 23},
+  "status": 200
 }
 ```
+
+Optional fields: `error`, `usageEstimated` (stream without a usage chunk), `plugin` / `outcome` (request ended by a plugin), `guardrail` (detections, entity types only). `surface` is `chat`, `chat_stream`, `completions`, `completions_stream`, `embedding`, `image` or `passthrough`.
 
 ---
 
@@ -1156,13 +1200,13 @@ API key comparison uses constant-time equality to prevent timing attacks.
 
 ### Admin Authentication
 
-Admin endpoints require a secret:
+`/admin/*` uses its own auth (client auth skips it):
 
 ```yaml
-adminSecret: "a-long-random-secret-at-least-8-chars"
+adminSecret: "a-long-random-secret-at-least-8-chars"   # optional; 16+ chars in production
 ```
 
-Send via `X-Admin-Secret` header or `Authorization: Bearer <secret>`. If no `adminSecret` is configured, admin endpoints are disabled (403).
+Send the secret via `X-Admin-Secret` or `Authorization: Bearer <secret>`. With the key store (`ai-gateway serve`), `admin` / `read_only` store keys work too, so `adminSecret` is optional; without a key store and without `adminSecret` the admin API is disabled (403). See [Admin API](#admin-api) and [Key scopes](#key-scopes-key-store-mode).
 
 ### Body Size Limit
 
@@ -1198,10 +1242,10 @@ cors:
 ### Request Timeout
 
 ```yaml
-requestTimeout: "30s"  # Go-style: 30s, 5m, 1h
+requestTimeout: "30s"  # default 30s; also 5m, 1h
 ```
 
-Sets an `AbortController` that aborts the upstream fetch if exceeded.
+Sets an `AbortController` that aborts the upstream fetch if exceeded (504 `gateway_timeout`). It covers the request until a streaming response starts; streams are then bounded by `server.streamIdleTimeoutSeconds` / `streamMaxDurationSeconds`.
 
 ---
 
@@ -1284,6 +1328,8 @@ gateway.close();
 | `registerProvider(provider)`         | Add a provider at runtime                  |
 | `registerPlugin(stage, plugin)`      | Add a plugin at runtime                    |
 | `getConfig()`                        | Get current config (read-only)             |
+| `initMcp()`                          | Connect the configured MCP servers         |
+| `addRequestLogSink(sink)`            | Receive every finalized request-log entry  |
 | `close()`                            | Graceful shutdown                          |
 
 ---
@@ -1291,159 +1337,212 @@ gateway.close();
 ## Architecture
 
 ```
-┌─────────────────────────────────────────────────────────┐
-│                      HTTP Layer                         │
-│  Hono App → Recover → BodyLimit → SecurityHeaders →    │
-│  CORS → Auth → RequestTimeout → Handlers               │
-└──────────────────────┬──────────────────────────────────┘
-                       │
-┌──────────────────────▼──────────────────────────────────┐
-│                   Gateway Core                          │
-│                                                         │
-│  ┌─────────────┐   ┌──────────┐   ┌─────────────────┐ │
-│  │   Plugin     │   │ Strategy │   │ Circuit Breaker  │ │
-│  │   Manager    │   │ Factory  │   │   Registry       │ │
-│  └──────┬──────┘   └────┬─────┘   └────────┬────────┘ │
-│         │               │                   │          │
-│  before_request    ┌────▼─────┐         check/record   │
-│  after_request     │ Provider  │                        │
-│  on_error          │ Registry  │                        │
-│                    └────┬─────┘                        │
-│                         │                              │
-│         ┌───────────────┼───────────────┐              │
-│         ▼               ▼               ▼              │
-│  ┌────────────┐  ┌────────────┐  ┌────────────┐       │
-│  │  OpenAI    │  │  DeepSeek  │  │   Groq     │       │
-│  │  Compat    │  │  Compat    │  │  Compat    │  ...   │
-│  └────────────┘  └────────────┘  └────────────┘       │
-│                                                         │
-│  ┌─────────────┐   ┌──────────────┐                    │
-│  │ MCP Registry │   │ MCP Executor  │                   │
-│  └─────────────┘   └──────────────┘                    │
-└─────────────────────────────────────────────────────────┘
-                       │
-┌──────────────────────▼──────────────────────────────────┐
-│                 Observability                            │
-│  Tracing (OTel) │ Metrics (Prometheus) │ Request Log   │
-└─────────────────────────────────────────────────────────┘
+                         ┌──────────────────────────────────────────────┐
+  CLI  (src/cli)         │ server/bootstrap.ts                          │
+  serve | validate |     │  load + strictly validate config (file only) │
+  keys  | version  ────▶ │  open SQLite stores, production-safety check │
+                         │  new Gateway(config), MCP connect, OTel      │
+                         │  Bun.serve(createApp(...)), shutdown/drain   │
+                         └──────────────────────┬───────────────────────┘
+                                                │
+┌───────────────────────────────────────────────▼──────────────────────────────┐
+│ HTTP layer: app.ts (Hono)                                                     │
+│  recover → body-limit → security-headers → CORS → request metrics             │
+│  → drain gate (503 while shutting down) → client auth (skips probes, /metrics,│
+│    /admin/*) → per-IP limit (/v1/*, off by default) → request timeout         │
+│                                                                               │
+│  handlers/      Zod validation, OpenAI wire ⇄ internal types (openai-wire),   │
+│                 SSE writer, OpenAI-shaped errors                              │
+│  proxy/         opt-in allow-listed pass-through for other /v1/* routes       │
+│  admin/         /admin/* API (admin auth: adminSecret, admin / read_only keys)│
+│  dashboard/     /admin/dashboard console (static shell + console.js)          │
+└───────────────────────────────────────────────┬──────────────────────────────┘
+                                                │ gateway.ts facade
+                                                │ execute(surface) / executeStream(surface)
+┌───────────────────────────────────────────────▼──────────────────────────────┐
+│ core/                                                                         │
+│  surfaces/{chat, completions, embeddings, images, passthrough}               │
+│      per-endpoint glue: model, plugin view, call, usage, short-circuit       │
+│  pipeline.ts      alias → before plugins → executor → (MCP loop) → finalize  │
+│  chat-stream.ts + stream-runner.ts   streaming variant, finalize once/stream │
+│  mcp-loop.ts      MCP agentic tool loop (non-streaming chat-shaped requests) │
+│  executor.ts      candidates → breaker permit → limiter → call → retry →     │
+│                   classify (outcome.ts) → fail over / stop                   │
+│  errors.ts        one GatewayError model, "most meaningful" error pick       │
+│  assembly.ts      config → registry, plugins, strategy, breakers, limiters   │
+└──────┬──────────────────────────┬─────────────────────────────┬──────────────┘
+       │                          │                             │
+┌──────▼──────────────┐  ┌────────▼───────────────────┐  ┌──────▼───────────────┐
+│ plugins/            │  │ routing/                   │  │ providers/           │
+│  manager (3 stages) │  │  strategies only ORDER     │  │  openai-compat.ts:   │
+│  builtins: rate-    │  │  targets: single, fallback,│  │  one adapter for all │
+│  limit, cache,      │  │  loadbalance, conditional  │  │  22 presets          │
+│  word-filter, max-  │  │  circuit-breaker (permits),│  │  (core/provider-     │
+│  token, budget,     │  │  concurrency-limiter queue,│  │  presets.ts),        │
+│  pii-secret-guard   │  │  retry (exp. jitter)       │  │  wire-extras,        │
+└─────────────────────┘  └────────────────────────────┘  │  sse-parser,         │
+                                                         │  capabilities        │
+                                                         └──────────┬───────────┘
+                                                                    │ fetch
+                                                             upstream LLM APIs
+
+ Cross-cutting: config/ (Zod schema, AI_GATEWAY_* overrides, removed-key hints)
+                persistence/ (SQLite: key-store [WAL, bootstrap latch], request-log-store, migrations)
+                auth/ (bootstrap-key gate, key hashing)   mcp/ (stdio client, registry, executor)
+                observability/ (OTel tracing, request log, redaction)   metrics/ (Prometheus)
 ```
 
 ### Request Flow
 
+Non-streaming `POST /v1/chat/completions` (the other surfaces follow the same
+pipeline; embeddings and images skip the MCP loop):
+
 ```
-Client Request
+Client
   │
-  ├─ Middleware Stack (auth, body-limit, cors, security-headers, timeout)
+  ├─ Middleware: recover, body-limit, security headers, CORS, metrics,
+  │   drain gate, client auth (scopes inference / read_only / admin all
+  │   accepted on /v1/*), per-IP limit (if configured), request timeout
   │
-  ├─ Handler (validates request with Zod)
+  ├─ handlers/chat.ts: parse JSON, Zod-validate, wire → internal request
   │
-  ├─ Gateway.route() or routeStream()
+  ├─ gateway.execute(chatSurface)  →  core/pipeline.ts
   │   │
-  │   ├─ Model alias resolution
-  │   ├─ Plugin: before_request
-  │   ├─ Circuit breaker check
-  │   ├─ Strategy → Provider selection
-  │   ├─ Retry with backoff (if configured)
-  │   ├─ Provider HTTP call (fetch to upstream API)
-  │   ├─ Circuit breaker record (success/failure)
-  │   ├─ MCP agentic loop (if tool_calls in response)
-  │   ├─ Plugin: after_request
-  │   └─ Observability (tracing, metrics, logging)
+  │   ├─ 1 alias resolution (aliases)
+  │   ├─ 2 before plugins, in config order: rate-limit, word-filter,
+  │   │     max-token, pii-secret-guard, cache lookup, budget reserve ...
+  │   │     reject → finalize → error;  short-circuit (cache hit) → finalize → 200
+  │   ├─ 3 plugin view written back; MCP tools injected (chat, non-stream)
+  │   ├─ 4 strategy.selectTargets() → ordered candidate targets
+  │   ├─ 5 core/executor.ts, per candidate:
+  │   │     breaker.acquire() (open → skip, 503 circuit_open if all open)
+  │   │     → limiter.acquire(signal) (queue full / deadline → 429 gateway_overloaded)
+  │   │     → provider call, wrapped in per-target retry
+  │   │     → classify outcome (core/outcome.ts) → settle breaker permit
+  │   │     → failover-eligible (network, 5xx, 408, 429, 401/403/404)? next candidate
+  │   │       caller 4xx / client abort / gateway timeout? stop
+  │   ├─ 6 MCP loop: gateway-owned tool_calls → call tools → step 5 again
+  │   │     (until no tool_calls or maxCallDepth; usage summed)
+  │   └─ 7 finalize, exactly once: after / on_error plugins (cache store,
+  │         budget charge, response guard) → settle callbacks (budget
+  │         release) → request log (stdout + SQLite) → metrics → span end
   │
-  └─ Response to client
+  └─ handlers: internal response → OpenAI wire JSON (+ X-Gateway-* headers)
 ```
+
+Streaming (`stream: true`, chat and completions) goes through
+`gateway.executeStream()` → `core/chat-stream.ts` and `core/stream-runner.ts`:
+same before plugins and candidates; failures before the first chunk fail over
+like step 5, after it the target is fixed. The stream ends as `done`,
+`truncated`, `upstream_error`, `idle_timeout` or `client_cancel`; finalize runs
+once for every end (usage estimated when the upstream sent none). `data: [DONE]`
+is written only for a stream that completed; any other end sends an SSE error
+event without `[DONE]`. MCP tools are not injected into streams.
+
+Pass-through (`passthroughProxy.enabled`): allow-list check → before plugins
+(`core/surfaces/passthrough.ts`) → `proxy/proxy.ts` forwards verbatim; no
+breaker, failover, after plugins or budget accrual.
 
 ### Project Structure
 
 ```
 src/
-├── index.ts                   # Entry point + CLI + embedded mode exports
-├── gateway.ts                 # Gateway facade (embedded API)
-├── app.ts                     # Hono app factory + middleware wiring
+├── index.ts                 # Package entry (embedded exports); runs the CLI when executed
+├── gateway.ts               # Gateway facade: execute / executeStream, route, embed, MCP, stores
+├── app.ts                   # Hono app: middleware order, handlers, proxy, admin, /metrics
+├── version.ts               # VERSION
+│
+├── cli/
+│   ├── index.ts             # serve | validate | keys | version (raw argv parsing)
+│   └── keys.ts              # keys create | list | revoke on the SQLite key store
+├── server/
+│   ├── bootstrap.ts         # One server start path: stores, safety checks, OTel, listeners
+│   ├── shutdown.ts          # SIGTERM/SIGINT drain, in-flight tracker, grace + force close
+│   └── route-path.ts        # Path normalization (//, trailing /, %2F, case)
 │
 ├── config/
-│   ├── schema.ts              # Zod validation schemas
-│   ├── loader.ts              # YAML/JSON/env config loading
-│   └── types.ts               # TypeScript type definitions
-│
-├── providers/
-│   ├── types.ts               # IProvider, IStreamProvider, etc.
-│   ├── registry.ts            # Provider registration and lookup
-│   ├── openai-compat.ts       # Universal OpenAI-compatible adapter
-│   ├── capabilities.ts        # Per-provider parameter support matrix
-│   ├── sse-parser.ts          # SSE stream parser
-│   └── (presets: src/core/provider-presets.ts — one table of 20+ providers)
-│
-├── core/
-│   ├── assembly.ts            # Config → providers, plugins, strategy, breakers, executor, pipeline
-│   ├── pipeline.ts            # execute(surface, req, ctx): plugins → executor → MCP loop → finalize once
-│   ├── chat-stream.ts         # executeStream for chat / completions (finalize once per stream)
-│   ├── stream-runner.ts       # First chunk, stream end reasons, SSE writer
-│   ├── surfaces/              # chat, completions, embeddings, images, passthrough
-│   ├── mcp-loop.ts            # MCP agentic loop (usage summed)
-│   ├── mcp-runtime.ts         # MCP server connect / readiness
-│   ├── strategy-config.ts     # config.strategy → strategy mode + config
-│   ├── usage.ts               # Usage sums, stream estimate, costOf
-│   ├── executor.ts            # Candidate executor: breaker → limiter → call → settle → failover, retry
-│   ├── outcome.ts             # Attempt classification (breaker settlement, failover)
-│   ├── errors.ts              # GatewayError, toGatewayError, OpenAI error shape
-│   └── provider-presets.ts    # Provider presets table
-│
-├── routing/
-│   ├── types.ts               # IStrategy interface (selectTargets only)
-│   ├── strategy-factory.ts    # Strategy construction
-│   ├── concurrency-limiter.ts # Per-target slots, abortable queue
-│   ├── retry.ts               # Exponential backoff retry
-│   ├── circuit-breaker.ts     # Circuit breaker state machine
-│   ├── single.ts              # Single target routing
-│   ├── fallback.ts            # Fallback with error classification
-│   ├── loadbalance.ts         # Weighted load balancing
-│   └── conditional.ts         # Field/prompt rule routing
-│
-├── plugins/
-│   ├── types.ts               # IPlugin, Stage, PluginResult
-│   ├── manager.ts             # Plugin execution with fail-open/closed
-│   ├── context.ts             # PluginContext
-│   ├── error.ts               # PluginRejectionError
-│   └── builtins/              # 6 built-in plugins
-│       ├── rate-limit.ts
-│       ├── cache.ts
-│       ├── word-filter.ts
-│       ├── max-token.ts
-│       └── budget.ts
-│
-├── handlers/
-│   ├── chat.ts                # POST /v1/chat/completions
-│   ├── completions.ts         # POST /v1/completions
-│   ├── embeddings.ts          # POST /v1/embeddings
-│   ├── images.ts              # POST /v1/images/generations
-│   ├── models.ts              # GET /v1/models
-│   ├── capabilities.ts        # GET /v1/capabilities
-│   └── health.ts              # GET /health, /livez, /readyz
+│   ├── schema.ts            # Strict Zod schema (unknown keys are errors, with hints)
+│   ├── loader.ts            # YAML/JSON file + AI_GATEWAY_* overrides, validateConfig()
+│   ├── validate.ts          # Cross-reference checks (target names, rules, base URLs)
+│   ├── removed.ts           # Keys/modes removed in 0.2.0 with migration hints
+│   ├── production-safety.ts # GATEWAY_ENV=production startup guard
+│   ├── envref.ts            # ${VAR} expansion
+│   └── types.ts
 │
 ├── middleware/
-│   ├── auth.ts                # Bearer token auth (timing-safe)
-│   ├── body-limit.ts          # Actual body size enforcement
-│   ├── cors.ts                # CORS with multi-origin support
-│   ├── security-headers.ts    # Standard security headers
-│   ├── recover.ts             # Panic recovery
-│   └── request-timeout.ts     # AbortController-based timeout
+│   ├── recover.ts  body-limit.ts  security-headers.ts  cors.ts
+│   ├── auth.ts              # Client auth + admin auth (timing-safe, scopes)
+│   ├── per-ip-rate-limit.ts # Token bucket per client IP (off by default)
+│   ├── trusted-proxy.ts     # TRUSTED_PROXIES / X-Forwarded-For resolution
+│   └── request-timeout.ts   # AbortController deadline (default 30s)
 │
-├── mcp/
-│   ├── types.ts               # MCP protocol types
-│   ├── client.ts              # MCP client (stdio, with timeout)
-│   ├── registry.ts            # MCP server registry
-│   └── executor.ts            # Agentic tool-call loop
+├── handlers/
+│   ├── chat.ts  completions.ts  embeddings.ts  images.ts   # POST /v1/*
+│   ├── models.ts  capabilities.ts  health.ts               # GET /v1/models, /v1/capabilities, /health /livez /readyz
+│   ├── request.ts           # RequestContext, abort-signal linking
+│   ├── openai-wire.ts       # snake_case wire ⇄ camelCase internal types
+│   ├── error-response.ts    # OpenAI-shaped error responses
+│   ├── sse-stream.ts  sse-heartbeat.ts  abort.ts
 │
-├── observability/
-│   ├── tracing.ts             # Tracing facade (OpenTelemetry bridge)
-│   └── request-log.ts         # Structured JSON logging
+├── core/
+│   ├── pipeline.ts          # execute(surface, req, ctx): steps 1–7, finalize once
+│   ├── chat-stream.ts       # executeStream for chat / completions
+│   ├── stream-runner.ts     # First chunk + failover, stream end kinds, SSE writer
+│   ├── executor.ts          # Candidate executor: breaker → limiter → call → retry → failover
+│   ├── outcome.ts           # Attempt classification (breaker settlement, failover eligibility)
+│   ├── errors.ts            # GatewayError, OpenAI error shape, mostMeaningful()
+│   ├── mcp-loop.ts          # MCP agentic loop (usage summed)
+│   ├── mcp-runtime.ts       # MCP connect / readiness
+│   ├── assembly.ts          # Config → registry, plugins, strategy, breakers, limiters, pipeline
+│   ├── strategy-config.ts   # config.strategy → mode + per-mode config
+│   ├── provider-presets.ts  # The 22 provider presets (base URLs, aliases, extras)
+│   ├── usage.ts             # Usage sums, stream estimate, costOf
+│   ├── types.ts             # Surface, RequestRun, FinalizeOutcome, StreamEnd
+│   └── surfaces/            # chat, completions, embeddings, images, passthrough
 │
-└── admin/
-    ├── handlers.ts            # Admin sub-app with auth
-    ├── config-handlers.ts     # Config CRUD
-    ├── key-handlers.ts        # API key management
-    └── log-handlers.ts        # Log viewing
+├── routing/
+│   ├── types.ts             # IStrategy { mode, selectTargets }
+│   ├── strategy-factory.ts
+│   ├── single.ts  fallback.ts  loadbalance.ts  conditional.ts
+│   ├── circuit-breaker.ts   # Permit-based state machine + registry
+│   ├── concurrency-limiter.ts # Per-target slots, abortable queue
+│   ├── retry.ts             # Exponential backoff with jitter
+│   └── outcome.ts           # Re-export of core/outcome.ts
+│
+├── providers/
+│   ├── openai-compat.ts     # The one OpenAI-compatible adapter
+│   ├── wire-extras.ts       # Allow-listed pass-through fields
+│   ├── sse-parser.ts        # Upstream SSE parser (4 MiB event cap)
+│   ├── capabilities.ts      # Per-provider parameter matrix (compatibility mode)
+│   ├── response-headers.ts  # Forwarded upstream headers
+│   └── registry.ts  types.ts  index.ts
+│
+├── plugins/
+│   ├── manager.ts  context.ts  error.ts  types.ts
+│   └── builtins/            # 6 built-ins + from-config.ts
+│       ├── rate-limit.ts  cache.ts  word-filter.ts  max-token.ts  budget.ts
+│       └── pii-secret-guard/   # config, detectors, validators, plugin
+│
+├── mcp/                     # stdio client (MCP 2025-03-26 subset), registry, executor
+├── proxy/proxy.ts           # Pass-through proxy for allow-listed /v1/* routes
+├── persistence/
+│   ├── key-store.ts         # API keys (SHA-256), scopes, WAL, bootstrap latch
+│   ├── request-log-store.ts # /admin/logs storage
+│   └── migrations.ts        # Versioned SQLite migrations
+├── auth/                    # bootstrap.ts (bootstrap-key gate), key-hash.ts
+├── admin/                   # /admin/* API: config (read-only), keys, logs, status, scrubbing
+├── dashboard/               # Console page shells + static/console.{js,css} (embedded)
+├── observability/           # OTel SDK + tracer bridge, sampling/privacy, request log, redaction
+├── metrics/metrics.ts       # Prometheus registry (prom-client)
+└── types/assets.d.ts
+
+tests/
+├── unit/                    # Per-module tests
+├── integration/             # Full request flows in-process
+├── regressions/             # Imported bug-hunt repros, now regression tests
+├── types/                   # Type declarations used by tests
+└── e2e/                     # Real server + mock upstream + openai SDK (bun run test:e2e)
+scripts/                     # docker-smoke.sh, binary-smoke.sh, build-binaries.sh, release-notes.sh
 ```
 
 ---
@@ -1453,18 +1552,25 @@ src/
 ### Scripts
 
 ```bash
-bun run dev          # Start with file watching
-bun run start        # Start without watching
-bun run test         # Run all tests
-bun run test:watch   # Run tests in watch mode
-bun run typecheck    # Type-check with tsc
+bun run dev              # Start with file watching (bun run --watch src/index.ts)
+bun run start            # Start without watching
+bun run test             # Unit + integration + regression tests (bun test)
+bun run test:e2e         # E2E contract tests: real server, mock upstream, openai SDK
+bun run test:watch       # Run tests in watch mode
+bun run typecheck        # Type-check src with tsc
+bun run typecheck:tests  # Type-check tests
+bun run lint             # biome ci .
+bun run lint:fix         # biome lint --write .
 ```
 
 ### Running Tests
 
 ```bash
-# All tests (unit + integration)
+# All tests (unit + integration + regressions)
 bun test
+
+# E2E suite (CI runs both)
+bun run test:e2e
 
 # Specific test file
 bun test tests/unit/routing/fallback.test.ts
@@ -1485,8 +1591,10 @@ bun run test:watch
 | Dashboard UI                                  | Minimal admin console (`/admin/dashboard`) |
 | `NonOpenAIWireProvider` proxy rejection       | Generic fallback with `baseURL`        |
 | `sync.Pool` context pooling                   | Standard JS patterns                   |
-| `httputil.ReverseProxy` pass-through          | Not included                           |
-| Per-target concurrency limiter                | Not included (use circuit breaker)     |
+| `httputil.ReverseProxy` pass-through          | Opt-in allow-listed proxy (`passthroughProxy`) |
+| Per-target concurrency limiter                | `targets[].concurrency` (`maxConcurrency`, `queueSize`) |
+| 8 routing strategies                          | 4 (`single`, `fallback`, `loadbalance`, `conditional`); see [Removed strategies](#removed-strategies-020) |
+| MCP stdio + HTTP                              | stdio only                             |
 | Model catalog / discovery                     | Static config only                     |
 | Config file watcher                           | Not supported: edit the file and restart |
 

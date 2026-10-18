@@ -47,7 +47,7 @@ tar xzf ai-gateway-$V-$P.tar.gz && cd ai-gateway-$V-$P
 ### 从源码运行
 
 ```bash
-git clone <仓库地址> && cd ai-gateway-rewrite
+git clone https://github.com/brokenstring314/ai-gateway.git && cd ai-gateway
 bun install
 ```
 
@@ -109,26 +109,28 @@ CI 用 `scripts/docker-smoke.sh <image>` 对镜像做冒烟测试。
 ## CLI 命令参考
 
 ```
-ai-gateway <命令> [选项]
+Usage:
+  ai-gateway serve    -c <config.yaml> [-p <port>] [-h <host>]
+  ai-gateway validate -c <config.yaml>
+  ai-gateway keys create [--admin] [--read-only] [--name <name>] [--expires <ISO>] [--json] -c <config.yaml>
+  ai-gateway keys list [--json] -c <config.yaml>
+  ai-gateway keys revoke <id> -c <config.yaml>
+  ai-gateway version
 
-命令：
-  serve      启动网关服务
-  validate   验证配置文件
-  keys       直接管理 API 密钥库（create | list | revoke）
-  version    显示版本信息
+Commands:
+  serve      Start the gateway server
+  validate   Validate a config file and report errors
+  keys       Manage the API key store directly (works with the server stopped or running)
+  version    Print version
 
-选项：
-  -c, --config <路径>   配置文件路径（YAML 或 JSON）
-  -p, --port <端口>     覆盖 server.port（serve）
-  -h, --host <地址>     覆盖 server.host（serve）
-  --data-dir <目录>     数据目录（keys；默认 GATEWAY_DATA_DIR 或 ./.data）
-  --help                显示帮助
-  -v, --version         显示版本
-
-ai-gateway keys create [--admin] [--read-only] [--name <名称>] [--expires <ISO>] [--json] -c <配置>
-ai-gateway keys list   [--json] -c <配置>
-ai-gateway keys revoke <id> -c <配置>
+Options:
+  -c, --config <path>   Config file path (YAML or JSON)
+  -p, --port <port>     Override server.port
+  -h, --host <host>     Override server.host
+  --data-dir <dir>      (keys) Data directory; default GATEWAY_DATA_DIR or ./.data
 ```
+
+以上为 `--help`（或 `help`）的实际输出（CLI 只有英文帮助）；`ai-gateway keys --help` 显示 `keys` 的选项；`--version` / `-v` 等同 `version`。`-h` 始终表示 `--host`。未知选项直接报错。
 
 `ai-gateway serve`、`bun src/index.ts serve` 和 `bun src/cli/index.ts serve` 是同一个 CLI，都通过同一个 `bootstrap()` 启动服务（key store、生产环境安全检查、客户端鉴权、OpenTelemetry、优雅关闭）。嵌入方可以从包入口调用 `bootstrap(configPath, { port, host, dataDir })`，返回带 `stop()` 的句柄。
 
@@ -174,9 +176,17 @@ apiVersion: v1
 server:
   port: 3000                # HTTP 端口（默认：3000）
   host: "0.0.0.0"          # 绑定地址（默认：0.0.0.0）
+  idleTimeoutSeconds: 255   # Bun 空闲超时；0 = 永不超时，最大/默认 255
+  sseHeartbeatSeconds: 5    # 流空闲时发送 SSE ": ping" 注释（默认 5）；0 = 关闭
+  streamIdleTimeoutSeconds: 120  # 上游这么久没有数据就结束流（默认 120）；0 = 关闭
+  streamMaxDurationSeconds: 0    # 单个流的最长时长；0 = 关闭（默认）
   perIpRateLimit:           # /v1/* 按客户端 IP 的令牌桶；rps > 0 才启用（默认关闭）
     rps: 50                 #   每个 IP 每秒请求数（环境变量 RATE_LIMIT_RPS 优先）
     burst: 100              #   桶容量，默认 2 × rps（环境变量 RATE_LIMIT_BURST 优先）
+
+passthroughProxy:
+  enabled: false            # 把其他 /v1/* 路由转发到上游（见 API 端点）
+  # routes: ["POST /v1/responses", "POST /v1/moderations", "POST /v1/audio/*"]  # 默认白名单
 
 strategy:
   mode: single              # single | fallback | loadbalance | conditional
@@ -192,20 +202,24 @@ strategy:
 targets:
   - name: openai-main
     provider: openai
-    apiKey: "sk-..."
+    apiKey: "sk-..."                        # 可写成 "${OPENAI_API_KEY}"
     baseURL: "https://api.openai.com/v1"   # 可选，每个 provider 有默认值
     models: ["gpt-4o", "gpt-4o-mini"]
-    weight: 3                               # 用于 loadbalance 策略
+    weight: 3                               # 用于 loadbalance 策略（0 = 摘除）
     costPer1kInputTokens: 0.005             # 价格（budget 插件 / 指标）
     costPer1kOutputTokens: 0.015
-    retry:                                  # 每个目标的重试配置
-      attempts: 3                           # 最大尝试次数（默认：1 = 不重试）
+    retry:                                  # 每个目标的重试（不写 = 只尝试 1 次）
+      attempts: 3                           # 最大尝试次数（写了该块时默认 3）
       initialBackoffMs: 100                 # 基础退避时间（默认：100ms）
-      onStatusCodes: [429, 500, 502, 503]  # 可重试的状态码
+      onStatusCodes: [408, 429, 500, 502, 503, 504]  # 可重试的状态码（即默认值）
     circuitBreaker:                         # 每个目标的熔断器
       failureThreshold: 5                   # 连续失败多少次后熔断（默认：5）
       successThreshold: 1                   # 半开状态成功多少次后恢复（默认：1）
+      maxHalfThreshold: 1                   # 半开状态允许的并发探测数（默认：1）
       timeoutMs: 30000                      # 熔断到半开的超时时间（默认：30000ms）
+    concurrency:                            # 每目标并发限制（不设置则关闭）
+      maxConcurrency: 20                    # 同时在途的上游调用数（1–10000）
+      queueSize: 1000                       # 超出后的等待队列（默认 1000；满了返回 429）
 
   - name: deepseek-backup
     provider: deepseek
@@ -213,48 +227,46 @@ targets:
     models: ["deepseek-chat"]
 
 auth:
-  enabled: true
+  enabled: true             # 除非显式写 false，否则开启
   keys:
     - "sk-my-api-key-1"
     - "sk-my-api-key-2"
 
-adminSecret: "一个安全的管理员密钥至少8个字符"
+adminSecret: "一个安全的管理员密钥至少8个字符"   # 至少 8 个字符（GATEWAY_ENV=production 时至少 16）
 
 cors:
   enabled: true
   origins:
     - "https://my-app.example.com"
     - "http://localhost:3000"
+  # allowHeaders: [...]     # 默认反射 Access-Control-Request-Headers
 
 maxRequestBytes: 10485760       # 10 MB 请求体限制（默认）
-requestTimeout: "30s"           # Go 风格时长：30s、5m、1h
+requestTimeout: "30s"           # 30s（默认）、5m、1h
 
 aliases:
   fast: "gpt-4o-mini"
   smart: "gpt-4o"
 
-plugins:
+plugins:                        # 按列出顺序执行；各选项见“插件”
   - name: rate-limit
     stage: before_request
     config:
-      requestsPerSecond: 100
-      burst: 200
-      keyRpm: 60
+      maxRequestsPerMinute: 60
+  - name: word-filter
+    stage: before_request
+    config:
+      blockedWords: ["禁止词", "blocked"]
+      mode: reject              # reject（默认）| redact
+  - name: max-token
+    stage: before_request
+    config:
+      maxTokens: 4096
   - name: cache
     stage: before_request
     config:
       maxAge: 300
       maxEntries: 1000
-  - name: word-filter
-    stage: before_request
-    config:
-      blockedWords: ["禁止词", "blocked"]
-      caseSensitive: false
-  - name: max-token
-    stage: before_request
-    config:
-      maxTokens: 4096
-      maxMessages: 100
   - name: budget
     stage: before_request
     config:
@@ -267,16 +279,20 @@ compatibility:
 
 mcpServers:
   - name: my-tools
-    type: stdio
+    type: stdio                 # 只支持 stdio 传输
     command: "node"
-    args: ["my-mcp-server.js"]        # 只支持 stdio 传输
+    args: ["my-mcp-server.js"]
+    # env: {...}  inheritEnv: [...]  allowedTools: [...]
+    # maxCallDepth: 5  timeoutSeconds: 30  required: false
 
 observability:
   tracing:
     enabled: true
-    otlpEndpoint: "http://localhost:4318"
-    otlpProtocol: http          # grpc | http
+    otlpEndpoint: "http://localhost:4318/v1/traces"   # 完整的 OTLP/HTTP traces URL
     serviceName: "ai-gateway"
+    sampleRatio: 1.0            # 0–1（默认 1.0）
+    privacyLevel: metadata      # none | metadata（默认）| full
+    # headers: {...}  shutdownGrace: "10s"
   metrics:
     enabled: true
     port: 9090
@@ -352,7 +368,7 @@ AI_GATEWAY_CORS_ORIGINS=https://a.example,https://b.example   # 数组：逗号�
 | `databricks`  | 无：需设置 `baseURL`（`https://<workspace>.cloud.databricks.com/serving-endpoints`） |
 | `huggingface` | `https://api-inference.huggingface.co/v1`           |
 
-任何未知的提供商，只要提供了 `baseURL`，就会被当作通用 OpenAI 兼容端点处理；未知提供商且没有 `baseURL` 会在启动时报错。`nvidia-nim` 是 `nvidia_nim` 的别名。`openrouter` 目标会发送 `HTTP-Referer` / `X-Title` 归属头。`baseURL` 可以包含 `${VAR}` 引用（如 `"${OPENAI_BASE_URL}"`、`"http://localhost:${PORT}/v1"`），展开后必须是 http(s) URL。
+任何未知的提供商，只要提供了 `baseURL`，就会被当作通用 OpenAI 兼容端点处理；未知提供商且没有 `baseURL` 会让 `validate` 和启动报错。提供商名不区分大小写；`nvidia-nim`、`nim` 是 `nvidia_nim` 的别名，`x-ai` 是 `xai` 的别名，`dashscope` 是 `qwen` 的别名。`openrouter` 目标会发送 `HTTP-Referer` / `X-Title` 归属头。`baseURL` 可以包含 `${VAR}` 引用（如 `"${OPENAI_BASE_URL}"`、`"http://localhost:${PORT}/v1"`），展开后必须是 http(s) URL。
 
 参数支持按 `provider`（预设）查找，而不是按目标的 `name`：名为 `my-mistral`、`provider: mistral` 的目标会使用 Mistral 的能力检查（见“兼容性模式”）。
 
@@ -513,7 +529,7 @@ passthroughProxy:
 | ------------- | ---------------------------- | --------- |
 | `GET /health` | 通用健康检查                       | 200       |
 | `GET /livez`  | 进程存活（Kubernetes liveness 探针）。仅当某个 `required` MCP 服务器连续 5 次重连失败时返回 503，让编排系统重启 Pod | 200 / 503 |
-| `GET /readyz` | 就绪检查：配置和提供商已加载、配置存储与必需的 MCP 服务器可用、未处于排空状态。上游熔断器状态**不**影响就绪（所有副本共享同一上游，否则会把整个集群同时摘除），仅在响应体中以 `circuitBreakers` / `upstreamAvailable` 报告。收到 SIGTERM/SIGINT 开始排空后立即返回 503，排空期间新请求返回 503 | 200 / 503 |
+| `GET /readyz` | 就绪检查：配置和提供商已加载、SQLite 存储（密钥库、请求日志库）可访问、必需的 MCP 服务器可用、未处于排空状态。上游熔断器状态**不**影响就绪（所有副本共享同一上游，否则会把整个集群同时摘除），仅在响应体中以 `circuitBreakers` / `upstreamAvailable` 报告。收到 SIGTERM/SIGINT 开始排空后立即返回 503，排空期间新请求返回 503 | 200 / 503 |
 
 ### 指标
 
@@ -525,23 +541,33 @@ Prometheus 格式的指标，包括：
 
 - `ai_gateway_requests_total{method, status, provider}` — HTTP 请求计数
 - `ai_gateway_request_duration_seconds{method, status, provider}` — 延迟直方图
-- `ai_gateway_tokens_input_total{provider, model}` — 输入 token 计数（chat）
-- `ai_gateway_tokens_output_total{provider, model}` — 输出 token 计数（chat）
-- `ai_gateway_plugin_blocked_total{plugin, outcome, surface}` — 被 before-request 插件结束的请求
+- `ai_gateway_tokens_input_total{provider, model}` — 输入 token 计数（所有带 usage 的 surface）
+- `ai_gateway_tokens_output_total{provider, model}` — 输出 token 计数
+- `ai_gateway_plugin_blocked_total{plugin, outcome, surface}` — 被插件结束的请求
+
+完整列表见 [Prometheus 指标](#prometheus-指标)。
 
 ### 管理 API
 
-所有管理端点都需要 `X-Admin-Secret` 请求头（或 `Authorization: Bearer <密钥>`）匹配配置中的 `adminSecret`。如果未配置 `adminSecret`，管理端点返回 403。
+密钥库模式（`ai-gateway serve`）下，管理端点接受：`adminSecret`（`X-Admin-Secret` 或 `Authorization: Bearer`）、密钥库中 `admin` 或 `read_only` 作用域的密钥（`Authorization: Bearer`），以及仍被允许时的 bootstrap 密钥（见下文）。仅 inference 作用域的密钥返回 403 `insufficient_scope`；所有写操作需要 `admin`。没有密钥库时（嵌入式 `createApp(gateway, config)`）只接受 `adminSecret`，未配置 `adminSecret` 时管理 API 返回 403 `admin_disabled`。
 
-| 方法     | 路径                     | 说明                |
-| ------ | ---------------------- | ----------------- |
-| GET    | `/admin/config`        | 获取当前配置（已脱敏：API 密钥、admin secret、客户端密钥、URL 中的凭据、OTLP 头、MCP env/args、插件配置里疑似密钥的字段；完整的 `${VAR}` 模板原样显示） |
-| GET    | `/admin/keys`          | 列出 API 密钥（脱敏）     |
-| POST   | `/admin/keys`          | 添加新的 API 密钥       |
-| DELETE | `/admin/keys/:id`      | 按索引删除 API 密钥      |
-| GET    | `/admin/logs`          | 请求日志（新的在前）；`limit`（≤200）、`offset`，过滤 `stage`（surface）、`model`、`provider`（target）、`since`、`status=error\|ok` |
-| GET    | `/admin/logs/stats`    | 按 surface/target/model 计数、错误数、token（同样的过滤） |
-| GET    | `/admin/status`        | 控制台概览：调用方 `scopes`、各 target 的 `circuitBreakers`、`upstreamAvailable`、`mcpServers`、本进程请求摘要（数量、4xx/5xx、错误率、延迟 mean/p50/p95） |
+| 方法     | 路径                        | 作用域       | 说明                |
+| ------ | ------------------------- | --------- | ----------------- |
+| GET    | `/admin/config`           | read_only | 获取当前配置（已脱敏：API 密钥、admin secret、客户端密钥、URL 中的凭据、OTLP 头、MCP env/args、插件配置里疑似密钥的字段；完整的 `${VAR}` 模板原样显示） |
+| GET    | `/admin/keys`             | read_only | 列出 API 密钥（不返回明文） |
+| GET    | `/admin/keys/usage`       | read_only | 使用计数：`totalKeys`、`totalUsageCount`、每个密钥的 `usageCount` |
+| GET    | `/admin/keys/:id`         | read_only | 单个密钥 |
+| POST   | `/admin/keys`             | admin     | 创建密钥（`{"name", "scopes"?, "expiresAt"?}`），密钥只返回一次 |
+| PUT    | `/admin/keys/:id`         | admin     | 修改名称和作用域（`{"name", "scopes"}`） |
+| POST   | `/admin/keys/:id/revoke`  | admin     | 吊销密钥 |
+| POST   | `/admin/keys/:id/rotate`  | admin     | 轮换密钥（新密钥只返回一次） |
+| DELETE | `/admin/keys/:id`         | admin     | 删除密钥 |
+| GET    | `/admin/logs`             | read_only | 请求日志（新的在前）；`limit`（≤200）、`offset`，过滤 `stage`（surface）、`model`、`provider`（target）、`since`、`status=error\|ok` |
+| GET    | `/admin/logs/stats`       | read_only | 按 surface/target/model 计数、错误数、token（同样的过滤） |
+| DELETE | `/admin/logs?before=<ISO>`| admin     | 删除 `before` 之前的持久化日志（可选 `stage` / `model` / `provider`） |
+| GET    | `/admin/status`           | read_only | 控制台概览：调用方 `scopes`、各 target 的 `circuitBreakers`、`upstreamAvailable`、`mcpServers`、本进程请求摘要（数量、4xx/5xx、错误率、延迟 mean/p50/p95） |
+
+没有密钥库时，`GET` / `POST` / `DELETE /admin/keys` 管理的是内存中的 `auth.keys` 列表（`POST {"key": "sk-..."}`，按列表下标删除；重启后丢失）。
 
 运行时配置只读：没有热重载，也没有配置写接口（0.2.0 起移除；旧的写接口返回 `410 config_api_removed`）。改配置 = 改文件 + 重启（负载均衡后面滚动重启）。收到 `SIGHUP` 只打日志，不做任何事。
 
@@ -551,11 +577,11 @@ Prometheus 格式的指标，包括：
 # 获取配置
 curl -H "X-Admin-Secret: my-secret" http://localhost:3000/admin/config
 
-# 添加密钥
+# 创建一个 inference 密钥（密钥库模式）；响应中密钥只出现一次
 curl -X POST \
   -H "X-Admin-Secret: my-secret" \
   -H "Content-Type: application/json" \
-  -d '{"key": "sk-new-key"}' \
+  -d '{"name": "my-app", "scopes": ["inference"]}' \
   http://localhost:3000/admin/keys
 ```
 
@@ -745,7 +771,7 @@ strategy:
 
 ### 指数退避重试
 
-为每个目标配置重试行为。退避使用指数抖动：`延迟 = random(0, initialBackoffMs × 2^(尝试次数-1))`。
+为每个目标配置重试行为（适用于所有策略，包括 `single`）。退避使用指数抖动：`延迟 = random(0, initialBackoffMs × 2^(尝试次数-1))`。
 
 ```yaml
 targets:
@@ -755,12 +781,14 @@ targets:
     retry:
       attempts: 3
       initialBackoffMs: 100
-      onStatusCodes: [429, 500, 502, 503, 504]  # 默认值
+      onStatusCodes: [408, 429, 500, 502, 503, 504]  # 默认值
 ```
 
+没有 `retry` 块的目标只尝试 1 次；写了该块时 `attempts` 默认 3。
+
 - **4xx 错误（429 除外）不在同一目标上重试**。401/403/404 仍会切换到下一个目标（见 Fallback）；其他 4xx 表示客户端问题
-- **429（限流）** 会重试并退避
-- **5xx 和网络错误** 会重试
+- `onStatusCodes` 中的 **408、429 和 5xx** 会退避重试
+- **网络错误** 会重试
 - **AbortSignal** 取消会被立即响应
 
 ### 熔断器
@@ -791,8 +819,23 @@ targets:
 ```
 
 - **关闭**：所有请求通过。计算连续失败次数。
-- **打开**：所有请求被拒绝，返回 `CircuitOpenError`（503）。
-- **半开**：允许一个探测请求。成功则关闭熔断器，失败则重新打开。
+- **打开**：该目标被跳过（failover 到下一个候选）；所有候选都打开时返回 503 `circuit_open` 并带 `Retry-After`。
+- **半开**：最多允许 `maxHalfThreshold`（默认 1）个探测请求。成功 `successThreshold` 次后关闭熔断器，失败则重新打开。
+- 结算基于 permit：一次结果只在其请求被放行时的熔断器“代”内生效。客户端中止、以及始终没离开并发队列的请求都不计入。
+
+### 并发限制
+
+```yaml
+targets:
+  - name: openai-main
+    provider: openai
+    apiKey: "sk-..."
+    concurrency:
+      maxConcurrency: 20   # 该目标同时在途的上游调用数
+      queueSize: 1000      # 等待中的请求数（默认 1000）
+```
+
+不设置 `maxConcurrency` 就不启用。请求在该目标的队列里等待槽位；队列已满或等待期间到达请求截止时间时，该候选以 429 `gateway_overloaded` 失败（仍会 failover 到下一个候选），且不计入熔断器。
 
 ---
 
@@ -826,7 +869,7 @@ plugins:
 
 LRU 缓存，键基于所有有意义的请求参数（model、messages、temperature、tools、seed、maxTokens 等）。
 
-```yaml(8)
+```yaml
 plugins:
   - name: cache
     stage: before_request
@@ -837,15 +880,15 @@ plugins:
 
 #### 词过滤（Word Filter）
 
-内容安全护栏，拒绝包含屏蔽词的请求。
+内容安全护栏，拒绝（或脱敏）包含屏蔽词的请求。
 
 ```yaml
 plugins:
   - name: word-filter
     stage: before_request
     config:
-      blockedWords: ["禁止词", "有害内容"]
-      caseSensitive: false      # 默认：false
+      blockedWords: ["禁止词", "有害内容"]   # 别名 blocklist；列表为空则跳过该插件
+      mode: reject                         # reject（默认，403 plugin_rejected）| redact
 ```
 
 匹配在 Unicode NFKC 规范化后的文本上进行且不区分大小写，因此兼容字符变体（开尔文符号 `K`、全角 `ｋｉｌｌ`、长 `ſ`）也能识别。`mode: redact` 时命中的词替换为 `***`（被改写的文本以 NFKC 形式转发）；如果检测到但无法替换，则直接拒绝请求。它只是粗粒度的子串过滤：零宽字符和其他文字系统的形近字仍可绕过。
@@ -895,15 +938,14 @@ plugins:
 
 #### Token 限制（Max Token）
 
-限制请求中的 token 数和消息数。
+限制每个请求的输出 token 上限。
 
 ```yaml
 plugins:
   - name: max-token
     stage: before_request
     config:
-      maxTokens: 4096           # 每个请求的最大输出 token 数；请求未设置时注入（默认：4096）
-      maxMessages: 100          # 对话中的最大消息数（默认：100）
+      maxTokens: 4096           # 必填。封顶 max_tokens / max_completion_tokens；两者都没设置时注入为 max_tokens
 ```
 
 #### 预算控制（Budget）
@@ -932,10 +974,10 @@ plugins:
 
 `logger` 插件与网关自带的请求日志（每个请求一行 JSON，见“结构化日志”）重复。`plugins` 里的 `logger` 条目会被忽略并在启动时告警，请删除。
 
-### 插件错误策略
+### 插件配置与错误策略
 
-- **故障开放（Fail-open）**：`logging`、`metrics` — 插件抛异常时吞掉错误，请求继续
-- **故障关闭（Fail-closed）**：`guardrail`、`ratelimit`、`auth`、`transform` — 插件抛异常时请求失败，返回 500
+- 条目按列出顺序执行。schema 要求填写 `stage`，但每个内置插件会自行注册到所需阶段：`cache` 和 `budget` 同时注册 `before_request` 与 `after_request`，`pii-secret-guard` 取决于 `direction`，其余为 `before_request`。`type` 可选，仅作说明。`enabled: false` 跳过该条目；名称里的 `-` 可写成 `_`。未知插件名会被忽略并告警。
+- **所有插件的错误都是故障关闭（fail-closed）：** 插件抛异常时请求失败（500 `Internal server error`，并随请求记录日志）。没有 fail-open 模式。
 
 ---
 
@@ -967,7 +1009,7 @@ mcpServers:
   → 最终响应返回给用户
 ```
 
-- MCP 工具调用有 30 秒超时
+- 每个服务器的选项：`timeoutSeconds` 单次工具调用超时（默认 30），`maxCallDepth`（默认 5，取第一个 `mcpServers` 条目的值并作用于整个循环；超出返回 502 `mcp_depth_exceeded`），`allowedTools`（只暴露这些工具），`required`（影响 `/readyz` / `/livez`，见下文）
 - **崩溃恢复：** stdio 服务器启动失败或进程退出后，网关在后台以指数退避（1 秒、2 秒、4 秒……上限 60 秒）自动重连，并记录每次断开、失败和恢复（`[mcp] server "name" ...`）。断开期间其工具不可用（若为 `required`，`/readyz` 返回 503）。`required` 服务器连续 5 次重连失败后，`/livez` 返回 503，让 Kubernetes 重启 Pod，而不是留下一个永远不就绪的副本。
 - **环境变量：** stdio 服务器**不会**继承网关的环境变量，只拿到 `PATH`、`HOME`、`USER`、`LOGNAME`、`SHELL`、`TERM`、`TZ`、`LANG`、`LANGUAGE`、`LC_ALL`、`LC_CTYPE`、`TMPDIR`（以及 Windows 基础变量 `SYSTEMROOT`、`WINDIR`、`COMSPEC`、`PATHEXT`、`TEMP`、`TMP`、`USERPROFILE`、`APPDATA`、`LOCALAPPDATA`）和该服务器自己的 `env`，因此提供商 API 密钥、`ADMIN_BOOTSTRAP_KEY`、OTLP token、云凭据都不会泄露给第三方 MCP 包。服务器需要的值写在 `env` 里；额外需要透传的变量名用 `inheritEnv: ["HTTPS_PROXY", "NODE_EXTRA_CA_CERTS"]` 列出；`inheritEnv: true` 恢复完整继承（不推荐）。
 - MCP 工具只注入**非流式**请求。流式请求（`stream: true`）不注入 MCP 工具、也不运行智能体循环，因此流式客户端不会收到它未声明的网关侧工具的 tool_calls。需要网关执行 MCP 工具时请使用非流式请求。
@@ -982,18 +1024,22 @@ mcpServers:
 observability:
   tracing:
     enabled: true
-    otlpEndpoint: "http://localhost:4318"
-    otlpProtocol: http
+    otlpEndpoint: "http://localhost:4318/v1/traces"   # 或环境变量 OTEL_EXPORTER_OTLP_ENDPOINT
     serviceName: "ai-gateway"
+    sampleRatio: 1.0          # 或环境变量 OTEL_TRACES_SAMPLER
+    privacyLevel: metadata    # none | metadata | full
+    headers: {}               # 例如 collector 的认证头（/admin/config 中会脱敏）
+    shutdownGrace: "10s"      # 关闭时的 flush 时间
 ```
 
-创建的 Span：
+Span 通过 **OTLP/HTTP** 原样发送到 `otlpEndpoint`（请写完整的 `/v1/traces` URL）。schema 接受 `otlpProtocol: grpc | http`，但该字段不起作用：只实现了 HTTP exporter。未设置 `enabled: true` 或没有端点时不启用追踪。
 
-- `gateway.route` / `gateway.routeStream` — 每个请求的根 span
-- `plugin.before_request.{name}` — 每个插件的子 span
-- `plugin.after_request.{name}`
-- `plugin.on_error.{name}`
-- `mcp.call_tool` — 每个 MCP 工具调用
+每个请求一个根 span（带 `request.model` 属性，错误记录在其上）：
+
+- `gateway.route`（非流式 chat）、`gateway.routeStream`（流式 chat）
+- `gateway.completions`、`gateway.completions_stream`、`gateway.embedding`、`gateway.image`、`gateway.passthrough`
+
+没有按插件或按 MCP 调用的子 span。
 
 ### Prometheus 指标
 
@@ -1018,8 +1064,9 @@ observability:
 | `ai_gateway_provider_errors_total` | counter | `provider`, `error_type`（每次失败的上游尝试，含已 failover 的） |
 | `ai_gateway_circuit_breaker_state` | gauge   | `provider`, `state`（当前状态为 1） |
 | `ai_gateway_mcp_server_up`       | gauge     | `server` |
-| `ai_gateway_rate_limit_rejections_total` | counter | `provider` |
-| `ai_gateway_plugin_blocked_total` | counter  | `plugin`, `outcome`, `surface` |
+| `ai_gateway_rate_limit_rejections_total` | counter | `provider`（`none`：`rate-limit` 插件的拒绝） |
+| `ai_gateway_plugin_blocked_total` | counter  | `plugin`, `outcome`（`plugin_rejected`、`plugin_short_circuit`、`response_rejected`）, `surface` |
+| `ai_gateway_guardrail_detections_total` | counter | `entity`, `category`, `action`, `direction` |
 
 ### 结构化日志
 
@@ -1033,9 +1080,13 @@ observability:
   "provider": "openai-main",
   "strategy": "single",
   "durationMs": 1500,
-  "tokens": {"prompt": 15, "completion": 8, "total": 23}
+  "surface": "chat",
+  "tokens": {"prompt": 15, "completion": 8, "total": 23},
+  "status": 200
 }
 ```
+
+可选字段：`error`、`usageEstimated`（流式且没有 usage chunk）、`plugin` / `outcome`（被插件结束的请求）、`guardrail`（检测结果，只有实体类型）。`surface` 取值为 `chat`、`chat_stream`、`completions`、`completions_stream`、`embedding`、`image` 或 `passthrough`。
 
 ---
 
@@ -1061,13 +1112,13 @@ API 密钥比较使用常量时间相等性比较，防止时序攻击。
 
 ### 管理员认证
 
-管理端点需要密钥：
+`/admin/*` 使用独立的认证（客户端认证会跳过它）：
 
 ```yaml
-adminSecret: "一个足够长的随机密钥至少8个字符"
+adminSecret: "一个足够长的随机密钥至少8个字符"   # 可选；生产环境至少 16 个字符
 ```
 
-通过 `X-Admin-Secret` 头或 `Authorization: Bearer <密钥>` 发送。如果未配置 `adminSecret`，管理端点被禁用（返回 403）。
+通过 `X-Admin-Secret` 头或 `Authorization: Bearer <密钥>` 发送。使用密钥库时（`ai-gateway serve`），`admin` / `read_only` 作用域的密钥同样可用，因此 `adminSecret` 是可选的；既没有密钥库也没有 `adminSecret` 时管理 API 被禁用（403）。详见[管理 API](#管理-api) 和[密钥作用域](#密钥作用域密钥库模式)。
 
 ### 请求体大小限制
 
@@ -1103,10 +1154,10 @@ cors:
 ### 请求超时
 
 ```yaml
-requestTimeout: "30s"  # Go 风格：30s、5m、1h
+requestTimeout: "30s"  # 默认 30s；也可 5m、1h
 ```
 
-设置 `AbortController`，超时后中止上游 fetch。
+设置 `AbortController`，超时后中止上游 fetch（504 `gateway_timeout`）。它覆盖到流式响应开始为止；之后流由 `server.streamIdleTimeoutSeconds` / `streamMaxDurationSeconds` 约束。
 
 ---
 
@@ -1188,6 +1239,8 @@ gateway.close();
 | `registerProvider(provider)`         | 运行时添加提供商                           |
 | `registerPlugin(stage, plugin)`      | 运行时添加插件                            |
 | `getConfig()`                        | 获取当前配置（只读）                         |
+| `initMcp()`                          | 连接配置的 MCP 服务器                      |
+| `addRequestLogSink(sink)`            | 接收每条 finalize 后的请求日志                |
 | `close()`                            | 优雅关闭                               |
 
 ---
@@ -1195,159 +1248,208 @@ gateway.close();
 ## 架构
 
 ```
-┌─────────────────────────────────────────────────────────┐
-│                      HTTP 层                            │
-│  Hono App → Recover → BodyLimit → SecurityHeaders →    │
-│  CORS → Auth → RequestTimeout → Handlers               │
-└──────────────────────┬──────────────────────────────────┘
-                       │
-┌──────────────────────▼──────────────────────────────────┐
-│                   Gateway 核心                          │
-│                                                         │
-│  ┌─────────────┐   ┌──────────┐   ┌─────────────────┐ │
-│  │   插件       │   │  策略    │   │   熔断器        │ │
-│  │   管理器     │   │  工厂    │   │   注册表        │ │
-│  └──────┬──────┘   └────┬─────┘   └────────┬────────┘ │
-│         │               │                   │          │
-│  before_request    ┌────▼─────┐         检查/记录      │
-│  after_request     │ 提供商    │                        │
-│  on_error          │ 注册表   │                        │
-│                    └────┬─────┘                        │
-│                         │                              │
-│         ┌───────────────┼───────────────┐              │
-│         ▼               ▼               ▼              │
-│  ┌────────────┐  ┌────────────┐  ┌────────────┐       │
-│  │  OpenAI    │  │  DeepSeek  │  │   Groq     │       │
-│ G │  Compat   │  │  Compat    │  │  Com)pat    │  ...   │
-│  └────────────┘  └────────────┘  └────────────┘       │
-│                                                         │
-│  ┌─────────────┐   ┌──────────────┐                    │
-│  │ MCP 注册表  │   │ MCP 执行器   │                    │
-│  └─────────────┘   └──────────────┘                    │
-└─────────────────────────────────────────────────────────┘
-                       │
-┌──────────────────────▼──────────────────────────────────┐
-│                   可观测性                               │
-│  链路追踪 (OTel) │ 指标 (Prometheus) │ 请求日志        │
-└─────────────────────────────────────────────────────────┘
+                         ┌──────────────────────────────────────────────┐
+  CLI  (src/cli)         │ server/bootstrap.ts                          │
+  serve | validate |     │  load + strictly validate config (file only) │
+  keys  | version  ────▶ │  open SQLite stores, production-safety check │
+                         │  new Gateway(config), MCP connect, OTel      │
+                         │  Bun.serve(createApp(...)), shutdown/drain   │
+                         └──────────────────────┬───────────────────────┘
+                                                │
+┌───────────────────────────────────────────────▼──────────────────────────────┐
+│ HTTP layer: app.ts (Hono)                                                     │
+│  recover → body-limit → security-headers → CORS → request metrics             │
+│  → drain gate (503 while shutting down) → client auth (skips probes, /metrics,│
+│    /admin/*) → per-IP limit (/v1/*, off by default) → request timeout         │
+│                                                                               │
+│  handlers/      Zod validation, OpenAI wire ⇄ internal types (openai-wire),   │
+│                 SSE writer, OpenAI-shaped errors                              │
+│  proxy/         opt-in allow-listed pass-through for other /v1/* routes       │
+│  admin/         /admin/* API (admin auth: adminSecret, admin / read_only keys)│
+│  dashboard/     /admin/dashboard console (static shell + console.js)          │
+└───────────────────────────────────────────────┬──────────────────────────────┘
+                                                │ gateway.ts facade
+                                                │ execute(surface) / executeStream(surface)
+┌───────────────────────────────────────────────▼──────────────────────────────┐
+│ core/                                                                         │
+│  surfaces/{chat, completions, embeddings, images, passthrough}               │
+│      per-endpoint glue: model, plugin view, call, usage, short-circuit       │
+│  pipeline.ts      alias → before plugins → executor → (MCP loop) → finalize  │
+│  chat-stream.ts + stream-runner.ts   streaming variant, finalize once/stream │
+│  mcp-loop.ts      MCP agentic tool loop (non-streaming chat-shaped requests) │
+│  executor.ts      candidates → breaker permit → limiter → call → retry →     │
+│                   classify (outcome.ts) → fail over / stop                   │
+│  errors.ts        one GatewayError model, "most meaningful" error pick       │
+│  assembly.ts      config → registry, plugins, strategy, breakers, limiters   │
+└──────┬──────────────────────────┬─────────────────────────────┬──────────────┘
+       │                          │                             │
+┌──────▼──────────────┐  ┌────────▼───────────────────┐  ┌──────▼───────────────┐
+│ plugins/            │  │ routing/                   │  │ providers/           │
+│  manager (3 stages) │  │  strategies only ORDER     │  │  openai-compat.ts:   │
+│  builtins: rate-    │  │  targets: single, fallback,│  │  one adapter for all │
+│  limit, cache,      │  │  loadbalance, conditional  │  │  22 presets          │
+│  word-filter, max-  │  │  circuit-breaker (permits),│  │  (core/provider-     │
+│  token, budget,     │  │  concurrency-limiter queue,│  │  presets.ts),        │
+│  pii-secret-guard   │  │  retry (exp. jitter)       │  │  wire-extras,        │
+└─────────────────────┘  └────────────────────────────┘  │  sse-parser,         │
+                                                         │  capabilities        │
+                                                         └──────────┬───────────┘
+                                                                    │ fetch
+                                                             upstream LLM APIs
+
+ Cross-cutting: config/ (Zod schema, AI_GATEWAY_* overrides, removed-key hints)
+                persistence/ (SQLite: key-store [WAL, bootstrap latch], request-log-store, migrations)
+                auth/ (bootstrap-key gate, key hashing)   mcp/ (stdio client, registry, executor)
+                observability/ (OTel tracing, request log, redaction)   metrics/ (Prometheus)
 ```
 
 ### 请求流程
 
+非流式 `POST /v1/chat/completions`（其他 surface 走同一条 pipeline；embeddings 和 images 不跑 MCP 循环）：
+
 ```
-客户端请求
+客户端
   │
-  ├─ 中间件栈（auth、body-limit、cors、security-headers、timeout）
+  ├─ 中间件：recover、body-limit、安全头、CORS、指标、排空闸门、
+  │   客户端认证（/v1/* 接受 inference / read_only / admin 任一作用域）、
+  │   按 IP 限流（配置后才开启）、请求超时
   │
-  ├─ Handler（用 Zod 验证请求）
+  ├─ handlers/chat.ts：解析 JSON、Zod 校验、wire → 内部请求
   │
-  ├─ Gateway.route() 或 routeStream()
+  ├─ gateway.execute(chatSurface)  →  core/pipeline.ts
   │   │
-  │   ├─ 模型别名解析
-  │   ├─ 插件：before_request
-  │   ├─ 熔断器检查
-  │   ├─ 策略 → 提供商选择
-  │   ├─ 指数退避重试（如已配置）
-  │   ├─ 提供商 HTTP 调用（fetch 到上游 API）
-  │   ├─ 熔断器记录（成功/失败）
-  │   ├─ MCP 智能体循环（如响应中有 tool_calls）
-  │   ├─ 插件：after_request
-  │   └─ 可观测性（追踪、指标、日志）
+  │   ├─ 1 别名解析（aliases）
+  │   ├─ 2 before 插件，按配置顺序：rate-limit、word-filter、max-token、
+  │   │     pii-secret-guard、cache 查询、budget 预留 ……
+  │   │     拒绝 → finalize → 错误；短路（缓存命中）→ finalize → 200
+  │   ├─ 3 插件视图写回；注入 MCP 工具（chat，非流式）
+  │   ├─ 4 strategy.selectTargets() → 有序候选目标
+  │   ├─ 5 core/executor.ts，逐个候选：
+  │   │     breaker.acquire()（打开 → 跳过；全部打开 → 503 circuit_open）
+  │   │     → limiter.acquire(signal)（队列满 / 截止时间到 → 429 gateway_overloaded）
+  │   │     → 调用 provider，外面包一层该目标的 retry
+  │   │     → 结果分类（core/outcome.ts）→ 结算熔断器 permit
+  │   │     → 可 failover（网络、5xx、408、429、401/403/404）？下一个候选
+  │   │       调用方 4xx / 客户端中止 / 网关超时？结束
+  │   ├─ 6 MCP 循环：网关侧工具的 tool_calls → 调用工具 → 再走第 5 步
+  │   │     （直到没有 tool_calls 或达到 maxCallDepth；usage 累加）
+  │   └─ 7 finalize，恰好一次：after / on_error 插件（缓存写入、预算扣费、
+  │         响应扫描）→ settle 回调（释放预算预留）→ 请求日志（stdout + SQLite）
+  │         → 指标 → 结束 span
   │
-  └─ 响应返回客户端
+  └─ handlers：内部响应 → OpenAI wire JSON（+ X-Gateway-* 响应头）
 ```
+
+流式请求（`stream: true`，chat 与 completions）走 `gateway.executeStream()` →
+`core/chat-stream.ts` 和 `core/stream-runner.ts`：before 插件和候选目标与上面相同；
+首个 chunk 之前的失败按第 5 步 failover，之后目标固定。流的结束类型为 `done`、
+`truncated`、`upstream_error`、`idle_timeout` 或 `client_cancel`；无论哪种结束，
+finalize 都只运行一次（上游没给 usage 时按估算计）。只有正常完成的流才写
+`data: [DONE]`，其他结束方式发送不带 `[DONE]` 的 SSE 错误事件。流式请求不注入 MCP 工具。
+
+透传（`passthroughProxy.enabled`）：白名单检查 → before 插件（`core/surfaces/passthrough.ts`）
+→ `proxy/proxy.ts` 原样转发；没有熔断、failover、after 插件和预算累计。
 
 ### 项目结构
 
 ```
 src/
-├── index.ts                   # 入口 + CLI + 嵌入模式导出
-├── gateway.ts                 # Gateway 外观（嵌入式 API）
-├── app.ts                     # Hono 应用工厂 + 中间件连接
+├── index.ts                 # 包入口（嵌入模式导出）；直接执行时运行 CLI
+├── gateway.ts               # Gateway 门面：execute / executeStream、route、embed、MCP
+├── app.ts                   # Hono 应用：中间件顺序、handler、代理、admin、/metrics
+├── version.ts               # VERSION
+│
+├── cli/
+│   ├── index.ts             # serve | validate | keys | version（原生 argv 解析）
+│   └── keys.ts              # 直接操作 SQLite 密钥库的 keys create | list | revoke
+├── server/
+│   ├── bootstrap.ts         # 唯一的服务启动路径：存储、安全检查、OTel、监听器
+│   ├── shutdown.ts          # SIGTERM/SIGINT 排空、在途计数、宽限期后强制关闭
+│   └── route-path.ts        # 路径规范化（//、结尾 /、%2F、大小写）
 │
 ├── config/
-│   ├── schema.ts              # Zod 验证 schema
-│   ├── loader.ts              # YAML/JSON/环境变量配置加载
-│   └── types.ts               # TypeScript 类型定义
-│
-├── providers/
-│   ├── types.ts               # IProvider、IStreamProvider 等接口
-│   ├── registry.ts            # 提供商注册和查找
-│   ├── openai-compat.ts       # 通用 OpenAI 兼容适配器
-│   ├── capabilities.ts        # 每个提供商的参数支持矩阵
-│   ├── sse-parser.ts          # SSE 流解析器
-│   └── （预设：src/core/provider-presets.ts，一张表覆盖 20+ 提供商）
-│
-├── core/
-│   ├── assembly.ts            # 配置 → 提供商、插件、策略、熔断、执行器、pipeline
-│   ├── pipeline.ts            # execute(surface, req, ctx)：插件 → 执行器 → MCP 循环 → 只 finalize 一次
-│   ├── chat-stream.ts         # chat / completions 的 executeStream（每个流只 finalize 一次）
-│   ├── stream-runner.ts       # 首 chunk、流结束原因、SSE 输出
-│   ├── surfaces/              # chat、completions、embeddings、images、passthrough
-│   ├── mcp-loop.ts            # MCP agentic 循环（usage 累加）
-│   ├── mcp-runtime.ts         # MCP 服务器连接 / 就绪状态
-│   ├── strategy-config.ts     # config.strategy → 策略模式和配置
-│   ├── usage.ts               # usage 累加、流式估算、costOf
-│   ├── executor.ts            # 候选执行器：熔断 → 并发限制 → 调用 → 结算 → 切换，含重试
-│   ├── outcome.ts             # 尝试结果分类（熔断结算、是否切换）
-│   ├── errors.ts              # GatewayError、toGatewayError、OpenAI 错误格式
-│   └── provider-presets.ts    # 提供商预设表
-│
-├── routing/
-│   ├── types.ts               # IStrategy 接口（只有 selectTargets）
-│   ├── strategy-factory.ts    # 策略构造
-│   ├── concurrency-limiter.ts # 每目标并发槽位，排队可中断
-│   ├── retry.ts               # 指数退避重试
-│   ├── circuit-breaker.ts     # 熔断器状态机
-│   ├── single.ts              # 单目标路由
-│   ├── fallback.ts            # 降级回退（含错误分类）
-│   ├── loadbalance.ts         # 加权负载均衡
-│   └── conditional.ts         # 字段 / prompt 规则路由
-│
-├── plugins/
-│   ├── types.ts               # IPlugin、Stage、PluginResult
-│   ├── manager.ts             # 插件执行（故障开放/关闭）
-│   ├── context.ts             # PluginContext
-│   ├── error.ts               # PluginRejectionError
-│   └── builtins/              # 6 个内置插件
-│       ├── rate-limit.ts      # 限流
-│       ├── cache.ts           # 响应缓存
-│       ├── word-filter.ts     # 词过滤
-│       ├── max-token.ts       # Token 限制
-│       └── budget.ts          # 预算控制
-│
-├── handlers/
-│   ├── chat.ts                # POST /v1/chat/completions
-│   ├── completions.ts         # POST /v1/completions
-│   ├── embeddings.ts          # POST /v1/embeddings
-│   ├── images.ts              # POST /v1/images/generations
-│   ├── models.ts              # GET /v1/models
-│   ├── capabilities.ts        # GET /v1/capabilities
-│   └── health.ts              # GET /health、/livez、/readyz
+│   ├── schema.ts            # 严格 Zod schema（未知键报错并给出提示）
+│   ├── loader.ts            # YAML/JSON 文件 + AI_GATEWAY_* 覆盖，validateConfig()
+│   ├── validate.ts          # 交叉引用检查（目标名、规则、base URL）
+│   ├── removed.ts           # 0.2.0 移除的键 / 模式及迁移提示
+│   ├── production-safety.ts # GATEWAY_ENV=production 启动检查
+│   ├── envref.ts            # ${VAR} 展开
+│   └── types.ts
 │
 ├── middleware/
-│   ├── auth.ts                # Bearer token 认证（常量时间比较）
-│   ├── body-limit.ts          # 实际请求体大小强制
-│   ├── cors.ts                # CORS 多源支持
-│   ├── security-headers.ts    # 标准安全头
-│   ├── recover.ts             # 异常恢复
-│   └── request-timeout.ts     # AbortController 超时
+│   ├── recover.ts  body-limit.ts  security-headers.ts  cors.ts
+│   ├── auth.ts              # 客户端认证 + 管理认证（常量时间比较、作用域）
+│   ├── per-ip-rate-limit.ts # 按客户端 IP 的令牌桶（默认关闭）
+│   ├── trusted-proxy.ts     # TRUSTED_PROXIES / X-Forwarded-For 解析
+│   └── request-timeout.ts   # AbortController 截止时间（默认 30s）
 │
-├── mcp/
-│   ├── types.ts               # MCP 协议类型
-│   ├── client.ts              # MCP 客户端（stdio，带超时）
-│   ├── registry.ts            # MCP 服务器注册表
-│   └── executor.ts            # 智能体工具调用循环
+├── handlers/
+│   ├── chat.ts  completions.ts  embeddings.ts  images.ts   # POST /v1/*
+│   ├── models.ts  capabilities.ts  health.ts               # GET /v1/models, /v1/capabilities, /health /livez /readyz
+│   ├── request.ts           # RequestContext、中止信号联动
+│   ├── openai-wire.ts       # snake_case wire ⇄ camelCase 内部类型
+│   ├── error-response.ts    # OpenAI 形状的错误响应
+│   ├── sse-stream.ts  sse-heartbeat.ts  abort.ts
 │
-├── observability/
-│   ├── tracing.ts             # 链路追踪门面（OpenTelemetry 桥接）
-│   └── request-log.ts         # 结构化 JSON 日志
+├── core/
+│   ├── pipeline.ts          # execute(surface, req, ctx)：第 1–7 步，finalize 一次
+│   ├── chat-stream.ts       # chat / completions 的 executeStream
+│   ├── stream-runner.ts     # 首个 chunk + failover、流结束类型、SSE 写出
+│   ├── executor.ts          # 候选执行器：熔断 → 限并发 → 调用 → 重试 → failover
+│   ├── outcome.ts           # 单次尝试分类（熔断结算、是否 failover）
+│   ├── errors.ts            # GatewayError、OpenAI 错误形状、mostMeaningful()
+│   ├── mcp-loop.ts          # MCP 智能体循环（usage 累加）
+│   ├── mcp-runtime.ts       # MCP 连接 / 就绪状态
+│   ├── assembly.ts          # 配置 → registry、插件、策略、熔断器、限流器、pipeline
+│   ├── strategy-config.ts   # config.strategy → 模式 + 各模式配置
+│   ├── provider-presets.ts  # 22 个 provider 预设（base URL、别名、附加项）
+│   ├── usage.ts             # usage 累加、流式估算、costOf
+│   ├── types.ts             # Surface, RequestRun, FinalizeOutcome, StreamEnd
+│   └── surfaces/            # chat, completions, embeddings, images, passthrough
 │
-└── admin/
-    ├── handlers.ts            # 管理子应用（带认证）
-    ├── config-handlers.ts     # 配置 CRUD
-    ├── key-handlers.ts        # API 密钥管理
-    └── log-handlers.ts        # 日志查看
+├── routing/
+│   ├── types.ts             # IStrategy { mode, selectTargets }
+│   ├── strategy-factory.ts
+│   ├── single.ts  fallback.ts  loadbalance.ts  conditional.ts
+│   ├── circuit-breaker.ts   # 基于 permit 的状态机 + 注册表
+│   ├── concurrency-limiter.ts # 每目标槽位、可中止的等待队列
+│   ├── retry.ts             # 带抖动的指数退避
+│   └── outcome.ts           # 转导出 core/outcome.ts
+│
+├── providers/
+│   ├── openai-compat.ts     # 唯一的 OpenAI 兼容适配器
+│   ├── wire-extras.ts       # 白名单透传字段
+│   ├── sse-parser.ts        # 上游 SSE 解析器（单事件上限 4 MiB）
+│   ├── capabilities.ts      # 各 provider 参数矩阵（兼容性模式）
+│   ├── response-headers.ts  # 转发的上游响应头
+│   └── registry.ts  types.ts  index.ts
+│
+├── plugins/
+│   ├── manager.ts  context.ts  error.ts  types.ts
+│   └── builtins/            # 6 个内置插件 + from-config.ts
+│       ├── rate-limit.ts  cache.ts  word-filter.ts  max-token.ts  budget.ts
+│       └── pii-secret-guard/   # config, detectors, validators, plugin
+│
+├── mcp/                     # stdio 客户端（MCP 2025-03-26 子集）、registry、executor
+├── proxy/proxy.ts           # 白名单 /v1/* 路由的透传代理
+├── persistence/
+│   ├── key-store.ts         # API 密钥（SHA-256）、作用域、WAL、bootstrap 闩锁
+│   ├── request-log-store.ts # /admin/logs 存储
+│   └── migrations.ts        # 带版本的 SQLite 迁移
+├── auth/                    # bootstrap.ts（bootstrap 密钥闸门）、key-hash.ts
+├── admin/                   # /admin/* API：配置（只读）、密钥、日志、状态、脱敏
+├── dashboard/               # 控制台页面外壳 + static/console.{js,css}（打包内嵌）
+├── observability/           # OTel SDK + tracer 桥接、采样/隐私、请求日志、脱敏
+├── metrics/metrics.ts       # Prometheus 注册表（prom-client）
+└── types/assets.d.ts
+
+tests/
+├── unit/                    # 各模块单元测试
+├── integration/             # 进程内完整请求流程
+├── regressions/             # 导入的 bug 复现，现为回归测试
+├── types/                   # 测试用类型声明
+└── e2e/                     # 真实服务器 + mock 上游 + openai SDK（bun run test:e2e）
+scripts/                     # docker-smoke.sh, binary-smoke.sh, build-binaries.sh, release-notes.sh
 ```
 
 ---
@@ -1357,18 +1459,25 @@ src/
 ### 脚本
 
 ```bash
-bun run dev          # 启动（文件监视）
-bun run start        # 启动（无监视）
-bun run test         # 运行所有测试
-bun run test:watch   # 监视模式运行测试
-bun run typecheck    # tsc 类型检查
+bun run dev              # 启动（文件监视，bun run --watch src/index.ts）
+bun run start            # 启动（无监视）
+bun run test             # 单元 + 集成 + 回归测试（bun test）
+bun run test:e2e         # E2E 契约测试：真实服务器、mock 上游、openai SDK
+bun run test:watch       # 监视模式运行测试
+bun run typecheck        # tsc 类型检查（src）
+bun run typecheck:tests  # tsc 类型检查（tests）
+bun run lint             # biome ci .
+bun run lint:fix         # biome lint --write .
 ```
 
 ### 运行测试
 
 ```bash
-# 所有测试（单元 + 集成）
+# 所有测试（单元 + 集成 + 回归）
 bun test
+
+# E2E 测试（CI 两者都跑）
+bun run test:e2e
 
 # 指定测试文件
 bun test tests/unit/routing/fallback.test.ts
@@ -1389,8 +1498,10 @@ bun run test:watch
 | Dashboard UI                        | 精简管理控制台（`/admin/dashboard`） |
 | `NonOpenAIWireProvider` 代理拒绝        | 带 `baseURL` 的通用回退                 |
 | `sync.Pool` 上下文池                    | 标准 JS 模式                          |
-| `httputil.ReverseProxy` 透传代理        | 不包含                               |
-| 每目标并发限制                             | 不包含（使用熔断器替代）                      |
+| `httputil.ReverseProxy` 透传代理        | 需显式开启的白名单代理（`passthroughProxy`） |
+| 每目标并发限制                             | `targets[].concurrency`（`maxConcurrency`、`queueSize`） |
+| 8 种路由策略                             | 4 种（`single`、`fallback`、`loadbalance`、`conditional`），见[已移除的策略](#已移除的策略020) |
+| MCP stdio + HTTP                    | 仅 stdio                            |
 | 模型目录 / 动态发现                         | 仅静态配置                             |
 | 配置文件监视                              | 不支持：改文件后重启                   |
 

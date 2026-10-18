@@ -2,6 +2,14 @@
 
 ## Unreleased
 
+### Documentation
+
+- README / README_CN: Architecture, Request Flow and Project Structure describe
+  the 0.2.0 pipeline (`core/pipeline.ts`, `core/executor.ts`, surfaces) instead
+  of the pre-refactor `Gateway.route()` flow; config reference, Admin API,
+  plugin, tracing, metrics and CLI sections corrected against the code.
+  PLAN.md reflects the v0.2.0 state.
+
 ## 0.2.0 (2026-10-18)
 
 ### Breaking changes
