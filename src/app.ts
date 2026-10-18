@@ -112,6 +112,15 @@ export function createApp(
       options.inFlightTracker?.increment();
       try {
         await next();
+        // Shutdown began while this request ran: ask the client to drop the
+        // keep-alive connection so it reconnects to another replica.
+        if (tracker.draining) {
+          try {
+            c.res.headers.set("Connection", "close");
+          } catch {
+            // immutable headers (e.g. a fetched Response passed through)
+          }
+        }
       } finally {
         options.inFlightTracker?.decrement();
       }
