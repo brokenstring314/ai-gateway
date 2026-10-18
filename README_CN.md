@@ -1059,6 +1059,8 @@ gateway.close();
 | ------------------------------------ | ---------------------------------- |
 | `route(ctx, req)`                    | 非流式 Chat Completion                |
 | `routeStream(ctx, req)`              | 流式 Chat Completion（AsyncGenerator） |
+| `execute(surface, req, ctx)`         | 任意 surface（`core/surfaces/*`）走完整 pipeline |
+| `executeStream(surface, req, ctx)`   | chat 形状的 surface（chat、completions）流式执行 |
 | `embed(ctx, req)`                    | Embedding 生成                       |
 | `embedWithPlugins(ctx, req)`         | 带插件生命周期的 Embedding                 |
 | `generateImage(ctx, req)`            | 图片生成                               |
@@ -1141,7 +1143,7 @@ gateway.close();
 ```
 src/
 ├── index.ts                   # 入口 + CLI + 嵌入模式导出
-├── gateway.ts                 # Gateway 核心协调器
+├── gateway.ts                 # Gateway 外观（嵌入式 API）
 ├── app.ts                     # Hono 应用工厂 + 中间件连接
 │
 ├── config/
@@ -1158,6 +1160,15 @@ src/
 │   └── （预设：src/core/provider-presets.ts，一张表覆盖 20+ 提供商）
 │
 ├── core/
+│   ├── assembly.ts            # 配置 → 提供商、插件、策略、熔断、执行器、pipeline
+│   ├── pipeline.ts            # execute(surface, req, ctx)：插件 → 执行器 → MCP 循环 → 只 finalize 一次
+│   ├── chat-stream.ts         # chat / completions 的 executeStream（每个流只 finalize 一次）
+│   ├── stream-runner.ts       # 首 chunk、流结束原因、SSE 输出
+│   ├── surfaces/              # chat、completions、embeddings、images、passthrough
+│   ├── mcp-loop.ts            # MCP agentic 循环（usage 累加）
+│   ├── mcp-runtime.ts         # MCP 服务器连接 / 就绪状态
+│   ├── strategy-config.ts     # config.strategy → 策略模式和配置
+│   ├── usage.ts               # usage 累加、流式估算、costOf
 │   ├── executor.ts            # 候选执行器：熔断 → 并发限制 → 调用 → 结算 → 切换，含重试
 │   ├── outcome.ts             # 尝试结果分类（熔断结算、是否切换）
 │   ├── errors.ts              # GatewayError、toGatewayError、OpenAI 错误格式
