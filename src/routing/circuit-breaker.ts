@@ -17,7 +17,15 @@ export class CircuitOpenError extends Error {
 export interface BreakerPermit {
   /** True when the attempt consumed a HALF_OPEN probe slot. */
   readonly halfOpen: boolean;
+  /** HALF_OPEN probe window the permit belongs to. */
   readonly epoch: number;
+  /**
+   * Breaker generation (bumped on every state transition) when the permit
+   * was handed out. Settlement with a permit only counts while the breaker
+   * is still in that generation, so an attempt admitted before an outage
+   * cannot close, re-open or extend a later state (C3-6).
+   */
+  readonly generation?: number;
 }
 
 export interface CircuitBreakerConfig extends BaseCircuitBreakerConfig {
@@ -41,6 +49,8 @@ export class CircuitBreaker {
   private halfOpenEpoch = 0;
   /** When the last HALF_OPEN probe permit was handed out (ms epoch). */
   private lastProbeAt = 0;
+  /** Bumped on every state transition (see BreakerPermit.generation). */
+  private generation = 0;
 
   constructor(
     public readonly name: string,
@@ -66,6 +76,7 @@ export class CircuitBreaker {
   getState(): BreakerState {
     if (this.state === "OPEN" && Date.now() - this.openedAt >= this.timeoutMs) {
       this.state = "HALF_OPEN";
+      this.generation++;
       this.halfOpenPermits = this.maxHalfThreshold;
       this.halfOpenEpoch++;
       this.consecutiveSuccesses = 0;
@@ -99,12 +110,13 @@ export class CircuitBreaker {
         if (Date.now() - this.lastProbeAt < this.timeoutMs) return null;
         this.halfOpenPermits = this.maxHalfThreshold;
         this.halfOpenEpoch++;
+        this.generation++;
       }
       this.halfOpenPermits--;
       this.lastProbeAt = Date.now();
-      return { halfOpen: true, epoch: this.halfOpenEpoch };
+      return { halfOpen: true, epoch: this.halfOpenEpoch, generation: this.generation };
     }
-    return { halfOpen: false, epoch: this.halfOpenEpoch };
+    return { halfOpen: false, epoch: this.halfOpenEpoch, generation: this.generation };
   }
 
   /**
@@ -121,13 +133,36 @@ export class CircuitBreaker {
     if (this.halfOpenPermits < this.maxHalfThreshold) this.halfOpenPermits++;
   }
 
-  recordSuccess(): void {
+  /**
+   * Whether a settlement with `permit` belongs to the current state. Without
+   * a permit (legacy callers) every outcome counts.
+   *  - HALF_OPEN: only probes of the current probe window count;
+   *  - OPEN: nothing counts (no permit can be current while OPEN);
+   *  - CLOSED: only permits handed out in this CLOSED period count.
+   */
+  private isCurrent(permit: BreakerPermit | undefined): boolean {
+    if (!permit) return true;
+    if (permit.generation !== undefined && permit.generation !== this.generation) return false;
+    if (this.state === "HALF_OPEN") return permit.halfOpen && permit.epoch === this.halfOpenEpoch;
+    if (this.state === "OPEN") return false;
+    return !permit.halfOpen;
+  }
+
+  private transition(state: BreakerState): void {
+    this.state = state;
+    this.generation++;
+    this.consecutiveSuccesses = 0;
+    if (state === "OPEN") this.openedAt = Date.now();
+    if (state === "CLOSED") this.consecutiveFailures = 0;
+  }
+
+  /** Settle an attempt that succeeded. Pass the attempt's permit (stale permits are ignored). */
+  recordSuccess(permit?: BreakerPermit | null): void {
+    if (!this.isCurrent(permit ?? undefined)) return;
     if (this.state === "HALF_OPEN") {
       this.consecutiveSuccesses++;
       if (this.consecutiveSuccesses >= this.successThreshold) {
-        this.state = "CLOSED";
-        this.consecutiveFailures = 0;
-        this.consecutiveSuccesses = 0;
+        this.transition("CLOSED");
       } else if (this.halfOpenPermits < this.maxHalfThreshold) {
         // More successful probes are needed: free the slot for the next one.
         this.halfOpenPermits++;
@@ -139,19 +174,17 @@ export class CircuitBreaker {
     this.consecutiveSuccesses = 0;
   }
 
-  recordFailure(): void {
+  /** Settle an attempt that failed. Pass the attempt's permit (stale permits are ignored). */
+  recordFailure(permit?: BreakerPermit | null): void {
+    if (!this.isCurrent(permit ?? undefined)) return;
     if (this.state === "HALF_OPEN") {
-      this.state = "OPEN";
-      this.openedAt = Date.now();
-      this.consecutiveSuccesses = 0;
+      this.transition("OPEN");
       return;
     }
 
     this.consecutiveFailures++;
     if (this.consecutiveFailures >= this.failureThreshold) {
-      this.state = "OPEN";
-      this.openedAt = Date.now();
-      this.consecutiveSuccesses = 0;
+      this.transition("OPEN");
     }
   }
 }

@@ -33,9 +33,9 @@ function run(seed: number, steps = 200): Viol | null {
       const i = Math.floor(r() * out.length); const { p, stateAtAcquire } = out.splice(i, 1)[0]!;
       const k = r(); const before = b.getState();
       const openedAtBefore = (b as any).openedAt;
-      if (k < 0.4) { b.recordSuccess(); trace.push(`success(${stateAtAcquire} permit) ${before}->${b.getState()}`);
+      if (k < 0.4) { b.recordSuccess(p); trace.push(`success(${stateAtAcquire} permit) ${before}->${b.getState()}`);
         if (before !== "CLOSED" && b.getState() === "CLOSED" && !p.halfOpen) return { seed, step, inv: "I3 non-probe success closed breaker", trace };
-      } else if (k < 0.75) { b.recordFailure(); trace.push(`failure(${stateAtAcquire} permit) ${before}->${b.getState()}`);
+      } else if (k < 0.75) { b.recordFailure(p); trace.push(`failure(${stateAtAcquire} permit) ${before}->${b.getState()}`);
         if (before === "OPEN" && !p.halfOpen && (b as any).openedAt !== openedAtBefore) return { seed, step, inv: "I4 stale failure extended OPEN window", trace };
       } else { b.release(p); trace.push(`release(${JSON.stringify(p)}) ${before}->${b.getState()}`); }
     } else {
@@ -61,7 +61,8 @@ describe("CircuitBreaker randomized state-machine", () => {
     if (bad.length) console.log(bad[0]!.inv, bad[0]!.trace.slice(-12).join("\n"));
     expect(bad.length).toBe(0);
   });
-  it.failing("I3/I4: stale (pre-outage) outcomes must not decide the HALF_OPEN/OPEN state", () => {
+  // C3-6 fixed in 2.2: settlement takes the permit (recordSuccess(p) / recordFailure(p)).
+  it("I3/I4: stale (pre-outage) outcomes must not decide the HALF_OPEN/OPEN state", () => {
     const bad: Viol[] = [];
     for (let s = 1; s <= 5000; s++) { const v = run(s); if (v && (v.inv.startsWith("I3") || v.inv.startsWith("I4"))) bad.push(v); }
     if (bad.length) console.log(`${bad.length} schedules violate; first:`, bad[0]!.inv, "\n" + bad[0]!.trace.slice(-10).join("\n"));
