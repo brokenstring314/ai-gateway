@@ -507,7 +507,7 @@ strategy:
 
 ### Fallback
 
-Try targets in order. On failure (5xx, network error), try the next. 4xx errors (except 429) fail immediately. Each target can have retry with exponential backoff.
+Try targets in order. On failure (5xx, 408, 429, network error, open circuit breaker) try the next. Upstream **401/403** (the target's credential is revoked or not entitled) and **404** (model/deployment missing at that target) also fail over; 401/403 additionally count as circuit-breaker failures, 404 does not. Caller-caused 4xx (400, 409, 413, 422, ...) fail immediately without failover or breaker impact. Each target can have retry with exponential backoff.
 
 ```yaml
 strategy:
@@ -640,7 +640,7 @@ targets:
       onStatusCodes: [429, 500, 502, 503, 504]  # Default
 ```
 
-- **4xx errors (except 429)** are never retried — they indicate a client problem
+- **4xx errors (except 429)** are never retried on the same target. 401/403/404 still fail over to the next target (see Fallback); other 4xx indicate a client problem
 - **429 (rate limit)** is retried with backoff
 - **5xx and network errors** are retried
 - **AbortSignal** cancellation is respected immediately

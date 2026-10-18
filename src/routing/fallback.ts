@@ -13,6 +13,7 @@ import type {
 import type { FallbackConfig } from "./strategy-factory.js";
 import type { RetryConfig } from "../config/types.js";
 import { retryWithBackoff } from "./retry.js";
+import { isFailoverEligible } from "./outcome.js";
 
 export class FallbackStrategy implements IStrategy {
   public readonly mode: StrategyMode = "fallback";
@@ -50,7 +51,7 @@ export class FallbackStrategy implements IStrategy {
       } catch (err: unknown) {
         lastError = err;
         console.error(`FallbackStrategy: target "${name}" failed:`, err instanceof Error ? err.message : String(err));
-        if (isNonRetryableError(err) || isAbortError(err)) throw err;
+        if (!isFailoverEligible(err) || ctx.signal?.aborted) throw err;
       }
     }
     throw new FallbackExhaustedError(
@@ -86,7 +87,7 @@ export class FallbackStrategy implements IStrategy {
       } catch (err: unknown) {
         lastError = err;
         console.error(`FallbackStrategy: streaming target "${name}" failed:`, err instanceof Error ? err.message : String(err));
-        if (isNonRetryableError(err) || isAbortError(err)) throw err;
+        if (!isFailoverEligible(err) || ctx.signal?.aborted) throw err;
         continue;
       }
 
@@ -122,16 +123,4 @@ export class FallbackExhaustedError extends Error {
     this.name = "FallbackExhaustedError";
     this.cause = cause;
   }
-}
-
-function isNonRetryableError(err: unknown): boolean {
-  if (err !== null && typeof err === "object" && "statusCode" in err) {
-    const status = (err as { statusCode: number }).statusCode;
-    return status >= 400 && status < 500 && status !== 429;
-  }
-  return false;
-}
-
-function isAbortError(err: unknown): boolean {
-  return err !== null && typeof err === "object" && (err as { name?: unknown }).name === "AbortError";
 }
