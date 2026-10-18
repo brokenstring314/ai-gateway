@@ -1,0 +1,37 @@
+name: ci
+
+on:
+  push:
+    branches: [master]
+  pull_request: {}
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+jobs:
+  check:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    env:
+      NO_PROXY: 127.0.0.1,localhost
+      no_proxy: 127.0.0.1,localhost
+    steps:
+      - uses: actions/checkout@v4
+      - uses: oven-sh/setup-bun@v2
+        with:
+          bun-version-file: .bun-version # >=1.4.3; 1.3.x fails the fake-timer tests
+      - run: bun install --frozen-lockfile
+      - name: lint (biome, lint-only)
+        run: bunx biome ci .
+      - name: typecheck (src)
+        run: bun run typecheck
+      - name: typecheck (tests)
+        # Test code was never type-checked before; non-blocking until it is clean.
+        continue-on-error: true
+        run: bun run typecheck:tests
+      - name: unit + integration tests
+        run: bun test --timeout 20000

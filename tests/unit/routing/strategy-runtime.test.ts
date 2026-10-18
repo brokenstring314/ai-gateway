@@ -32,7 +32,6 @@ import { CostOptimizedStrategy } from "@/routing/cost-optimized";
 import { ContentBasedStrategy } from "@/routing/content-based";
 import { AbTestStrategy } from "@/routing/abtest";
 import { Gateway } from "@/gateway";
-import { ProviderError } from "@/providers/openai-compat";
 import type {
   ChatCompletionResponse,
   ChatCompletionRequest,
@@ -43,7 +42,6 @@ import type {
 import type { GatewayConfig, StrategyConfig as GatewayStrategyConfig } from "@/config/types";
 import {
   createMockProvider,
-  createStreamMockProvider,
   createReq,
   createFailingProvider,
 } from "./helpers";

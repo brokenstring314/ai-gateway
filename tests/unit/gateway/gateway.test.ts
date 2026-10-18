@@ -180,7 +180,7 @@ describe("Gateway", () => {
         // expected
       }
 
-      const cb = gateway.getCircuitBreakerRegistry().get("test-provider");
+      const _cb = gateway.getCircuitBreakerRegistry().get("test-provider");
       // No circuit breaker was configured for this target, so it won't exist
       // But the gateway should handle the error gracefully
     });

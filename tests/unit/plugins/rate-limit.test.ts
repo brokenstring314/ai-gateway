@@ -1,7 +1,7 @@
 import { beforeEach, describe, expect, it, vi } from "bun:test";
 import { createPluginContext } from "../../../src/plugins/context.js";
 import { RateLimitPlugin } from "../../../src/plugins/builtins/rate-limit.js";
-import type { ChatCompletionRequest, ChatCompletionResponse } from "../../../src/providers/types.js";
+import type { ChatCompletionRequest, } from "../../../src/providers/types.js";
 
 function makeRequest(overrides?: Partial<ChatCompletionRequest>): ChatCompletionRequest {
   return {
