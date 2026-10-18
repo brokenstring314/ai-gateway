@@ -73,7 +73,7 @@ export function createApp(
   app.use("*", recoverMiddleware());
   app.use("*", bodyLimitMiddleware(config.maxRequestBytes));
   app.use("*", securityHeadersMiddleware());
-  app.use("*", corsMiddleware(config.cors?.origins));
+  app.use("*", corsMiddleware(config.cors?.origins, { allowHeaders: config.cors?.allowHeaders }));
 
   const metrics = getPrometheusMetrics();
   app.use("*", async (c, next) => {

@@ -954,6 +954,9 @@ cors:
   enabled: true
   origins:
     - "https://my-app.example.com"
+  # allowHeaders: ["Content-Type", "Authorization"]  # optional; default reflects
+  #   the browser's Access-Control-Request-Headers (needed for SDK headers such as
+  #   x-stainless-*, openai-organization, openai-project)
 ```
 
 ### Request Timeout
