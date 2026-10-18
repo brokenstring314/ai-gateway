@@ -71,3 +71,10 @@
   a word that is detected but cannot be redacted makes the request rejected
   instead of forwarded unchanged. Redacted text is forwarded in NFKC form
   (untouched when it contains no blocked word).
+- **rate-limit plugin uses fixed-window counters** (S3-8 / C3-8). It kept
+  every request timestamp of the last 24 h per key (even without a daily
+  limit) and re-filtered the array on each request (O(n) CPU and memory, an
+  event-loop DoS at high rpm). Now one minute counter per key, a day counter
+  only when `maxRequestsPerDay` is set, and idle keys are evicted. Behavior
+  change: windows are fixed (start at the key's first request), not sliding.
+  The README's rate-limit section now documents the real config keys.
