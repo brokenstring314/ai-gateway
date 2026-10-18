@@ -71,7 +71,11 @@ Options:
 `;
 }
 
-/** Validate a config file; returns the process exit code. */
+/**
+ * Validate a config file with the same validator bootstrap() uses (strict
+ * keys, removed-key hints, target cross-references, baseURL); returns the
+ * process exit code.
+ */
 export function validateCommand(configPath: string, out: Pick<Console, "log" | "error"> = console): number {
   try {
     const config = loadConfigFromPath(configPath);
@@ -82,7 +86,8 @@ export function validateCommand(configPath: string, out: Pick<Console, "log" | "
     return 0;
   } catch (err) {
     out.error(`✗ Config validation failed (${configPath}):`);
-    out.error(`  ${err instanceof Error ? err.message : String(err)}`);
+    const message = err instanceof Error ? err.message : String(err);
+    out.error(message.replace(/^/gm, "  "));
     return 1;
   }
 }

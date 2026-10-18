@@ -257,10 +257,13 @@ Any config field can be overridden with `AI_GATEWAY_` prefix, using `_` as path 
 ```bash
 AI_GATEWAY_SERVER_PORT=8080
 AI_GATEWAY_AUTH_ENABLED=true
-AI_GATEWAY_MAX_REQUEST_BYTES=20971520
+AI_GATEWAY_MAX_REQUEST_BYTES=20971520   # camelCase keys: maxRequestBytes
+AI_GATEWAY_CORS_ORIGINS=https://a.example,https://b.example   # arrays: comma-separated
 ```
 
-String fields like `apiKey` and `adminSecret` are never auto-converted to numbers.
+Segments match config keys case-insensitively (consecutive segments join into camelCase keys).
+Values take the field's type, so string fields like `apiKey` and `adminSecret` are never converted to numbers.
+A variable that does not name a config key is ignored with a warning.
 
 ### Operational Environment Variables
 

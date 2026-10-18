@@ -233,10 +233,12 @@ describe("plugin config", () => {
 });
 
 describe("observability", () => {
-  it("observability.exporters was removed (never had an implementation)", () => {
+  it("observability.exporters was removed (never had an implementation): error with a migration hint", () => {
     const r = safeParseConfig(baseConfig({ observability: { exporters: [{ name: "langsmith" }] } }));
-    // Unknown keys are stripped today; 3.8 (strict schema) turns this into an error.
-    expect(r.success ? (r.data.observability as Record<string, unknown>)["exporters"] : undefined).toBeUndefined();
+    expect(r.success).toBe(false);
+    expect(r.error?.issues.map((i) => i.message).join("\n")).toMatch(
+      /observability\.exporters was removed in 0\.2\.0.*observability\.tracing/,
+    );
   });
 
   it("defaults sampleRatio to 1.0 and privacyLevel to metadata", () => {

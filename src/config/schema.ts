@@ -5,8 +5,10 @@
 
 import { z } from "zod";
 import type { StrategyMode } from "../routing/types.js";
+import { configReferenceIssues } from "./validate.js";
 import {
   DEPRECATED_STRATEGY_MODES,
+  REMOVED_OBSERVABILITY_KEYS,
   REMOVED_STRATEGY_KEYS,
   REMOVED_STRATEGY_MODES,
   canonicalStrategyMode,
@@ -15,6 +17,66 @@ import {
 /** Go-style duration string: a positive integer followed by a unit (ms|s|m|h). */
 function durationString(message: string): z.ZodString {
   return z.string().regex(/^\d+(ms|s|m|h)$/, message);
+}
+
+/**
+ * `z.strictObject` whose unknown-key error names each key and either its
+ * migration hint (removed in 0.2.0) or the closest valid key (typo).
+ */
+function strictObject<T extends z.ZodRawShape>(shape: T, removed: Readonly<Record<string, string>> = {}) {
+  return z.strictObject(shape, {
+    error: (iss) =>
+      iss.code === "unrecognized_keys" ? unknownKeysMessage(iss.keys, Object.keys(shape), removed) : undefined,
+  });
+}
+
+export function unknownKeysMessage(
+  keys: readonly string[],
+  valid: readonly string[],
+  removed: Readonly<Record<string, string>> = {},
+): string {
+  const parts: string[] = [];
+  let unknown = false;
+  for (const key of keys) {
+    const hint = removed[key];
+    if (hint !== undefined) {
+      parts.push(hint);
+      continue;
+    }
+    unknown = true;
+    const guess = closestKey(key, valid);
+    parts.push(`unknown key "${key}"${guess !== undefined ? ` (did you mean "${guess}"?)` : ""}`);
+  }
+  if (unknown) parts.push(`valid keys: ${valid.join(", ")}`);
+  return parts.join("; ");
+}
+
+function closestKey(key: string, valid: readonly string[]): string | undefined {
+  const k = key.toLowerCase().replace(/[_-]/g, "");
+  let best: string | undefined;
+  let bestDist = Number.POSITIVE_INFINITY;
+  for (const v of valid) {
+    const d = editDistance(k, v.toLowerCase());
+    if (d < bestDist) {
+      best = v;
+      bestDist = d;
+    }
+  }
+  if (best !== undefined && bestDist <= Math.max(2, Math.floor(key.length / 3)) && bestDist < key.length) return best;
+  // Plural/suffix slips: retries → retry, keyss → keys.
+  return valid.find((v) => v.length >= 4 && k.startsWith(v.toLowerCase().slice(0, -1)));
+}
+
+function editDistance(a: string, b: string): number {
+  let prev = Array.from({ length: b.length + 1 }, (_, j) => j);
+  for (let i = 1; i <= a.length; i++) {
+    const cur = [i];
+    for (let j = 1; j <= b.length; j++) {
+      cur[j] = Math.min(prev[j]! + 1, cur[j - 1]! + 1, prev[j - 1]! + (a[i - 1] === b[j - 1] ? 0 : 1));
+    }
+    prev = cur;
+  }
+  return prev[b.length]!;
 }
 
 const STRATEGY_MODES = ["single", "fallback", "loadbalance", "conditional"] as const satisfies readonly StrategyMode[];
@@ -56,25 +118,25 @@ export const PluginTypeSchema = z.enum([
   "unknown",
 ]);
 
-export const RetryConfigSchema = z.object({
+export const RetryConfigSchema = strictObject({
   attempts: z.number().int().positive().optional().default(3),
   initialBackoffMs: z.number().positive().optional().default(100),
   onStatusCodes: z.array(z.number().int()).optional().default([408, 429, 500, 502, 503, 504]),
 });
 
-export const CircuitBreakerConfigSchema = z.object({
+export const CircuitBreakerConfigSchema = strictObject({
   failureThreshold: z.number().int().positive().optional().default(5),
   successThreshold: z.number().int().positive().optional().default(1),
   maxHalfThreshold: z.number().int().positive().optional().default(1),
   timeoutMs: z.number().positive().optional().default(30000),
 });
 
-export const ConcurrencyConfigSchema = z.object({
+export const ConcurrencyConfigSchema = strictObject({
   maxConcurrency: z.number().int().positive().max(10000).optional(),
   queueSize: z.number().int().nonnegative().max(10000).optional().default(1000),
 });
 
-export const TargetConfigSchema = z.object({
+export const TargetConfigSchema = strictObject({
   name: z.string().min(1),
   provider: z.string().min(1),
   apiKey: z.string().min(1),
@@ -95,8 +157,7 @@ export const TargetConfigSchema = z.object({
   concurrency: ConcurrencyConfigSchema.optional(),
 });
 
-export const ConditionalRuleSchema = z
-  .object({
+export const ConditionalRuleSchema = strictObject({
     field: z.enum(["model", "user", "message", "prompt"]),
     pattern: z.string().min(1).optional(),
     contains: z.string().min(1).optional(),
@@ -119,23 +180,17 @@ export const ConditionalRuleSchema = z
     }
   });
 
-export const StrategyConfigSchema = z
-  .object({
+export const StrategyConfigSchema = strictObject(
+  {
     mode: StrategyModeSchema,
     targets: z.array(z.string()).optional(),
     weights: z.record(z.string(), z.number().nonnegative()).optional(),
     rules: z.array(ConditionalRuleSchema).optional(),
-  })
-  .passthrough()
-  .superRefine((val, ctx) => {
-    for (const key of Object.keys(val)) {
-      const hint = REMOVED_STRATEGY_KEYS[key];
-      if (hint !== undefined) ctx.addIssue({ code: "custom", path: [key], message: hint });
-    }
-  })
-  .transform(({ mode, targets, weights, rules }) => ({ mode, targets, weights, rules }));
+  },
+  REMOVED_STRATEGY_KEYS,
+);
 
-export const PluginConfigSchema = z.object({
+export const PluginConfigSchema = strictObject({
   name: z.string().min(1),
   stage: StageSchema,
   type: PluginTypeSchema.optional().default("unknown"),
@@ -143,9 +198,9 @@ export const PluginConfigSchema = z.object({
   config: z.record(z.string(), z.unknown()).optional(),
 });
 
-export const ObservabilityConfigSchema = z.object({
-  tracing: z
-    .object({
+export const ObservabilityConfigSchema = strictObject(
+  {
+  tracing: strictObject({
       enabled: z.boolean().optional().default(false),
       otlpEndpoint: z.string().optional(),
       otlpProtocol: z.enum(["grpc", "http"]).optional().default("http"),
@@ -156,23 +211,23 @@ export const ObservabilityConfigSchema = z.object({
       headers: z.record(z.string(), z.string()).optional().default({}),
     })
     .optional(),
-  metrics: z
-    .object({
+  metrics: strictObject({
       enabled: z.boolean().optional().default(false),
       port: z.number().int().positive().optional().default(9090),
     })
     .optional(),
-});
+  },
+  REMOVED_OBSERVABILITY_KEYS,
+);
 
-export const CompatibilityConfigSchema = z.object({
+export const CompatibilityConfigSchema = strictObject({
   onUnsupportedParam: z.enum(["warn", "drop", "reject"]).optional().default("warn"),
 });
 
 const MCP_HTTP_REMOVED =
   "MCP http transport is not supported (removed in 0.2.0; it was never implemented): use a stdio server (command/args)";
 
-export const McpServerConfigSchema = z
-  .object({
+export const McpServerConfigSchema = strictObject({
     name: z.string().min(1),
     type: z.string().optional(),
     command: z.string().optional(),
@@ -198,7 +253,7 @@ export const McpServerConfigSchema = z
   })
   .transform(({ url: _url, headers: _headers, type: _type, ...rest }) => ({ ...rest, type: "stdio" as const }));
 
-export const GatewayConfigSchema = z.object({
+export const GatewayConfigSchema = strictObject({
   apiVersion: z.string().optional().default("v1"),
   strategy: StrategyConfigSchema,
   targets: z.array(TargetConfigSchema).min(1),
@@ -209,8 +264,7 @@ export const GatewayConfigSchema = z.object({
   mcpServers: z.array(McpServerConfigSchema).optional(),
   observability: ObservabilityConfigSchema.optional(),
   compatibility: CompatibilityConfigSchema.optional(),
-  server: z
-    .object({
+  server: strictObject({
       port: z.number().int().positive().optional().default(3000),
       host: z.string().optional().default("0.0.0.0"),
       // Bun.serve idleTimeout (seconds, 0 = never, Bun max 255). Must exceed
@@ -223,16 +277,14 @@ export const GatewayConfigSchema = z.object({
       streamIdleTimeoutSeconds: z.number().min(0).optional(),
       streamMaxDurationSeconds: z.number().min(0).optional(),
       // Per-client-IP token bucket on /v1/* (off unless rps > 0).
-      perIpRateLimit: z
-        .object({ rps: z.number().min(0).optional(), burst: z.number().min(0).optional() })
+      perIpRateLimit: strictObject({ rps: z.number().min(0).optional(), burst: z.number().min(0).optional() })
         .optional(),
     })
     .optional(),
   // Opt-in pass-through proxy for other /v1/* routes (see config/types.ts).
-  passthroughProxy: z.object({ enabled: z.boolean().optional() }).optional(),
+  passthroughProxy: strictObject({ enabled: z.boolean().optional() }).optional(),
   adminSecret: z.string().min(8).optional(),
-  auth: z
-    .object({
+  auth: strictObject({
       // No default: client auth is disabled ONLY when enabled === false is set
       // explicitly. Omitting it (e.g. `auth: { keys: [...] }`) keeps auth on;
       // see isClientAuthEnabled().
@@ -240,8 +292,7 @@ export const GatewayConfigSchema = z.object({
       keys: z.array(z.string()).optional(),
     })
     .optional(),
-  cors: z
-    .object({
+  cors: strictObject({
       enabled: z.boolean().optional().default(false),
       origins: z.array(z.string()).optional(),
       // Unset/empty = reflect the preflight's Access-Control-Request-Headers.
@@ -249,18 +300,9 @@ export const GatewayConfigSchema = z.object({
     })
     .optional(),
 }).superRefine((cfg, ctx) => {
-  if (cfg.strategy.mode === "loadbalance") {
-    const pool = cfg.strategy.targets ?? cfg.targets.map((t) => t.name);
-    const weightOf = (name: string) =>
-      cfg.targets.find((t) => t.name === name)?.weight ?? cfg.strategy.weights?.[name] ?? 1;
-    if (pool.length > 0 && pool.every((name) => weightOf(name) === 0)) {
-      ctx.addIssue({
-        code: "custom",
-        path: ["strategy", "weights"],
-        message: "loadbalance: every target has weight 0 (0 = drained); at least one weight must be > 0",
-      });
-    }
-  }
+  // Cross-references (target names, strategy targets/weights/rules, baseURL):
+  // shared with the embedded Gateway constructor.
+  for (const issue of configReferenceIssues(cfg)) ctx.addIssue({ code: "custom", ...issue });
 });
 
 /** Parse and validate a GatewayConfig from unknown input. Throws ZodError on failure. */

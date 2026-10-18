@@ -37,6 +37,29 @@
   `contains:` (case-insensitive substring) next to `pattern:`. A rule needs
   exactly one of the two; `field` must be `model`, `user`, `message` or
   `prompt`; regexes are validated at startup instead of failing per request.
+- **Config validation is strict** (B3-11). `ai-gateway validate`, startup
+  (`bootstrap()`) and `loadConfigFromObject()` share one validator
+  (`validateConfig()` in `src/config/loader.ts`), and the embedded
+  `new Gateway(config)` runs the same cross-reference checks:
+  - unknown or misspelt keys are errors at every level, with the closest
+    valid key (`unknown key "circuitbreaker" (did you mean
+    "circuitBreaker"?)`) instead of being silently dropped (a typo used to
+    mean no breaker, retry, timeout, admin secret or client keys);
+  - removed keys say what to use instead
+    (`observability.exporters was removed in 0.2.0 …; use observability.tracing`);
+  - `strategy.targets`, `strategy.weights` keys and `strategy.rules[].target`
+    must name existing targets; target names must be unique (a duplicate used
+    to silently replace the first);
+  - a target with no usable base URL (unknown provider, or `cloudflare` /
+    `databricks`, without `baseURL`) fails validation instead of passing
+    `validate` and crashing `serve`.
+  Errors list every problem with its path. `AI_GATEWAY_*` overrides now
+  resolve against the schema: camelCase keys work
+  (`AI_GATEWAY_MAX_REQUEST_BYTES` → `maxRequestBytes`), array fields are
+  comma-separated, string fields stay strings, and a variable that names no
+  config key is ignored with a warning (it cannot trip the strict schema).
+  *Migration:* run `ai-gateway validate -c <config>` and fix or delete each
+  reported key.
 - **Load balance weight 0 now drains a target** (it was treated as weight 1).
   A drained target gets no traffic, not even as a failover candidate; negative
   weights and an all-zero pool are rejected. (Closes C3-9.)

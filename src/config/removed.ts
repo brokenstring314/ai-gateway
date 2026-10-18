@@ -54,6 +54,13 @@ export const REMOVED_STRATEGY_KEYS: Readonly<Record<string, string>> = {
     "strategy.unpriced_strategy was removed in 0.2.0 together with cost_optimized; use fallback ordered by price",
 };
 
+/** Removed observability keys → migration hint. */
+export const REMOVED_OBSERVABILITY_KEYS: Readonly<Record<string, string>> = {
+  exporters:
+    "observability.exporters was removed in 0.2.0 (no exporter was ever implemented); " +
+    "use observability.tracing (OTLP: enabled, otlpEndpoint, headers)",
+};
+
 /** Non-fatal warnings for a raw (pre-validation) config object. */
 export function configDeprecationWarnings(raw: unknown): string[] {
   const warnings: string[] = [];

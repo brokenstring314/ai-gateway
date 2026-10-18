@@ -29,6 +29,7 @@ import { createProviderFromTarget } from "./core/provider-presets.js";
 import type { IStrategy, StrategyMode } from "./routing/types.js";
 import { createStrategy } from "./routing/strategy-factory.js";
 import { resolveStrategyMode } from "./config/removed.js";
+import { assertConfigReferences } from "./config/validate.js";
 import type { StrategyConfig as RoutingStrategyConfig } from "./routing/strategy-factory.js";
 import { PluginManager } from "./plugins/manager.js";
 import { createPluginContext } from "./plugins/context.js";
@@ -130,6 +131,8 @@ export class Gateway {
   private readonly streamServedBy = new WeakMap<RequestContext, string>();
 
   constructor(config: GatewayConfig) {
+    // Embedded configs skip the schema: same cross-reference checks as validate/startup.
+    assertConfigReferences(config);
     this.config = config;
     this.aliases = config.aliases ?? {};
     this.registry = new ProviderRegistry();
