@@ -2,6 +2,54 @@
 
 ## Unreleased
 
+### Breaking changes
+
+Configs that relied on keys or values that were accepted but had no effect
+now fail `ai-gateway validate` and startup with a migration hint:
+
+- **`observability.tracing.otlpProtocol: grpc` is rejected.** Only the
+  OTLP/HTTP exporter exists; `grpc` was silently exported over HTTP.
+  *Migration:* remove `otlpProtocol` (or set `http`) and point `otlpEndpoint`
+  at the collector's OTLP/HTTP traces URL (usually `http://<host>:4318/v1/traces`).
+- **`targets[].priority` and `targets[].budget` are rejected** (never read by
+  any strategy or plugin, and not in the Go original). Removed from
+  `TargetConfig`. *Migration:* order targets with `mode: fallback` and
+  `strategy.targets`; use the `budget` plugin (`dailyBudget`) for spend limits.
+- **Built-in plugin configs are strictly validated** (`rate-limit`, `cache`,
+  `budget`, `word-filter`, `max-token`, like `pii-secret-guard` already was):
+  unknown keys (with a did-you-mean hint), wrong types, missing required
+  settings, a `word-filter` `mode` other than `reject` / `redact`, two aliases
+  of the same option, and non-integer counts are errors. The embedded
+  `new Gateway(config)` throws on the same problems. *Migration:* remove the
+  keys the error names (they were ignored before, e.g. word-filter
+  `caseSensitive`, max-token `maxMessages`, rate-limit `requestsPerSecond` /
+  `burst`).
+- **Durations use one parser.** `requestTimeout` and
+  `tracing.shutdownGrace` accept `<int><unit>` terms with units `ms`, `s`,
+  `m`, `h`, including compounds (`1m30s`); zero (`0s`) is rejected.
+  `requestTimeoutMiddleware()` throws on an invalid string instead of
+  misreading it.
+
+### Fixed
+
+- `requestTimeout: "500ms"` passed validation but the timeout middleware,
+  which had its own parser without `ms`, read it as 500 minutes. Validation
+  and runtime now share `config/duration.ts`; `1m30s`, which the middleware
+  understood but the schema rejected, is accepted.
+- MCP: the agentic-loop depth was taken from the first `mcpServers` entry
+  only. It is now the smallest `maxCallDepth` set on any server (servers
+  without it do not count; default 5), as in the Go original. The schema no
+  longer fills in `maxCallDepth: 5` per server.
+- `config.example.yaml` configured rate-limit with `requestsPerSecond` /
+  `burst` (never read) and `config.example.json` used the removed `logger`
+  plugin; both now use `maxRequestsPerMinute`. The example OTLP endpoint is
+  the full `/v1/traces` URL.
+
+### Removed
+
+- `src/dashboard/static/dashboard.js` and `style.css`, unserved leftovers of
+  the pre-0.2.0 placeholder dashboard.
+
 ### Documentation
 
 - README / README_CN: Architecture, Request Flow and Project Structure describe

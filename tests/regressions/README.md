@@ -24,6 +24,12 @@ fixed by 1.4 while this suite was being written).
 | stream/sse-parser-fuzz | T3-10 — fixed (CR / CRLF line ends, incremental O(n) scan, 4 MiB line/event cap, bad JSON and `event: error` = error, choices[null] guarded), now regression tests; the 8 MiB case now asserts the cap | 2.5 |
 | stream/adapters | T3-9 (fields), T3-11 — fixed in 2.6 (allow-listed pass-through, max-token injection); T3-8 and the T3-9 header case fixed in 1.4, T3-12 in 2.1; all plain `it` now | 2.6 |
 | stream/completions | T3-7 — fixed (text_completion wire format), now a regression test | 2.6 |
+| config/request-timeout-duration | PLAN backlog: `requestTimeout: 500ms` read as 500 minutes — fixed (shared duration parser) | post-0.2.0 |
+| config/tracing-grpc-rejected | PLAN backlog: `otlpProtocol: grpc` accepted but ignored — fixed (validation error) | post-0.2.0 |
+| config/target-priority-budget-rejected | PLAN backlog: `targets[].priority` / `budget` never read — fixed (validation error + hint) | post-0.2.0 |
+| config/builtin-plugin-config-strict | PLAN backlog: built-in plugin config typos silently ignored — fixed (strict schemas) | post-0.2.0 |
+| config/mcp-max-call-depth | PLAN backlog: MCP `maxCallDepth` from the first server only — fixed (smallest across servers) | post-0.2.0 |
+| config/dashboard-dead-assets | PLAN backlog: unserved `dashboard.js` / `style.css` — deleted | post-0.2.0 |
 
 B3-6 (/metrics series) and the round-2 "/admin/logs empty" item were fixed in
 2.3; their e2e cases in `tests/e2e/ops.e2e.ts` are plain `it` now.

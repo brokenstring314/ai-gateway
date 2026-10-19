@@ -1464,8 +1464,10 @@ src/
 ├── config/
 │   ├── schema.ts            # Strict Zod schema (unknown keys are errors, with hints)
 │   ├── loader.ts            # YAML/JSON file + AI_GATEWAY_* overrides, validateConfig()
-│   ├── validate.ts          # Cross-reference checks (target names, rules, base URLs)
-│   ├── removed.ts           # Keys/modes removed in 0.2.0 with migration hints
+│   ├── validate.ts          # Cross-reference + built-in plugin config checks
+│   ├── removed.ts           # Removed / unsupported keys and modes with migration hints
+│   ├── strict.ts            # Strict objects with did-you-mean / migration-hint errors
+│   ├── duration.ts          # The one duration parser (ms|s|m|h, 1m30s)
 │   ├── production-safety.ts # GATEWAY_ENV=production startup guard
 │   ├── envref.ts            # ${VAR} expansion
 │   └── types.ts
@@ -1520,7 +1522,7 @@ src/
 │
 ├── plugins/
 │   ├── manager.ts  context.ts  error.ts  types.ts
-│   └── builtins/            # 6 built-ins + from-config.ts
+│   └── builtins/            # 6 built-ins + from-config.ts + config-schemas.ts (strict plugin configs)
 │       ├── rate-limit.ts  cache.ts  word-filter.ts  max-token.ts  budget.ts
 │       └── pii-secret-guard/   # config, detectors, validators, plugin
 │
