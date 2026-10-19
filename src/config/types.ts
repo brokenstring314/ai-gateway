@@ -103,6 +103,7 @@ export interface McpServerConfig {
    */
   inheritEnv?: boolean | string[];
   allowedTools?: string[];
+  /** Agentic-loop depth limit; the loop uses the smallest value any server sets (default 5). */
   maxCallDepth?: number;
   timeoutSeconds?: number;
   required?: boolean;

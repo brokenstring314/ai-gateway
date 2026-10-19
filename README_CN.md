@@ -1010,7 +1010,7 @@ mcpServers:
   → 最终响应返回给用户
 ```
 
-- 每个服务器的选项：`timeoutSeconds` 单次工具调用超时（默认 30），`maxCallDepth`（默认 5，取第一个 `mcpServers` 条目的值并作用于整个循环；超出返回 502 `mcp_depth_exceeded`），`allowedTools`（只暴露这些工具），`required`（影响 `/readyz` / `/livez`，见下文）
+- 每个服务器的选项：`timeoutSeconds` 单次工具调用超时（默认 30），`maxCallDepth`（agentic 循环由所有服务器共享，因此取各服务器所设 `maxCallDepth` 中的**最小值**；未设置的服务器不参与；都未设置时默认 5；超出返回 502 `mcp_depth_exceeded`），`allowedTools`（只暴露这些工具），`required`（影响 `/readyz` / `/livez`，见下文）
 - **崩溃恢复：** stdio 服务器启动失败或进程退出后，网关在后台以指数退避（1 秒、2 秒、4 秒……上限 60 秒）自动重连，并记录每次断开、失败和恢复（`[mcp] server "name" ...`）。断开期间其工具不可用（若为 `required`，`/readyz` 返回 503）。`required` 服务器连续 5 次重连失败后，`/livez` 返回 503，让 Kubernetes 重启 Pod，而不是留下一个永远不就绪的副本。
 - **环境变量：** stdio 服务器**不会**继承网关的环境变量，只拿到 `PATH`、`HOME`、`USER`、`LOGNAME`、`SHELL`、`TERM`、`TZ`、`LANG`、`LANGUAGE`、`LC_ALL`、`LC_CTYPE`、`TMPDIR`（以及 Windows 基础变量 `SYSTEMROOT`、`WINDIR`、`COMSPEC`、`PATHEXT`、`TEMP`、`TMP`、`USERPROFILE`、`APPDATA`、`LOCALAPPDATA`）和该服务器自己的 `env`，因此提供商 API 密钥、`ADMIN_BOOTSTRAP_KEY`、OTLP token、云凭据都不会泄露给第三方 MCP 包。服务器需要的值写在 `env` 里；额外需要透传的变量名用 `inheritEnv: ["HTTPS_PROXY", "NODE_EXTRA_CA_CERTS"]` 列出；`inheritEnv: true` 恢复完整继承（不推荐）。
 - MCP 工具只注入**非流式**请求。流式请求（`stream: true`）不注入 MCP 工具、也不运行智能体循环，因此流式客户端不会收到它未声明的网关侧工具的 tool_calls。需要网关执行 MCP 工具时请使用非流式请求。
