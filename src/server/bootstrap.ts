@@ -2,7 +2,6 @@
  * Server bootstrap shared by every way of running the gateway as a server.
  */
 
-import { Database } from "bun:sqlite";
 import type { Server } from "bun";
 import { existsSync, mkdirSync } from "node:fs";
 import { join } from "node:path";
@@ -12,7 +11,7 @@ import { createBootstrapGate } from "../auth/bootstrap.js";
 import { loadConfigFromPath } from "../config/loader.js";
 import type { GatewayConfig } from "../config/types.js";
 import { KeyStore, keyStorePath, openKeyStoreDatabase, resolveDataDir } from "../persistence/key-store.js";
-import { RequestLogStore } from "../persistence/request-log-store.js";
+import { RequestLogStore, openRequestLogDatabase } from "../persistence/request-log-store.js";
 import {
   parseAllowUnauthenticatedProxy,
   validateProductionSafety,
@@ -64,7 +63,7 @@ export async function bootstrap(configPath: string, overrides: ServeOverrides = 
 
   // WAL + busy timeout: `ai-gateway keys ...` may write while the server runs.
   const keyDb = openKeyStoreDatabase(keyStorePath(dataDir));
-  const logDb = new Database(join(dataDir, "request-logs.sqlite"));
+  const logDb = openRequestLogDatabase(join(dataDir, "request-logs.sqlite"));
 
   let keyStore: KeyStore;
   let logStore: RequestLogStore;

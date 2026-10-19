@@ -93,6 +93,7 @@ export class Pipeline {
         value = looped.response as Res;
         usage = looped.usage;
       }
+      if (ctx) ctx.servedTarget = target;
       value = await this.finalize(run, { kind: "ok", value, target, usage });
       return { kind: "ok", value, target, usage };
     } catch (err) {
@@ -390,7 +391,11 @@ export { addUsage };
 
 function targetOf(err: unknown): string | undefined {
   const t = (err as { target?: unknown } | null)?.target;
-  return typeof t === "string" && t !== "" ? t : undefined;
+  if (typeof t === "string" && t !== "") return t;
+  // ProviderError / FallbackExhaustedError: the same target the
+  // X-Gateway-Target header reports.
+  const mapped = toGatewayError(err).target;
+  return mapped !== undefined && mapped !== "" ? mapped : undefined;
 }
 
 function messageOf(err: unknown): string {

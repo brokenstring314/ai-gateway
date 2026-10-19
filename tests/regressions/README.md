@@ -29,6 +29,10 @@ fixed by 1.4 while this suite was being written).
 | config/target-priority-budget-rejected | PLAN backlog: `targets[].priority` / `budget` never read — fixed (validation error + hint) | post-0.2.0 |
 | config/builtin-plugin-config-strict | PLAN backlog: built-in plugin config typos silently ignored — fixed (strict schemas) | post-0.2.0 |
 | config/mcp-max-call-depth | PLAN backlog: MCP `maxCallDepth` from the first server only — fixed (smallest across servers) | post-0.2.0 |
+| qa/sigterm-drain-streams | QA round (load test): SIGTERM reset every in-flight stream (drain counted the SSE handler as done) — fixed | post-0.2.0 |
+| qa/request-log-db | QA round (load test): request-log SQLite in rollback/FULL mode capped throughput, "database is locked" lost rows; upstream errors logged as provider `unknown` — fixed | post-0.2.0 |
+| qa/stream-provider-header | QA round (real DeepSeek): streaming `X-Gateway-Provider` = upstream model, metrics `provider` label from it; completions had none — fixed | post-0.2.0 |
+| qa/null-optional-params | QA round (real DeepSeek + body fuzz): explicit `null` optional params → 400 — fixed | post-0.2.0 |
 | config/dashboard-dead-assets | PLAN backlog: unserved `dashboard.js` / `style.css` — deleted | post-0.2.0 |
 
 B3-6 (/metrics series) and the round-2 "/admin/logs empty" item were fixed in

@@ -330,7 +330,7 @@ These are read directly from the environment (not via `AI_GATEWAY_*`):
 | `RATE_LIMIT_RPS` | unset (limiter off) | Per-client-IP limit on `/v1/*`, requests/second. Overrides `server.perIpRateLimit.rps`. `0` disables. |
 | `RATE_LIMIT_BURST` | 2 × rps | Per-IP bucket size. Overrides `server.perIpRateLimit.burst`. |
 | `TRUSTED_PROXIES` | `127.0.0.1,::1` | Comma-separated IPs/CIDRs whose `X-Forwarded-For` / `X-Real-IP` are trusted for the per-IP limiter. Set it to your load balancer's range, otherwise every request behind it shares the LB's IP. |
-| `SHUTDOWN_GRACE_MS` | `10000` | How long SIGTERM/SIGINT waits for in-flight requests before closing. Shutdown order: `/readyz` → 503 and new requests on open connections → 503 `shutting_down`; the listener stops accepting new connections; in-flight requests finish (their responses carry `Connection: close`); then the listener and stores are closed. |
+| `SHUTDOWN_GRACE_MS` | `10000` | How long SIGTERM/SIGINT waits for in-flight requests before closing. Shutdown order: `/readyz` → 503 and new requests on open connections → 503 `shutting_down`; the listener stops accepting new connections; in-flight requests finish, including SSE / streamed bodies still being written (their responses carry `Connection: close`); then the listener and stores are closed. |
 | `OTEL_EXPORTER_OTLP_ENDPOINT` | unset | OTLP HTTP endpoint when `observability.tracing.otlpEndpoint` is not set. |
 | `OTEL_TRACES_SAMPLER` | unset | `always_on`, `always_off` or `traceidratio` (uses `sampleRatio`); other values are ignored. |
 
@@ -339,7 +339,7 @@ These are read directly from the environment (not via `AI_GATEWAY_*`):
 **Data directory (`GATEWAY_DATA_DIR`, default `./.data`)** contains:
 
 - `api-keys.sqlite` — the API key store: SHA-256 hashes of keys (never the keys themselves), display prefixes, names, scopes, expiry and usage counters. Losing it revokes every store key; anyone who can write to it can mint keys, so keep it private (`chmod 700` the directory).
-- `request-logs.sqlite` — request log for `/admin/logs`: trace id, model, provider, token counts and error messages (no prompts or completions). Error messages can quote upstream responses.
+- `request-logs.sqlite` — request log for `/admin/logs`: trace id, model, provider, token counts and error messages (no prompts or completions). Error messages can quote upstream responses. Opened in WAL mode (`synchronous=NORMAL`, 1 s busy timeout).
 - `gateway-config.sqlite` — only from versions before 0.2.0; ignored (a warning is printed) and safe to delete.
 
 ---
@@ -394,6 +394,7 @@ Full OpenAI Chat Completions API compatibility, including:
 - Response formats (`text`, `json_object`, `json_schema`)
 - `logprobs` and `top_logprobs`
 - `seed` for deterministic outputs
+- An explicit `null` optional parameter (`"temperature": null`, `"tools": null`, …) means "not set", as in the OpenAI API
 - `stream_options.include_usage` for usage in final chunk
 - `max_tokens` / `max_completion_tokens`
 - `parallel_tool_calls`
@@ -699,9 +700,9 @@ The gateway adds these headers to responses:
 
 | Header                   | Description                                   |
 | ------------------------ | --------------------------------------------- |
-| `X-Gateway-Provider`     | Name of the provider that handled the request |
+| `X-Gateway-Provider`     | Name of the target that handled the request (also on streams and `/v1/completions`) |
 | `X-Gateway-Target`       | On error responses: the target that produced the error (never in the body) |
-| `X-Gateway-Overhead-Ms`  | Gateway processing time in milliseconds       |
+| `X-Gateway-Overhead-Ms`  | Milliseconds until the gateway had the response, upstream call included (streams: time to the first chunk) |
 | `X-Content-Type-Options` | `nosniff`                                     |
 | `X-Frame-Options`        | `DENY`                                        |
 | `Referrer-Policy`        | `strict-origin-when-cross-origin`             |

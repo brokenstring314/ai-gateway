@@ -1,4 +1,4 @@
-import type { Database, SQLQueryBindings } from "bun:sqlite";
+import { Database, type SQLQueryBindings } from "bun:sqlite";
 import { runMigrations, type MigrationStep, DeferredStepError } from "@/persistence/migrations";
 
 // ---------------------------------------------------------------------------
@@ -176,6 +176,26 @@ function buildWhereClause(query: {
 // RequestLogStore
 // ---------------------------------------------------------------------------
 
+/**
+ * Open the request-log database for the server: WAL (readers never block the
+ * per-request insert; one fsync per commit at most), synchronous=NORMAL (a
+ * crash can lose the last few log rows, never corrupt the file) and a busy
+ * timeout, so another writer (`DELETE /admin/logs` elsewhere, a backup) makes
+ * an insert wait instead of failing with "database is locked".
+ */
+export function openRequestLogDatabase(path: string): Database {
+  const db = new Database(path, { create: true, readwrite: true });
+  // Kept short: bun:sqlite waits synchronously, so a long wait would stall the event loop.
+  db.exec("PRAGMA busy_timeout = 1000");
+  try {
+    db.exec("PRAGMA journal_mode = WAL");
+  } catch {
+    // Another connection holds the database in rollback mode; keep its mode.
+  }
+  db.exec("PRAGMA synchronous = NORMAL");
+  return db;
+}
+
 export class RequestLogStore {
   private db: Database;
   private readonly migrationPromise: Promise<void>;
@@ -200,8 +220,9 @@ export class RequestLogStore {
   write(entry: RequestLogEntry): void {
     const createdAt = entry.createdAt.getTime() === 0 ? new Date() : entry.createdAt;
 
+    // query() caches the compiled statement (one prepare per process, not per request).
     this.db
-      .prepare(
+      .query(
         `INSERT INTO request_logs(trace_id, stage, model, provider, prompt_tokens, completion_tokens, total_tokens, error_message, created_at)
          VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?)`,
       )

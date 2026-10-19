@@ -47,6 +47,24 @@ function renameKeys(obj: Json, map: Readonly<Record<string, string>>): Json {
 
 // ── Request (wire → internal) ──
 
+/**
+ * Drop keys whose value is `null`. The OpenAI API treats an explicit `null`
+ * optional parameter (`"temperature": null`, `"tools": null`, `"stop": null`
+ * …) as "not set", and many clients send them; the request schemas model
+ * optional fields as absent, so a null must not become a 400.
+ */
+export function dropNullFields<T>(value: T): T {
+  if (!isObject(value)) return value;
+  let out: Json | undefined;
+  for (const [k, v] of Object.entries(value)) {
+    if (v === null) {
+      out ??= { ...value };
+      delete out[k];
+    }
+  }
+  return (out ?? value) as T;
+}
+
 const CHAT_REQUEST_KEYS: Readonly<Record<string, string>> = {
   top_p: "topP",
   max_tokens: "maxTokens",
@@ -73,9 +91,9 @@ function normalizeContentPart(part: unknown): unknown {
 
 function normalizeMessage(msg: unknown): unknown {
   if (!isObject(msg)) return msg;
-  const m = renameKeys(msg, MESSAGE_KEYS);
-  // OpenAI clients send `content: null` on assistant tool-call messages.
-  if (m["content"] === null) delete m["content"];
+  // OpenAI clients send `content: null` on assistant tool-call messages
+  // (and `name` / `tool_calls: null` elsewhere): null means "not set".
+  const m = renameKeys(dropNullFields(msg), MESSAGE_KEYS);
   if (Array.isArray(m["content"])) m["content"] = m["content"].map(normalizeContentPart);
   return m;
 }
@@ -87,7 +105,7 @@ function normalizeMessage(msg: unknown): unknown {
  */
 export function fromOpenAIWireChatRequest(body: unknown): unknown {
   if (!isObject(body)) return body;
-  const out = renameKeys(body, CHAT_REQUEST_KEYS);
+  const out = renameKeys(dropNullFields(body), CHAT_REQUEST_KEYS);
   if (Array.isArray(out["messages"])) out["messages"] = out["messages"].map(normalizeMessage);
   if (isObject(out["streamOptions"])) {
     out["streamOptions"] = renameKeys(out["streamOptions"], { include_usage: "includeUsage" });
@@ -124,7 +142,7 @@ export function attachWireRequestExtras<T extends { messages: readonly ChatMessa
 /** Normalise an OpenAI images/generations request body (response_format). */
 export function fromOpenAIWireImageRequest(body: unknown): unknown {
   if (!isObject(body)) return body;
-  return renameKeys(body, { response_format: "responseFormat" });
+  return renameKeys(dropNullFields(body), { response_format: "responseFormat" });
 }
 
 // ── Response (internal → wire) ──

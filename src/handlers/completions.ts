@@ -39,12 +39,17 @@ export function registerCompletionsHandler(app: AppType, gateway: Gateway): void
     if (req.stream) {
       return respondSse(c, gateway, hr, gateway.executeStream(completionsSurface, req, hr.ctx), {
         serialize: createTextCompletionStreamSerializer(),
+        headers: () => ({ "X-Gateway-Provider": hr.ctx.servedTarget ?? "unknown" }),
       });
     }
 
     try {
       const { value } = await gateway.execute(completionsSurface, req, hr.ctx);
-      return c.json(toTextCompletionResponse(value), 200, mergeForwardedHeaders({}, value.upstreamHeaders));
+      return c.json(
+        toTextCompletionResponse(value),
+        200,
+        mergeForwardedHeaders({ "X-Gateway-Provider": hr.ctx.servedTarget ?? "unknown" }, value.upstreamHeaders),
+      );
     } catch (err) {
       return respondError(c, err);
     }
