@@ -6,6 +6,8 @@
 import { PASSTHROUGH_ROUTE_PATTERN } from "../core/surfaces/passthrough.js";
 import { z } from "zod";
 import type { StrategyMode } from "../routing/types.js";
+import { DURATION_HINT, parseDuration } from "./duration.js";
+import { strictObject, unknownKeysMessage } from "./strict.js";
 import { configReferenceIssues } from "./validate.js";
 import {
   DEPRECATED_STRATEGY_MODES,
@@ -15,70 +17,14 @@ import {
   canonicalStrategyMode,
 } from "./removed.js";
 
-/** Go-style duration string: a positive integer followed by a unit (ms|s|m|h). */
-function durationString(message: string): z.ZodString {
-  return z.string().regex(/^\d+(ms|s|m|h)$/, message);
-}
-
-/**
- * `z.strictObject` whose unknown-key error names each key and either its
- * migration hint (removed in 0.2.0) or the closest valid key (typo).
- */
-function strictObject<T extends z.ZodRawShape>(shape: T, removed: Readonly<Record<string, string>> = {}) {
-  return z.strictObject(shape, {
-    error: (iss) =>
-      iss.code === "unrecognized_keys" ? unknownKeysMessage(iss.keys, Object.keys(shape), removed) : undefined,
+/** Duration string validated by the shared parser (config/duration.ts). */
+function durationString(field: string) {
+  return z.string().refine((v) => parseDuration(v) !== undefined, {
+    message: `Invalid ${field} duration; ${DURATION_HINT}`,
   });
 }
 
-export function unknownKeysMessage(
-  keys: readonly string[],
-  valid: readonly string[],
-  removed: Readonly<Record<string, string>> = {},
-): string {
-  const parts: string[] = [];
-  let unknown = false;
-  for (const key of keys) {
-    const hint = removed[key];
-    if (hint !== undefined) {
-      parts.push(hint);
-      continue;
-    }
-    unknown = true;
-    const guess = closestKey(key, valid);
-    parts.push(`unknown key "${key}"${guess !== undefined ? ` (did you mean "${guess}"?)` : ""}`);
-  }
-  if (unknown) parts.push(`valid keys: ${valid.join(", ")}`);
-  return parts.join("; ");
-}
-
-function closestKey(key: string, valid: readonly string[]): string | undefined {
-  const k = key.toLowerCase().replace(/[_-]/g, "");
-  let best: string | undefined;
-  let bestDist = Number.POSITIVE_INFINITY;
-  for (const v of valid) {
-    const d = editDistance(k, v.toLowerCase());
-    if (d < bestDist) {
-      best = v;
-      bestDist = d;
-    }
-  }
-  if (best !== undefined && bestDist <= Math.max(2, Math.floor(key.length / 3)) && bestDist < key.length) return best;
-  // Plural/suffix slips: retries → retry, keyss → keys.
-  return valid.find((v) => v.length >= 4 && k.startsWith(v.toLowerCase().slice(0, -1)));
-}
-
-function editDistance(a: string, b: string): number {
-  let prev = Array.from({ length: b.length + 1 }, (_, j) => j);
-  for (let i = 1; i <= a.length; i++) {
-    const cur = [i];
-    for (let j = 1; j <= b.length; j++) {
-      cur[j] = Math.min(prev[j]! + 1, cur[j - 1]! + 1, prev[j - 1]! + (a[i - 1] === b[j - 1] ? 0 : 1));
-    }
-    prev = cur;
-  }
-  return prev[b.length]!;
-}
+export { unknownKeysMessage };
 
 const STRATEGY_MODES = ["single", "fallback", "loadbalance", "conditional"] as const satisfies readonly StrategyMode[];
 
@@ -207,7 +153,7 @@ export const ObservabilityConfigSchema = strictObject(
       serviceName: z.string().optional().default("ai-gateway"),
       sampleRatio: z.number().min(0).max(1).optional().default(1.0),
       privacyLevel: z.enum(["none", "metadata", "full"]).optional().default("metadata"),
-      shutdownGrace: durationString("Invalid shutdownGrace duration").optional().default("10s"),
+      shutdownGrace: durationString("shutdownGrace").optional().default("10s"),
       headers: z.record(z.string(), z.string()).optional().default({}),
     }).optional(),
     metrics: strictObject({
@@ -269,7 +215,7 @@ export const GatewayConfigSchema = strictObject({
     .positive()
     .optional()
     .default(10 * 1024 * 1024),
-  requestTimeout: durationString("Invalid requestTimeout duration").optional(),
+  requestTimeout: durationString("requestTimeout").optional(),
   plugins: z.array(PluginConfigSchema).optional(),
   aliases: z.record(z.string(), z.string()).optional(),
   mcpServers: z.array(McpServerConfigSchema).optional(),

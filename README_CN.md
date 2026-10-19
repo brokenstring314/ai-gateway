@@ -242,7 +242,7 @@ cors:
   # allowHeaders: [...]     # 默认反射 Access-Control-Request-Headers
 
 maxRequestBytes: 10485760       # 10 MB 请求体限制（默认）
-requestTimeout: "30s"           # 30s（默认）、5m、1h
+requestTimeout: "30s"           # 30s（默认）；单位 ms、s、m、h，可组合如 1m30s
 
 aliases:
   fast: "gpt-4o-mini"
@@ -1154,7 +1154,7 @@ cors:
 ### 请求超时
 
 ```yaml
-requestTimeout: "30s"  # 默认 30s；也可 5m、1h
+requestTimeout: "30s"  # 默认 30s；也可 500ms、5m、1h、1m30s
 ```
 
 设置 `AbortController`，超时后中止上游 fetch（504 `gateway_timeout`）。它覆盖到流式响应开始为止；之后流由 `server.streamIdleTimeoutSeconds` / `streamMaxDurationSeconds` 约束。

@@ -2,6 +2,7 @@
  * OTel sampling, privacy and shutdown policy helpers.
  */
 
+import { parseDuration } from "../config/duration.js";
 import { redactMessage } from "./redact.js";
 
 export interface TracingPolicy {
@@ -35,37 +36,11 @@ export function applyPrivacy(message: string, level: "none" | "metadata" | "full
   return message;
 }
 
-const DURATION_RE = /^(\d+)\s*(ms|s|m|h)$/;
-
-function unitMultiplierMs(unit: string): number | undefined {
-  switch (unit) {
-    case "ms":
-      return 1;
-    case "s":
-      return 1_000;
-    case "m":
-      return 60_000;
-    case "h":
-      return 3_600_000;
-    default:
-      return undefined;
-  }
-}
-
+/** Shutdown grace in ms (shared duration parser); fallback when unset or invalid. */
 export function parseShutdownGrace(value: string | undefined, fallbackMs?: number): number {
   const fallback = fallbackMs ?? 10_000;
   if (value === undefined) return fallback;
-
-  const match = DURATION_RE.exec(value.trim());
-  if (match === null) return fallback;
-
-  const amountStr = match[1];
-  if (amountStr === undefined) return fallback;
-
-  const multiplier = unitMultiplierMs(match[2] ?? "");
-  if (multiplier === undefined) return fallback;
-
-  return Number(amountStr) * multiplier;
+  return parseDuration(value.trim()) ?? fallback;
 }
 
 export function policyHeaders(policy: TracingPolicy): Record<string, string> {
