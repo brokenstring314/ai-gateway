@@ -245,7 +245,7 @@ cors:
   # allowHeaders: [...]     # default: reflect Access-Control-Request-Headers
 
 maxRequestBytes: 10485760       # 10 MB body limit (default)
-requestTimeout: "30s"           # 30s (default), 5m, 1h
+requestTimeout: "30s"           # 30s (default); units ms, s, m, h, compounds like 1m30s
 
 aliases:
   fast: "gpt-4o-mini"
@@ -1242,7 +1242,7 @@ cors:
 ### Request Timeout
 
 ```yaml
-requestTimeout: "30s"  # default 30s; also 5m, 1h
+requestTimeout: "30s"  # default 30s; also 500ms, 5m, 1h, 1m30s
 ```
 
 Sets an `AbortController` that aborts the upstream fetch if exceeded (504 `gateway_timeout`). It covers the request until a streaming response starts; streams are then bounded by `server.streamIdleTimeoutSeconds` / `streamMaxDurationSeconds`.
