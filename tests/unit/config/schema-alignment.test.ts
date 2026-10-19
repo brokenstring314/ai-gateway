@@ -382,10 +382,10 @@ describe("mcp servers", () => {
     });
   });
 
-  it("defaults maxCallDepth to 5, timeoutSeconds to 30 and required to false", () => {
+  it("defaults timeoutSeconds to 30 and required to false; maxCallDepth stays unset (loop default 5)", () => {
     const config = parseConfig(baseConfig({ mcpServers: [{ name: "fs", command: "npx" }] }));
+    expect(config.mcpServers?.[0]?.maxCallDepth).toBeUndefined();
     expect(config.mcpServers?.[0]).toMatchObject({
-      maxCallDepth: 5,
       timeoutSeconds: 30,
       required: false,
     });

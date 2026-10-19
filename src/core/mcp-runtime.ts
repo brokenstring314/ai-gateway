@@ -21,11 +21,26 @@ export type McpServerRuntimeConfig = GatewayConfig["mcpServers"] extends readonl
   ? T & McpServerOptions
   : McpServerOptions;
 
-/** The tool executor for the configured servers (null when none); depth from the first server. */
+/**
+ * The tool executor for the configured servers (null when none). The agentic
+ * loop is shared by every server, so its depth limit is the smallest
+ * `maxCallDepth` any server sets (the strictest limit wins, as in the Go
+ * original); servers that do not set it do not count, and with none set the
+ * executor default (5) applies.
+ */
 export function createMcpExecutor(config: GatewayConfig, registry: McpRegistry): McpExecutor | null {
   if (!config.mcpServers || config.mcpServers.length === 0) return null;
-  const first = config.mcpServers[0] as McpServerRuntimeConfig;
-  return new McpExecutor(registry, first.maxCallDepth);
+  return new McpExecutor(registry, loopMaxCallDepth(config.mcpServers as readonly McpServerRuntimeConfig[]));
+}
+
+/** Smallest positive maxCallDepth across the servers; undefined when none sets one. */
+export function loopMaxCallDepth(servers: readonly McpServerOptions[]): number | undefined {
+  let depth: number | undefined;
+  for (const s of servers) {
+    const d = s.maxCallDepth;
+    if (typeof d === "number" && d > 0 && (depth === undefined || d < depth)) depth = d;
+  }
+  return depth;
 }
 
 /**

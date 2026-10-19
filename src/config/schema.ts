@@ -194,7 +194,8 @@ export const McpServerConfigSchema = strictObject({
   url: z.unknown().optional(),
   headers: z.unknown().optional(),
   allowedTools: z.array(z.string()).optional(),
-  maxCallDepth: z.number().int().positive().optional().default(5),
+  // No default here: the loop uses the smallest value any server sets (5 when none does).
+  maxCallDepth: z.number().int().positive().optional(),
   timeoutSeconds: z.number().int().positive().optional().default(30),
   required: z.boolean().optional().default(false),
 })
