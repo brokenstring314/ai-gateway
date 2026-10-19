@@ -14,6 +14,8 @@ import {
   REMOVED_OBSERVABILITY_KEYS,
   REMOVED_STRATEGY_KEYS,
   REMOVED_STRATEGY_MODES,
+  REMOVED_TARGET_KEYS,
+  OTLP_GRPC_UNSUPPORTED,
   canonicalStrategyMode,
 } from "./removed.js";
 
@@ -83,26 +85,27 @@ export const ConcurrencyConfigSchema = strictObject({
   queueSize: z.number().int().nonnegative().max(10000).optional().default(1000),
 });
 
-export const TargetConfigSchema = strictObject({
-  name: z.string().min(1),
-  provider: z.string().min(1),
-  apiKey: z.string().min(1),
-  // A URL, or a string with ${VAR} refs (validated as a URL after expansion,
-  // when the provider is built).
-  baseURL: z
-    .string()
-    .refine((v) => /\$\{[^}]+\}/.test(v) || URL.canParse(v), { message: "Invalid URL" })
-    .optional(),
-  models: z.array(z.string()).optional(),
-  weight: z.number().nonnegative().optional(),
-  priority: z.number().int().nonnegative().optional(),
-  budget: z.number().positive().optional(),
-  costPer1kInputTokens: z.number().nonnegative().optional(),
-  costPer1kOutputTokens: z.number().nonnegative().optional(),
-  retry: RetryConfigSchema.optional(),
-  circuitBreaker: CircuitBreakerConfigSchema.optional(),
-  concurrency: ConcurrencyConfigSchema.optional(),
-});
+export const TargetConfigSchema = strictObject(
+  {
+    name: z.string().min(1),
+    provider: z.string().min(1),
+    apiKey: z.string().min(1),
+    // A URL, or a string with ${VAR} refs (validated as a URL after expansion,
+    // when the provider is built).
+    baseURL: z
+      .string()
+      .refine((v) => /\$\{[^}]+\}/.test(v) || URL.canParse(v), { message: "Invalid URL" })
+      .optional(),
+    models: z.array(z.string()).optional(),
+    weight: z.number().nonnegative().optional(),
+    costPer1kInputTokens: z.number().nonnegative().optional(),
+    costPer1kOutputTokens: z.number().nonnegative().optional(),
+    retry: RetryConfigSchema.optional(),
+    circuitBreaker: CircuitBreakerConfigSchema.optional(),
+    concurrency: ConcurrencyConfigSchema.optional(),
+  },
+  REMOVED_TARGET_KEYS,
+);
 
 export const ConditionalRuleSchema = strictObject({
   field: z.enum(["model", "user", "message", "prompt"]),
@@ -149,7 +152,17 @@ export const ObservabilityConfigSchema = strictObject(
     tracing: strictObject({
       enabled: z.boolean().optional().default(false),
       otlpEndpoint: z.string().optional(),
-      otlpProtocol: z.enum(["grpc", "http"]).optional().default("http"),
+      // Only OTLP/HTTP is implemented; grpc fails with a migration hint.
+      otlpProtocol: z
+        .string()
+        .superRefine((val, ctx) => {
+          if (val === "grpc") ctx.addIssue({ code: "custom", message: OTLP_GRPC_UNSUPPORTED });
+          else if (val !== "http")
+            ctx.addIssue({ code: "custom", message: `unknown otlpProtocol "${val}"; expected http` });
+        })
+        .transform(() => "http" as const)
+        .optional()
+        .default("http"),
       serviceName: z.string().optional().default("ai-gateway"),
       sampleRatio: z.number().min(0).max(1).optional().default(1.0),
       privacyLevel: z.enum(["none", "metadata", "full"]).optional().default("metadata"),

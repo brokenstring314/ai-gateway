@@ -88,8 +88,7 @@ compatibility:
 # observability:
 #   tracing:
 #     enabled: true
-#     otlpEndpoint: "http://localhost:4318"
-#     otlpProtocol: http
+#     otlpEndpoint: "http://localhost:4318/v1/traces"   # full OTLP/HTTP traces URL (grpc is not supported)
 #     serviceName: "ai-gateway"
 #   metrics:
 #     enabled: true

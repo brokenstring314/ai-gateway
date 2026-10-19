@@ -61,6 +61,22 @@ export const REMOVED_OBSERVABILITY_KEYS: Readonly<Record<string, string>> = {
     "use observability.tracing (OTLP: enabled, otlpEndpoint, headers)",
 };
 
+/** Target keys that were accepted but never read by any strategy or plugin → migration hint. */
+export const REMOVED_TARGET_KEYS: Readonly<Record<string, string>> = {
+  priority:
+    "targets[].priority is not supported (it was accepted but never read by any strategy); " +
+    "to prefer targets in order use mode: fallback and list strategy.targets in order of preference",
+  budget:
+    "targets[].budget is not supported (it was accepted but never enforced); " +
+    "use the budget plugin for a daily USD limit: plugins: [{ name: budget, stage: before_request, config: { dailyBudget: <usd> } }]",
+};
+
+/** Message for observability.tracing.otlpProtocol: grpc (only OTLP/HTTP is implemented). */
+export const OTLP_GRPC_UNSUPPORTED =
+  "otlpProtocol grpc is not supported: only the OTLP/HTTP exporter is implemented. " +
+  "Remove otlpProtocol (or set it to http) and point otlpEndpoint at the collector's OTLP/HTTP traces URL, " +
+  'usually port 4318, e.g. "http://localhost:4318/v1/traces"';
+
 /** Non-fatal warnings for a raw (pre-validation) config object. */
 export function configDeprecationWarnings(raw: unknown): string[] {
   const warnings: string[] = [];

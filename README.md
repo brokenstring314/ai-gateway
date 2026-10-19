@@ -1120,7 +1120,7 @@ observability:
     shutdownGrace: "10s"      # flush budget on shutdown
 ```
 
-Spans are exported over **OTLP/HTTP** to `otlpEndpoint` as given (use the full `/v1/traces` URL). `otlpProtocol: grpc | http` is accepted by the schema but has no effect: only the HTTP exporter is implemented. Tracing stays off without `enabled: true` and an endpoint.
+Spans are exported over **OTLP/HTTP** to `otlpEndpoint` as given (use the full `/v1/traces` URL). Only the HTTP exporter is implemented: `otlpProtocol` may be omitted or set to `http`; `otlpProtocol: grpc` fails validation (point `otlpEndpoint` at the collector's OTLP/HTTP port, usually 4318). Tracing stays off without `enabled: true` and an endpoint.
 
 One root span per request (`request.model` attribute; errors recorded on it):
 
