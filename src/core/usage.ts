@@ -72,6 +72,8 @@ export interface StreamAccumulator {
   model: string;
   content: string;
   toolArgChars: number;
+  /** Characters of delta.reasoning_content / delta.reasoning / delta.refusal (reasoning models). */
+  reasoningChars: number;
   finishReason: string;
   usage: Usage | undefined;
   chunks: number;
@@ -84,11 +86,15 @@ export function newStreamAccumulator(model: string, startTime = Date.now()): Str
     model,
     content: "",
     toolArgChars: 0,
+    reasoningChars: 0,
     finishReason: "",
     usage: undefined,
     chunks: 0,
   };
 }
+
+/** Generated text that travels in delta extras and costs output tokens. */
+const ESTIMATED_DELTA_EXTRAS = ["reasoning_content", "reasoning", "refusal"] as const;
 
 export function accumulateChunk(acc: StreamAccumulator, chunk: StreamChunk): void {
   acc.chunks++;
@@ -105,6 +111,13 @@ export function accumulateChunk(acc: StreamAccumulator, chunk: StreamChunk): voi
         if (typeof args?.arguments === "string") acc.toolArgChars += args.arguments.length;
         if (typeof args?.name === "string") acc.toolArgChars += args.name.length;
       }
+      const extra = delta.extra;
+      if (extra) {
+        for (const key of ESTIMATED_DELTA_EXTRAS) {
+          const v = extra[key];
+          if (typeof v === "string") acc.reasoningChars += v.length;
+        }
+      }
     }
     if (choice?.finishReason) acc.finishReason = choice.finishReason;
   }
@@ -116,6 +129,6 @@ export function accumulateChunk(acc: StreamAccumulator, chunk: StreamChunk): voi
  */
 export function estimateStreamUsage(req: Pick<ChatCompletionRequest, "messages">, acc: StreamAccumulator): Usage {
   const promptTokens = estimatePromptTokens(req);
-  const completionTokens = estimateTokens(acc.content.length + acc.toolArgChars);
+  const completionTokens = estimateTokens(acc.content.length + acc.toolArgChars + acc.reasoningChars);
   return { promptTokens, completionTokens, totalTokens: promptTokens + completionTokens };
 }

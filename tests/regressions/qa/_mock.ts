@@ -8,7 +8,7 @@ export interface QaMock {
   stop(): void;
 }
 
-/** model "bad-400" answers an upstream 400. Otherwise streams `chunks` content deltas `gapMs` apart, then finish + [DONE]; non-stream answers JSON. */
+/** model "bad-400" answers an upstream 400; "reasoning-nousage" streams 4000 chars of reasoning_content, no usage. Otherwise streams `chunks` content deltas `gapMs` apart, then finish + [DONE]; non-stream answers JSON. */
 export function startQaMock(opts: { chunks?: number; gapMs?: number; model?: string } = {}): QaMock {
   const chunks = opts.chunks ?? 5;
   const gapMs = opts.gapMs ?? 0;
@@ -25,6 +25,19 @@ export function startQaMock(opts: { chunks?: number; gapMs?: number; model?: str
         return Response.json({ error: { message: "invalid n", type: "invalid_request_error" } }, { status: 400 });
       }
       const usage = { prompt_tokens: 3, completion_tokens: 4, total_tokens: 7 };
+      if (body.stream && body.model === "reasoning-nousage") {
+        // A reasoning model whose stream carries no usage chunk (client did not ask for it).
+        const base = { id: "r1", object: "chat.completion.chunk", created: 1, model };
+        const out = [
+          ...Array.from({ length: 10 }, () => ({
+            ...base,
+            choices: [{ index: 0, delta: { reasoning_content: "x".repeat(400) }, finish_reason: null }],
+          })),
+          { ...base, choices: [{ index: 0, delta: { content: "ok" }, finish_reason: "stop" }] },
+        ];
+        const text = `${out.map((o) => `data: ${JSON.stringify(o)}\n\n`).join("")}data: [DONE]\n\n`;
+        return new Response(text, { headers: { "content-type": "text/event-stream" } });
+      }
       if (body.stream) {
         const ev = (o: unknown) => enc.encode(`data: ${JSON.stringify(o)}\n\n`);
         const base = { id: "c1", object: "chat.completion.chunk", created: 1, model };

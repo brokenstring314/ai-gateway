@@ -1055,6 +1055,8 @@ if its estimate fits next to their reservations, so concurrency cannot
 overshoot the budget. Without `costPer1kInput` / `costPer1kOutput` the
 serving target's `costPer1kInputTokens` / `costPer1kOutputTokens` are used;
 a budget with no rates anywhere is a config error (it would never enforce).
+A stream without a usage chunk is charged an estimate (≈ 4 chars/token of the
+streamed content, tool-call text and `reasoning_content` / `reasoning`).
 
 #### Logger (removed in 0.2.0)
 
