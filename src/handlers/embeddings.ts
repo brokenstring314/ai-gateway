@@ -6,7 +6,7 @@ import { z } from "zod";
 import type { AppType } from "../app.js";
 import { respondError, respondInvalidJson, respondValidation } from "./error-response.js";
 import type { Gateway } from "../gateway.js";
-import { toOpenAIWireEmbeddingResponse } from "./openai-wire.js";
+import { dropNullFields, toOpenAIWireEmbeddingResponse } from "./openai-wire.js";
 import { handlerRequest } from "./request.js";
 
 const EmbeddingRequestSchema = z.object({
@@ -26,7 +26,7 @@ export function registerEmbeddingsHandler(app: AppType, gateway: Gateway): void 
       return respondInvalidJson(c);
     }
 
-    const parsed = EmbeddingRequestSchema.safeParse(body);
+    const parsed = EmbeddingRequestSchema.safeParse(dropNullFields(body));
     if (!parsed.success) {
       return respondValidation(c, parsed.error.issues);
     }

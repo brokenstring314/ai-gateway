@@ -48,6 +48,12 @@ export interface RequestContext {
    * the handler through the context instead.
    */
   upstreamHeaders?: Readonly<Record<string, string>>;
+  /**
+   * Name of the target that served the request, set by the pipeline once an
+   * upstream answered (a streaming request has no response object to carry
+   * it). Unset when no upstream was used (e.g. a cache hit).
+   */
+  servedTarget?: string;
 }
 
 export interface ModelInfo {

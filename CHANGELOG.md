@@ -32,6 +32,37 @@ now fail `ai-gateway validate` and startup with a migration hint:
 
 ### Fixed
 
+- **SIGTERM cut every in-flight stream.** The drain counted a request as
+  finished when its handler returned the SSE `Response`, before the body was
+  written, so the drain ended at once and the forced close reset all
+  streaming connections (200 of 200 in-flight streams ended with
+  `ECONNRESET` in a load test). Streamed bodies (SSE, NDJSON, proxied audio /
+  octet streams) now stay in flight until they finish or the client cancels,
+  within `SHUTDOWN_GRACE_MS`.
+- **Request-log SQLite throughput.** `request-logs.sqlite` used the default
+  rollback journal with `synchronous=FULL` and no busy timeout: one
+  synchronous fsync-heavy commit per request capped the whole gateway at
+  ~100 req/s on a network volume, and any other writer made inserts fail
+  with "database is locked". It now uses WAL, `synchronous=NORMAL`, a 1 s
+  busy timeout and a cached insert statement (same volume: ~7 ms → ~1 ms per
+  insert).
+- **Streaming `X-Gateway-Provider` carried the upstream's `model`** instead of
+  the target name, and the `ai_gateway_requests_total` /
+  `ai_gateway_request_duration_seconds` `provider` label is read from that
+  header (an upstream-controlled label value). It is the target now;
+  `/v1/completions` (stream and non-stream) sets the header too.
+- **Explicit `null` optional parameters were rejected with 400.** The OpenAI
+  API and DeepSeek treat `"temperature": null`, `"tools": null`,
+  `"stop": null`, a message's `"name": null` … as "not set"; so do
+  `/v1/chat/completions`, `/v1/completions`, `/v1/embeddings` and
+  `/v1/images/generations` now.
+- Upstream errors were written to the request log (`/admin/logs`) with
+  provider `unknown`; they carry the failing target, like the
+  `X-Gateway-Target` header.
+- README: `X-Gateway-Overhead-Ms` is the time until the gateway had the
+  response (including the upstream call; time to first chunk for streams),
+  not gateway-only processing time.
+
 - `requestTimeout: "500ms"` passed validation but the timeout middleware,
   which had its own parser without `ms`, read it as 500 minutes. Validation
   and runtime now share `config/duration.ts`; `1m30s`, which the middleware

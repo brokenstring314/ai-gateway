@@ -124,6 +124,7 @@ export async function* runChatStream(
   try {
     const plan = surfaceStreamPlan(executor, strategy, surface, ctx, finalReq);
     result = await executeStream(ctx, plan, { mapError: toPipelineError, finalize });
+    if (ctx) ctx.servedTarget = result.target;
   } catch (err) {
     // e.g. strategy selection failed before executeStream could settle.
     await pipeline.finalize(run, { kind: "error", error: err });

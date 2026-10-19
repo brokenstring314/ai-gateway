@@ -121,8 +121,8 @@ export function registerChatHandler(app: AppType, gateway: Gateway): void {
     if (req.stream) {
       return respondSse(c, gateway, hr, gateway.routeStream(ctx, req), {
         serialize: createOpenAIWireStreamSerializer(),
-        headers: (first) => ({
-          "X-Gateway-Provider": first?.model ?? "unknown",
+        headers: () => ({
+          "X-Gateway-Provider": ctx.servedTarget ?? "unknown",
           "X-Gateway-Overhead-Ms": String(Date.now() - startTime),
         }),
       });

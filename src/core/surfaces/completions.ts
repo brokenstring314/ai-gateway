@@ -26,7 +26,7 @@ import type {
 } from "../../providers/types.js";
 import type { Surface } from "../types.js";
 import { REQUEST_EXTRA_KEYS, applyExtras, isJsonObject, pickExtras } from "../../providers/wire-extras.js";
-import { toOpenAIWireUsage } from "../../handlers/openai-wire.js";
+import { dropNullFields, toOpenAIWireUsage } from "../../handlers/openai-wire.js";
 
 type Json = Record<string, unknown>;
 
@@ -98,7 +98,7 @@ const unsupported = (path: string, message: string) => ({ ok: false as const, is
 
 /** Validate a wire body and map it onto the chat request the pipeline runs. */
 export function parseCompletionsRequest(body: unknown): ParsedCompletions {
-  const parsed = CompletionsRequestSchema.safeParse(isJsonObject(body) ? renameSnake(body) : body);
+  const parsed = CompletionsRequestSchema.safeParse(isJsonObject(body) ? renameSnake(dropNullFields(body)) : body);
   if (!parsed.success) {
     return {
       ok: false,

@@ -148,7 +148,8 @@ export function createApp(
           503,
         );
       }
-      options.inFlightTracker?.increment();
+      tracker.increment();
+      let bodyTracked = false;
       try {
         await next();
         // Shutdown began while this request ran: ask the client to drop the
@@ -160,8 +161,17 @@ export function createApp(
             // immutable headers (e.g. a fetched Response passed through)
           }
         }
+        // A streamed body (SSE, proxied stream) is still being written after
+        // the handler returns: keep the request in flight until the body
+        // ends or is cancelled, so a SIGTERM drain waits for it instead of
+        // force-closing the connection mid-stream.
+        const tracked = trackStreamedBody(c.res, () => tracker.decrement());
+        if (tracked) {
+          c.res = tracked;
+          bodyTracked = true;
+        }
       } finally {
-        options.inFlightTracker?.decrement();
+        if (!bodyTracked) tracker.decrement();
       }
     });
   }
@@ -345,4 +355,51 @@ function parseEnvNumber(value: string | undefined): number | undefined {
   if (value === undefined || value.trim() === "") return undefined;
   const parsed = Number(value);
   return Number.isFinite(parsed) ? parsed : undefined;
+}
+
+/**
+ * Wrap a streamed response body so `onEnd` runs exactly once when the body
+ * finished, failed or was cancelled by the client. Only streamed content
+ * types are wrapped (SSE, NDJSON, proxied audio / octet streams); JSON and
+ * other bounded answers are left alone (returns undefined).
+ * Pull-based, so backpressure is preserved.
+ */
+const STREAMED_CONTENT_TYPE = /event-stream|ndjson|audio\/|octet-stream/;
+
+function trackStreamedBody(res: Response, onEnd: () => void): Response | undefined {
+  const body = res.body;
+  if (!body) return undefined;
+  const contentType = (res.headers.get("content-type") ?? "").toLowerCase();
+  if (!STREAMED_CONTENT_TYPE.test(contentType)) return undefined;
+  let ended = false;
+  const end = (): void => {
+    if (ended) return;
+    ended = true;
+    onEnd();
+  };
+  const reader = body.getReader();
+  const wrapped = new ReadableStream<Uint8Array>({
+    async pull(ctrl) {
+      try {
+        const { done, value } = await reader.read();
+        if (done) {
+          end();
+          ctrl.close();
+          return;
+        }
+        ctrl.enqueue(value);
+      } catch (err) {
+        end();
+        ctrl.error(err);
+      }
+    },
+    async cancel(reason) {
+      try {
+        await reader.cancel(reason);
+      } finally {
+        end();
+      }
+    },
+  });
+  return new Response(wrapped, { status: res.status, statusText: res.statusText, headers: res.headers });
 }
