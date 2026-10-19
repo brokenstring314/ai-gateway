@@ -74,7 +74,7 @@
 
 ### 3.8 配置
 - [x] YAML / JSON 配置文件；`AI_GATEWAY_*` 环境变量覆盖（按 schema 解析）；`${VAR}` 引用
-- [x] 严格配置校验（未知键、已移除键、交叉引用），`ai-gateway validate` 与启动共用
+- [x] 严格配置校验（未知键、已移除键、交叉引用、全部内置插件的 `config`），`ai-gateway validate` 与启动共用
 - [x] 模型别名
 - [—] ~~热重载与配置写 API~~：0.2.0 移除；配置只来自文件，改完重启
 
@@ -129,15 +129,15 @@ config.example.yaml / config.example.json / Dockerfile / README.md / README_CN.m
 
 ## 6. 待办 / 已知问题（下一版本）
 
-以下问题在核对文档与代码时发现，尚未修复（修复时同步更新 README 与 CHANGELOG）：
+以下问题在核对文档与代码时发现（修复时同步更新 README 与 CHANGELOG；已修复项见 CHANGELOG Unreleased，回归测试在 `tests/regressions/config/`）：
 
-- [ ] `requestTimeout` 的 schema 允许 `500ms`，但 `middleware/request-timeout.ts` 的 `parseGoDuration` 没有 `ms` 单位，`500ms` 会被解析成 500 分钟；同时 schema 不接受 `1m30s` 这类组合写法（`tracing.shutdownGrace` 用的是另一个解析器）
-- [ ] `observability.tracing.otlpProtocol: grpc` 被接受但不起作用（只有 OTLP/HTTP exporter）：要么实现 gRPC，要么从 schema 移除
-- [ ] `targets[].priority`、`targets[].budget` 被 schema 接受但没有任何代码读取
-- [ ] 插件 `config` 不做严格校验（pii-secret-guard 除外），例如 word-filter 的 `caseSensitive`、max-token 的 `maxMessages` 会被静默忽略
+- [x] ~~`requestTimeout` 的 `500ms` 被超时中间件解析成 500 分钟~~：已修复，校验与运行时共用 `config/duration.ts`（ms/s/m/h，可组合如 `1m30s`，必须 > 0）
+- [x] ~~`otlpProtocol: grpc` 被接受但不起作用~~：已修复，`grpc` 校验报错并给出迁移提示（只实现 OTLP/HTTP，不引入 gRPC 依赖）
+- [x] ~~`targets[].priority`、`targets[].budget` 无代码读取~~：已修复，严格校验拒绝并给出迁移提示（fallback + `strategy.targets` 排序；budget 插件）
+- [x] ~~内置插件 `config` 不做严格校验~~：已修复，每个内置插件都有严格 Zod schema（`plugins/builtins/config-schemas.ts`），校验与插件工厂共用
 - [ ] 插件条目的 `stage` 必填但不起作用（内置插件自行决定阶段），`type` 也不起作用
-- [ ] MCP `maxCallDepth` 只取第一个 `mcpServers` 条目的值
-- [ ] `src/dashboard/static/dashboard.js`、`style.css` 是旧占位 dashboard 的遗留文件，已不再被服务，可删除
+- [x] ~~MCP `maxCallDepth` 只取第一个条目~~：已修复，取各服务器所设值的最小值（与 Go 原版一致），都未设置时默认 5
+- [x] ~~`src/dashboard/static/dashboard.js`、`style.css` 遗留文件~~：已删除
 - [ ] `abtest` 废弃别名计划在 0.3.0 删除
 
 ## 7. 降级策略（防止卡住）

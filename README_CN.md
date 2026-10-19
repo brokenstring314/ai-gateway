@@ -1371,8 +1371,10 @@ src/
 ├── config/
 │   ├── schema.ts            # 严格 Zod schema（未知键报错并给出提示）
 │   ├── loader.ts            # YAML/JSON 文件 + AI_GATEWAY_* 覆盖，validateConfig()
-│   ├── validate.ts          # 交叉引用检查（目标名、规则、base URL）
-│   ├── removed.ts           # 0.2.0 移除的键 / 模式及迁移提示
+│   ├── validate.ts          # 交叉引用检查 + 内置插件 config 校验
+│   ├── removed.ts           # 已移除 / 不支持的键与模式及迁移提示
+│   ├── strict.ts            # 严格对象（未知键给出“是否想写”/迁移提示）
+│   ├── duration.ts          # 唯一的时长解析器（ms|s|m|h，可组合如 1m30s）
 │   ├── production-safety.ts # GATEWAY_ENV=production 启动检查
 │   ├── envref.ts            # ${VAR} 展开
 │   └── types.ts
@@ -1427,7 +1429,7 @@ src/
 │
 ├── plugins/
 │   ├── manager.ts  context.ts  error.ts  types.ts
-│   └── builtins/            # 6 个内置插件 + from-config.ts
+│   └── builtins/            # 6 个内置插件 + from-config.ts + config-schemas.ts（插件 config 严格校验）
 │       ├── rate-limit.ts  cache.ts  word-filter.ts  max-token.ts  budget.ts
 │       └── pii-secret-guard/   # config, detectors, validators, plugin
 │
