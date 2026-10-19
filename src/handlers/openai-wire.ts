@@ -84,8 +84,21 @@ const MESSAGE_KEYS: Readonly<Record<string, string>> = {
   tool_call_id: "toolCallId",
 };
 
+/**
+ * OpenAI Chat Completions content part types carried verbatim (no text the
+ * guardrail plugins would need to scan). An allow-list, so an arbitrary
+ * text-bearing part type cannot slip prompt text past word-filter /
+ * pii-secret-guard.
+ */
+export const PASSTHROUGH_CONTENT_PART_TYPES: ReadonlySet<string> = new Set(["input_audio", "file", "refusal"]);
+
 function normalizeContentPart(part: unknown): unknown {
   if (!isObject(part)) return part;
+  // Part types the gateway does not model (input_audio, file, refusal …) are
+  // carried verbatim and sent upstream as they came.
+  if (typeof part["type"] === "string" && PASSTHROUGH_CONTENT_PART_TYPES.has(part["type"])) {
+    return { type: part["type"], raw: part };
+  }
   return renameKeys(part, { image_url: "imageUrl" });
 }
 

@@ -34,6 +34,7 @@ fixed by 1.4 while this suite was being written).
 | qa/stream-provider-header | QA round (real DeepSeek): streaming `X-Gateway-Provider` = upstream model, metrics `provider` label from it; completions had none — fixed | post-0.2.0 |
 | qa/stream-usage-estimate-reasoning | QA round: estimated stream usage (no usage chunk) ignored reasoning_content — fixed | post-0.2.0 |
 | qa/null-optional-params | QA round (real DeepSeek + body fuzz): explicit `null` optional params → 400 — fixed | post-0.2.0 |
+| qa/content-part-types | QA round: chat `input_audio` / `file` / assistant `refusal` content parts rejected with 400 — fixed | post-0.2.0 |
 | config/dashboard-dead-assets | PLAN backlog: unserved `dashboard.js` / `style.css` — deleted | post-0.2.0 |
 
 B3-6 (/metrics series) and the round-2 "/admin/logs empty" item were fixed in
