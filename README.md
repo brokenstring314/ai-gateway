@@ -957,8 +957,8 @@ plugins:
   - name: cache
     stage: before_request
     config:
-      maxAge: 300               # Cache TTL in seconds (default: 300)
-      maxEntries: 1000          # Max cached responses (default: 1000)
+      maxAge: 300               # Cache TTL in seconds (alias: ttlSeconds; default: 300)
+      maxEntries: 1000          # Max cached responses (alias: maxSize; default: 1000)
 ```
 
 #### Word Filter
@@ -1064,6 +1064,7 @@ in `plugins` is ignored with a startup warning; remove it.
 ### Plugin Config and Error Policy
 
 - Entries run in the order listed. `stage` is required by the schema, but each built-in registers itself on the stages it needs: `cache` and `budget` on both `before_request` and `after_request`, `pii-secret-guard` per its `direction`, the others on `before_request`. `type` is optional and informational. `enabled: false` skips an entry; names may use `_` instead of `-`. An unknown plugin name is ignored with a warning.
+- **Every built-in plugin's `config` is strictly validated** by `ai-gateway validate` and at startup: unknown keys (with a did-you-mean hint), wrong types, missing required settings (`rate-limit` `maxRequestsPerMinute`, `max-token` `maxTokens`, `budget` `dailyBudget`), a `word-filter` `mode` other than `reject` / `redact`, and setting two aliases of the same option (`maxAge` and `ttlSeconds`) are errors. Only the keys shown in each plugin's example above (and the listed aliases) are accepted; counts (`maxRequestsPerMinute`, `maxRequestsPerDay`, `maxEntries`, `maxTokens`, `reserveOutputTokens`) must be integers.
 - **Errors are fail-closed for every plugin:** a plugin that throws fails the request (500 `Internal server error`, logged with the request). There is no fail-open mode.
 
 ---

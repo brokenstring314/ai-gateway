@@ -874,8 +874,8 @@ plugins:
   - name: cache
     stage: before_request
     config:
-      maxAge: 300               # 缓存 TTL（秒，默认：300）
-      maxEntries: 1000          # 最大缓存条目数（默认：1000）
+      maxAge: 300               # 缓存 TTL（秒，别名：ttlSeconds；默认：300）
+      maxEntries: 1000          # 最大缓存条目数（别名：maxSize；默认：1000）
 ```
 
 #### 词过滤（Word Filter）
@@ -977,6 +977,7 @@ plugins:
 ### 插件配置与错误策略
 
 - 条目按列出顺序执行。schema 要求填写 `stage`，但每个内置插件会自行注册到所需阶段：`cache` 和 `budget` 同时注册 `before_request` 与 `after_request`，`pii-secret-guard` 取决于 `direction`，其余为 `before_request`。`type` 可选，仅作说明。`enabled: false` 跳过该条目；名称里的 `-` 可写成 `_`。未知插件名会被忽略并告警。
+- **每个内置插件的 `config` 都做严格校验**（`ai-gateway validate` 与启动时）：未知键（附“是否想写”提示）、类型错误、缺少必填项（`rate-limit` 的 `maxRequestsPerMinute`、`max-token` 的 `maxTokens`、`budget` 的 `dailyBudget`）、`word-filter` 的 `mode` 不是 `reject` / `redact`，以及同一选项的两个别名同时设置（如 `maxAge` 与 `ttlSeconds`）都会报错。只接受上面各插件示例中的键（及列出的别名）；计数类字段（`maxRequestsPerMinute`、`maxRequestsPerDay`、`maxEntries`、`maxTokens`、`reserveOutputTokens`）必须是整数。
 - **所有插件的错误都是故障关闭（fail-closed）：** 插件抛异常时请求失败（500 `Internal server error`，并随请求记录日志）。没有 fail-open 模式。
 
 ---

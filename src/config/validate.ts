@@ -5,6 +5,7 @@
  */
 
 import { baseURLProblem } from "../core/provider-presets.js";
+import { builtinPluginConfigIssues } from "../plugins/builtins/config-schemas.js";
 import { piiSecretGuardConfigIssues } from "../plugins/builtins/pii-secret-guard/config.js";
 import type { GatewayConfig } from "./types.js";
 
@@ -37,11 +38,17 @@ export function configReferenceIssues(cfg: CheckedConfig): ConfigIssue[] {
     if (problem !== undefined) issues.push({ path: ["targets", i, "baseURL"], message: problem });
   });
 
-  // pii-secret-guard has a strict config schema of its own.
+  // Every built-in plugin has a strict config schema (unknown keys, wrong
+  // types and missing required settings are errors).
   (cfg.plugins ?? []).forEach((p, i) => {
-    if (p.enabled === false || p.name.trim().toLowerCase().replace(/_/g, "-") !== "pii-secret-guard") return;
-    for (const issue of piiSecretGuardConfigIssues(p.config ?? {})) {
-      issues.push({ path: ["plugins", i, "config", ...issue.path], message: `pii-secret-guard: ${issue.message}` });
+    if (p.enabled === false) return;
+    const name = p.name.trim().toLowerCase().replace(/_/g, "-");
+    const found =
+      name === "pii-secret-guard"
+        ? piiSecretGuardConfigIssues(p.config ?? {})
+        : builtinPluginConfigIssues(name, p.config ?? {});
+    for (const issue of found) {
+      issues.push({ path: ["plugins", i, "config", ...issue.path], message: `${name}: ${issue.message}` });
     }
   });
 
