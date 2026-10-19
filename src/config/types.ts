@@ -33,8 +33,6 @@ export interface TargetConfig {
   baseURL?: string;
   models?: string[];
   weight?: number;
-  priority?: number;
-  budget?: number;
   costPer1kInputTokens?: number;
   costPer1kOutputTokens?: number;
   retry?: RetryConfig;
@@ -73,7 +71,8 @@ export interface ObservabilityConfig {
   tracing?: {
     enabled?: boolean;
     otlpEndpoint?: string;
-    otlpProtocol?: "grpc" | "http";
+    /** Only "http" (OTLP/HTTP) is supported; "grpc" fails validation. */
+    otlpProtocol?: "http";
     serviceName?: string;
     sampleRatio?: number;
     privacyLevel?: "none" | "metadata" | "full";

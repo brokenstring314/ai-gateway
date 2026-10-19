@@ -1032,7 +1032,7 @@ observability:
     shutdownGrace: "10s"      # 关闭时的 flush 时间
 ```
 
-Span 通过 **OTLP/HTTP** 原样发送到 `otlpEndpoint`（请写完整的 `/v1/traces` URL）。schema 接受 `otlpProtocol: grpc | http`，但该字段不起作用：只实现了 HTTP exporter。未设置 `enabled: true` 或没有端点时不启用追踪。
+Span 通过 **OTLP/HTTP** 原样发送到 `otlpEndpoint`（请写完整的 `/v1/traces` URL）。只实现了 HTTP exporter：`otlpProtocol` 可省略或设为 `http`；`otlpProtocol: grpc` 会导致配置校验失败（请把 `otlpEndpoint` 指向 collector 的 OTLP/HTTP 端口，通常是 4318）。未设置 `enabled: true` 或没有端点时不启用追踪。
 
 每个请求一个根 span（带 `request.model` 属性，错误记录在其上）：
 
