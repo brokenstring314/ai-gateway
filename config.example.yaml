@@ -48,9 +48,8 @@ plugins:
   - name: rate-limit
     stage: before_request
     config:
-      requestsPerSecond: 100
-      burst: 200
-      keyRpm: 60
+      maxRequestsPerMinute: 60   # per API key (aliases: keyRpm, rpm)
+      # maxRequestsPerDay: 5000
 
   - name: cache
     stage: before_request

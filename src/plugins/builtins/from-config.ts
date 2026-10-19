@@ -1,9 +1,10 @@
 /**
  * Instantiate built-in plugins from `config.plugins`.
  *
- * Accepts names in kebab-case or snake_case ("rate-limit" / "rate_limit"),
- * and both the code-level config keys and the documented aliases
- * (e.g. cache `ttlSeconds`/`maxAge`, word-filter `blocklist`/`blockedWords`).
+ * Accepts names in kebab-case or snake_case ("rate-limit" / "rate_limit").
+ * Each built-in's config is parsed by its strict schema (config-schemas.ts,
+ * pii-secret-guard/config.ts): documented aliases (cache `ttlSeconds`/`maxAge`,
+ * word-filter `blocklist`/`blockedWords`) are accepted, unknown keys throw.
  */
 
 import type { PluginConfig, TargetConfig } from "../../config/types.js";
@@ -13,37 +14,12 @@ import { CachePlugin } from "./cache.js";
 import { MaxTokenPlugin } from "./max-token.js";
 import { RateLimitPlugin } from "./rate-limit.js";
 import { WordFilterPlugin } from "./word-filter.js";
+import { parseBuiltinPluginConfig } from "./config-schemas.js";
 import { PiiSecretGuardPlugin, resolveGuardConfig } from "./pii-secret-guard/index.js";
 
 export interface PluginRegistration {
   readonly stage: Stage;
   readonly plugin: IPlugin;
-}
-
-type Raw = Record<string, unknown>;
-
-function num(raw: Raw, keys: readonly string[]): number | undefined {
-  for (const k of keys) {
-    const v = raw[k];
-    if (typeof v === "number" && Number.isFinite(v)) return v;
-  }
-  return undefined;
-}
-
-function requirePositive(plugin: string, raw: Raw, keys: readonly string[]): number {
-  const v = num(raw, keys);
-  if (v === undefined || v <= 0) {
-    throw new Error(`Plugin "${plugin}": config.${keys[0] ?? "?"} must be a positive number`);
-  }
-  return v;
-}
-
-function strings(raw: Raw, keys: readonly string[]): string[] {
-  for (const k of keys) {
-    const v = raw[k];
-    if (Array.isArray(v)) return v.filter((x): x is string => typeof x === "string");
-  }
-  return [];
 }
 
 let loggerRemovedWarned = false;
@@ -59,24 +35,17 @@ export function buildPluginsFromConfig(
   const out: PluginRegistration[] = [];
   for (const entry of entries ?? []) {
     if (entry.enabled === false) continue;
-    const raw: Raw = (entry.config ?? {}) as Raw;
+    const raw = entry.config ?? {};
     const name = normalizePluginName(entry.name);
 
     switch (name) {
       case "rate-limit": {
-        const plugin = new RateLimitPlugin({
-          maxRequestsPerMinute: requirePositive(entry.name, raw, ["maxRequestsPerMinute", "keyRpm", "rpm"]),
-          maxRequestsPerDay: num(raw, ["maxRequestsPerDay", "rpd"]),
-          key: typeof raw["key"] === "string" ? raw["key"] : undefined,
-        });
+        const plugin = new RateLimitPlugin(parseBuiltinPluginConfig("rate-limit", entry.name, raw));
         out.push({ stage: "before_request", plugin });
         break;
       }
       case "cache": {
-        const cfg = {
-          ttlSeconds: num(raw, ["ttlSeconds", "maxAge"]) ?? 300,
-          maxSize: num(raw, ["maxSize", "maxEntries"]) ?? 1000,
-        };
+        const cfg = parseBuiltinPluginConfig("cache", entry.name, raw);
         // Cache needs both halves: lookup before, store after.
         out.push({ stage: "before_request", plugin: new CachePlugin(cfg, "before_request") });
         out.push({ stage: "after_request", plugin: new CachePlugin(cfg, "after_request") });
@@ -84,10 +53,7 @@ export function buildPluginsFromConfig(
       }
       case "budget": {
         const cfg = {
-          dailyBudget: requirePositive(entry.name, raw, ["dailyBudget"]),
-          costPer1kInput: num(raw, ["costPer1kInput"]),
-          costPer1kOutput: num(raw, ["costPer1kOutput"]),
-          reserveOutputTokens: num(raw, ["reserveOutputTokens"]),
+          ...parseBuiltinPluginConfig("budget", entry.name, raw),
           // Without own rates, reserve at the most expensive target's rates.
           estimateRates: {
             costPer1kInputTokens: Math.max(0, ...targets.map((t) => t.costPer1kInputTokens ?? 0)),
@@ -112,12 +78,11 @@ export function buildPluginsFromConfig(
         break;
       }
       case "word-filter": {
-        const blocklist = strings(raw, ["blocklist", "blockedWords"]);
+        const { blocklist, mode } = parseBuiltinPluginConfig("word-filter", entry.name, raw);
         if (blocklist.length === 0) {
           console.warn(`[plugins] "${entry.name}" has an empty blocklist; skipping`);
           break;
         }
-        const mode = raw["mode"] === "redact" ? "redact" : "reject";
         out.push({ stage: "before_request", plugin: new WordFilterPlugin({ blocklist, mode }) });
         break;
       }
@@ -131,9 +96,7 @@ export function buildPluginsFromConfig(
         break;
       }
       case "max-token": {
-        const plugin = new MaxTokenPlugin({
-          maxTokens: requirePositive(entry.name, raw, ["maxTokens"]),
-        });
+        const plugin = new MaxTokenPlugin(parseBuiltinPluginConfig("max-token", entry.name, raw));
         out.push({ stage: "before_request", plugin });
         break;
       }

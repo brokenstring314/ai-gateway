@@ -26,10 +26,10 @@
   },
   "plugins": [
     {
-      "name": "logger",
-      "stage": "after_request",
+      "name": "rate-limit",
+      "stage": "before_request",
       "config": {
-        "logBody": false
+        "maxRequestsPerMinute": 60
       }
     }
   ],
