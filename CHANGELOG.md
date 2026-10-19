@@ -32,6 +32,7 @@ now fail `ai-gateway validate` and startup with a migration hint:
 
 ### Fixed
 
+- **Chat content parts `input_audio`, `file` and assistant `refusal` are accepted** and forwarded verbatim (they were rejected with 400 although valid OpenAI input). Other unknown part types are still rejected, so text cannot bypass word-filter or the PII/secret guard.
 - **SIGTERM cut every in-flight stream.** The drain counted a request as
   finished when its handler returned the SSE `Response`, before the body was
   written, so the drain ended at once and the forced close reset all

@@ -106,9 +106,12 @@ export interface ChatMessage {
 }
 
 export interface ContentPart {
-  type: "text" | "image_url";
+  /** "text" and "image_url" are modelled; any other type (input_audio, file, refusal …) is forwarded as `raw`. */
+  type: "text" | "image_url" | (string & {});
   text?: string;
   imageUrl?: { url: string; detail?: "auto" | "low" | "high" };
+  /** The wire part, verbatim, for types the gateway does not model. */
+  raw?: Record<string, unknown>;
 }
 
 export interface ToolDefinition {

@@ -27,11 +27,15 @@ const ChatMessageSchema: z.ZodType = z.object({
     .union([
       z.string(),
       z.array(
-        z.object({
-          type: z.enum(["text", "image_url"]),
-          text: z.string().optional(),
-          imageUrl: z.object({ url: z.string(), detail: z.enum(["auto", "low", "high"]).optional() }).optional(),
-        }),
+        z.union([
+          z.object({
+            type: z.enum(["text", "image_url"]),
+            text: z.string().optional(),
+            imageUrl: z.object({ url: z.string(), detail: z.enum(["auto", "low", "high"]).optional() }).optional(),
+          }),
+          // Other OpenAI part types (input_audio, file, refusal …), forwarded verbatim.
+          z.object({ type: z.enum(["input_audio", "file", "refusal"]), raw: z.record(z.string(), z.unknown()) }),
+        ]),
       ),
     ])
     .optional(),

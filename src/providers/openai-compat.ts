@@ -322,6 +322,7 @@ function serializeMessage(msg: ChatMessage): Record<string, unknown> {
   } else if (Array.isArray(msg.content)) {
     m["content"] = msg.content.map((part) => {
       if (part.type === "text") return { type: "text", text: part.text ?? "" };
+      if (part.type !== "image_url") return part.raw ?? { type: part.type };
       const img: Record<string, unknown> = { url: part.imageUrl?.url ?? "" };
       if (part.imageUrl?.detail) img["detail"] = part.imageUrl.detail;
       return { type: "image_url", image_url: img };
