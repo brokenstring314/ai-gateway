@@ -56,6 +56,11 @@ now fail `ai-gateway validate` and startup with a migration hint:
   `"stop": null`, a message's `"name": null` … as "not set"; so do
   `/v1/chat/completions`, `/v1/completions`, `/v1/embeddings` and
   `/v1/images/generations` now.
+- **Estimated stream usage ignored reasoning text.** When a stream has no
+  usage chunk, completion tokens are estimated from the streamed text (so the
+  `budget` plugin cannot be bypassed); `delta.reasoning_content` /
+  `delta.reasoning` / `delta.refusal` were not counted, so a reasoning
+  model's thinking was free for the budget and missing from token metrics.
 - Upstream errors were written to the request log (`/admin/logs`) with
   provider `unknown`; they carry the failing target, like the
   `X-Gateway-Target` header.

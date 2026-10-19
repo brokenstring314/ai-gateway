@@ -970,6 +970,8 @@ plugins:
 未配置 `costPer1kInput` / `costPer1kOutput` 时使用实际服务 target 的
 `costPer1kInputTokens` / `costPer1kOutputTokens`；任何地方都没有费率的 budget
 配置直接报错（否则永远不会生效）。
+没有 usage 分块的流式请求按估算计费（流式输出的内容、工具调用文本以及
+`reasoning_content` / `reasoning`，约 4 字符/token）。
 
 #### 日志（Logger，0.2.0 已移除）
 
