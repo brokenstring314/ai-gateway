@@ -3,7 +3,9 @@
 > **此文件是所有后续 AI 工作的唯一权威参考。每次开始工作前必读此文件，严格按计划执行，不得偏离。**
 >
 > 当前状态：**v0.2.0 已发布**（tag `v0.2.0`）。第 5 节的初始阶段与 0.2.0 重构均已完成；
-> 后续工作从第 6 节（待办）开始。行为细节以 README.md / README_CN.md 和 CHANGELOG.md 为准，二者与代码不一致时以代码为准并修文档。
+> 后续工作从第 6 节（待办）开始。
+>
+> **下一版本 0.3.0：管理控制台 + 实时配置**，计划见 [`docs/plans/0.3.0-console-live-config.md`](docs/plans/0.3.0-console-live-config.md)（2026-10-27 立项，优先级高于第 6 节其余待办）。行为细节以 README.md / README_CN.md 和 CHANGELOG.md 为准，二者与代码不一致时以代码为准并修文档。
 
 ## 1. 项目定义
 
@@ -153,7 +155,6 @@ config.example.yaml / config.example.json / Dockerfile / README.md / README_CN.m
 
 - ❌ Anthropic/Gemini/Bedrock/Cohere/Vertex AI 协议翻译
 - ❌ PostgreSQL 后端（只用 SQLite）
-- ❌ 完整 Dashboard UI（只有精简管理控制台：概览、密钥、日志、只读配置）
-- ❌ 配置热重载 / 运行时配置写 API（0.2.0 有意移除）
+- ~~❌ 完整 Dashboard UI~~ / ~~❌ 配置热重载、运行时配置写 API~~：2026-10-27 起改为 0.3.0 目标（见 docs/plans/0.3.0-console-live-config.md）
 - ❌ 性能压测优化
 - （原计划中的 “不做单二进制编译” 已改变：0.2.0 起发布 `bun build --compile` 二进制）
