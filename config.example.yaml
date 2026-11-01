@@ -29,6 +29,14 @@ targets:
     costPer1kInputTokens: 0.0001
     costPer1kOutputTokens: 0.0002
 
+# Runtime config source (0.3.0). Default "database": on first start the
+# targets/strategy/aliases/plugins/compatibility above are imported into
+# <data dir>/config.sqlite and managed there (literal apiKeys are encrypted
+# with GATEWAY_SECRET_KEY; "${VAR}" references stay references). "file" keeps
+# this file as the only, read-only source (0.2.0 behaviour).
+# runtimeConfig:
+#   source: database
+
 auth:
   enabled: true
   # keys:

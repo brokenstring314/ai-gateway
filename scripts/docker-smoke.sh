@@ -45,6 +45,7 @@ log "starting $IMAGE"
 docker run -d --name "$NAME" \
   -p 127.0.0.1::3000 \
   -e SHUTDOWN_GRACE_MS="$GRACE_MS" \
+  -e GATEWAY_SECRET_KEY="$(head -c 32 /dev/urandom | base64)" \
   -v "$WORK/config.yaml:/config/config.yaml:ro" \
   "$IMAGE" >/dev/null
 

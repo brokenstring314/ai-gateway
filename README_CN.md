@@ -93,12 +93,14 @@ docker run -d --name ai-gateway -p 3000:3000 \
   -v "$PWD/config.yaml:/config/config.yaml:ro" \
   -v ai-gateway-data:/data \
   -e OPENAI_API_KEY \
+  -e GATEWAY_SECRET_KEY \
   ai-gateway
 ```
 
 镜像以非 root 用户（uid 1000）在 `tini` 下运行，并设置 `GATEWAY_ENV=production`
 （配置必须开启 auth 且至少有一个 key；`adminSecret` 至少 16 个字符）和
-`GATEWAY_DATA_DIR=/data`（API key 与请求日志；挂载 volume 以持久化）。配置文件挂载到
+`GATEWAY_DATA_DIR=/data`（API key、请求日志和运行时配置库；挂载 volume 以持久化）。生产环境还必须设置
+`GATEWAY_SECRET_KEY`（见[运行时配置库](#运行时配置库030)）。配置文件挂载到
 `/config/config.yaml`（只读即可）。内置 `HEALTHCHECK` 探测 3000 端口的 `/livez`；
 负载均衡 / k8s readiness 请用 `/readyz`。`docker stop` 发送 SIGTERM：`/readyz` 变为 503，
 不再接受新连接，进行中的请求在 `SHUTDOWN_GRACE_MS`（默认 10000）内排空。
@@ -115,19 +117,23 @@ Usage:
   ai-gateway keys create [--admin] [--read-only] [--name <name>] [--expires <ISO>] [--json] -c <config.yaml>
   ai-gateway keys list [--json] -c <config.yaml>
   ai-gateway keys revoke <id> -c <config.yaml>
+  ai-gateway config import [--force] -c <config.yaml>
+  ai-gateway config status [--json] -c <config.yaml>
   ai-gateway version
 
 Commands:
   serve      Start the gateway server
   validate   Validate a config file and report errors
   keys       Manage the API key store directly (works with the server stopped or running)
+  config     Runtime config store: import the file's runtime sections (--force replaces
+             stored config), status shows channels (key hints only) and versions
   version    Print version
 
 Options:
   -c, --config <path>   Config file path (YAML or JSON)
   -p, --port <port>     Override server.port
   -h, --host <host>     Override server.host
-  --data-dir <dir>      (keys) Data directory; default GATEWAY_DATA_DIR or ./.data
+  --data-dir <dir>      (keys, config) Data directory; default GATEWAY_DATA_DIR or ./.data
 ```
 
 以上为 `--help`（或 `help`）的实际输出（CLI 只有英文帮助）；`ai-gateway keys --help` 显示 `keys` 的选项；`--version` / `-v` 等同 `version`。`-h` 始终表示 `--host`。未知选项直接报错。
@@ -298,6 +304,26 @@ observability:
     port: 9090
 ```
 
+### 运行时配置库（0.3.0）
+
+配置分两层：
+
+- **启动配置** —— `server`、`auth`、`adminSecret`、`cors`、`observability`、`mcpServers`、`requestTimeout`、`maxRequestBytes`、`passthroughProxy` —— 始终来自配置文件，修改需要重启。
+- **运行时资源** —— `targets`（渠道）、`strategy`、`aliases`、`plugins`、`compatibility` —— 默认存放在 `<数据目录>/config.sqlite`（`runtimeConfig.source: database`），这样 0.3.0 的管理 API 和控制台可以不重启就修改它们。
+
+库为空时首次启动，会把配置文件里的运行时段落导入一次（日志 `[config] imported N target(s)…`，记为配置版本 1）。之后以库为准：配置文件的运行时段落再有改动，启动时会警告这些改动**被忽略**。要用文件覆盖库中配置，执行 `ai-gateway config import --force -c config.yaml` 后重启。`ai-gateway config status -c config.yaml` 查看渠道（只显示 key 尾号）和最近的版本。
+
+上游 key 永不以明文入库：
+
+- 字面量 `apiKey` 用 AES-256-GCM 加密，密钥由 **`GATEWAY_SECRET_KEY`** 经 HKDF-SHA256 派生，并绑定所属渠道（密文拷到别的行无法解密）。用 `openssl rand -base64 32` 生成主密钥（base64 或 hex，至少 32 字节）并妥善保管：丢失后已存的 key 无法解密。没有主密钥时启动会拒绝存取加密 key；`GATEWAY_ENV=production` 下没有主密钥直接拒绝启动。
+- 只是环境变量引用的 `apiKey`（`"${OPENAI_API_KEY}"`）按引用原样存储，使用时从环境变量解析，与以前一致，不需要主密钥。
+- 列表、日志、配置版本和审计日志里只显示 `sk-…abcd` 这样的尾号。
+- 更换主密钥：新密钥设为 `GATEWAY_SECRET_KEY`，旧密钥放进 `GATEWAY_SECRET_KEY_PREVIOUS`（多个用逗号分隔），两者都能解密。
+
+每次变更都是一个 SQLite 事务，同时写入配置版本（完整快照，key 只存密文）和审计记录。表结构迁移前会把现有库复制为 `config.sqlite.pre-migration-<时间>.bak`，迁移失败则拒绝启动。库文件和备份都以仅属主可读写（`0600`）创建。
+
+偏好 GitOps 的部署可设 `runtimeConfig: { source: file }`，保持 0.2.0 行为：只以文件为准、不入库、运行时配置只读。
+
 ### 环境变量覆盖
 
 任何配置字段都可以用 `AI_GATEWAY_` 前缀覆盖，用 `_` 作为路径分隔符：
@@ -318,6 +344,8 @@ AI_GATEWAY_CORS_ORIGINS=https://a.example,https://b.example   # 数组：逗号�
 | 变量 | 默认值 | 含义 |
 | --- | --- | --- |
 | `GATEWAY_DATA_DIR` | `.data`（相对于工作目录） | SQLite 数据库所在目录（见下文），应放在持久卷上。 |
+| `GATEWAY_SECRET_KEY` | 未设置 | 加密运行时配置库中上游 key 的主密钥（≥ 32 字节随机数，base64 或 hex；`openssl rand -base64 32`）。存取字面量上游 key 时必需；`GATEWAY_ENV=production` 且使用数据库来源时始终必需。见[运行时配置库](#运行时配置库030)。 |
+| `GATEWAY_SECRET_KEY_PREVIOUS` | 未设置 | 更换主密钥后仍可用于解密的旧密钥，多个用逗号分隔。 |
 | `GATEWAY_ENV` | 未设置 | 设为 `production` 时启用启动安全检查：拒绝 `auth.enabled: false`、`ALLOW_UNAUTHENTICATED_PROXY=true`、少于 16 个字符的 `adminSecret`，以及完全没有客户端密钥（无 `auth.keys` 且密钥库为空）时启动。 |
 | `ADMIN_BOOTSTRAP_KEY` | 未设置 | 首次启动用的管理员凭据；一旦存在真正的管理员凭据即被拒绝，创建过 admin 密钥后永久拒绝（见[密钥作用域](#密钥作用域密钥库模式)）。 |
 | `ADMIN_BOOTSTRAP_READ_ONLY_KEY` | 未设置 | 同上，`read_only` 权限。 |
@@ -335,6 +363,7 @@ AI_GATEWAY_CORS_ORIGINS=https://a.example,https://b.example   # 数组：逗号�
 
 - `api-keys.sqlite` — API 密钥库：密钥的 SHA-256 哈希（不存明文）、显示前缀、名称、权限、过期时间和使用计数。丢失它等于吊销所有密钥库中的密钥；能写入它的人就能伪造密钥，请保持私有（目录 `chmod 700`）。
 - `request-logs.sqlite` — `/admin/logs` 使用的请求日志：trace id、模型、提供商、token 数和错误信息（不含提示词和回复）。错误信息可能引用上游响应内容。以 WAL 模式打开（`synchronous=NORMAL`，1 秒 busy timeout）。
+- `config.sqlite` — 运行时配置库（渠道、加密的上游 key、路由设置、配置版本、审计日志），见[运行时配置库](#运行时配置库030)。`config.sqlite.pre-migration-*.bak` 是迁移前的自动备份。
 - `gateway-config.sqlite` — 仅 0.2.0 之前的版本会生成；现在被忽略（会打印警告），可以删除。
 
 ---
@@ -1376,8 +1405,9 @@ src/
 ├── version.ts               # VERSION
 │
 ├── cli/
-│   ├── index.ts             # serve | validate | keys | version（原生 argv 解析）
-│   └── keys.ts              # 直接操作 SQLite 密钥库的 keys create | list | revoke
+│   ├── index.ts             # serve | validate | keys | config | version（原生 argv 解析）
+│   ├── keys.ts              # 直接操作 SQLite 密钥库的 keys create | list | revoke
+│   └── config.ts            # 运行时配置库的 config import | status
 ├── server/
 │   ├── bootstrap.ts         # 唯一的服务启动路径：存储、安全检查、OTel、监听器
 │   ├── shutdown.ts          # SIGTERM/SIGINT 排空、在途计数、宽限期后强制关闭
@@ -1386,6 +1416,8 @@ src/
 ├── config/
 │   ├── schema.ts            # 严格 Zod schema（未知键报错并给出提示）
 │   ├── loader.ts            # YAML/JSON 文件 + AI_GATEWAY_* 覆盖，validateConfig()
+│   ├── runtime-source.ts    # 启动：文件或配置库、首启导入、合并并重新校验
+│   ├── stable-key.ts        # 确定性 JSON 标识键
 │   ├── validate.ts          # 交叉引用检查 + 内置插件 config 校验
 │   ├── removed.ts           # 已移除 / 不支持的键与模式及迁移提示
 │   ├── strict.ts            # 严格对象（未知键给出“是否想写”/迁移提示）
@@ -1450,8 +1482,10 @@ src/
 │
 ├── mcp/                     # stdio 客户端（MCP 2025-03-26 子集）、registry、executor
 ├── proxy/proxy.ts           # 白名单 /v1/* 路由的透传代理
+├── secrets/secret-box.ts    # 上游 key 的 AES-256-GCM + HKDF 加密封装（GATEWAY_SECRET_KEY）
 ├── persistence/
 │   ├── key-store.ts         # API 密钥（SHA-256）、作用域、WAL、bootstrap 闩锁
+│   ├── config-store.ts      # 运行时配置库：渠道、加密 key、模型、版本、审计
 │   ├── request-log-store.ts # /admin/logs 存储
 │   └── migrations.ts        # 带版本的 SQLite 迁移
 ├── auth/                    # bootstrap.ts（bootstrap 密钥闸门）、key-hash.ts

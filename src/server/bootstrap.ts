@@ -9,6 +9,7 @@ import { Gateway } from "../gateway.js";
 import { createApp, metricsPlacement, metricsResponse } from "../app.js";
 import { createBootstrapGate } from "../auth/bootstrap.js";
 import { loadConfigFromPath } from "../config/loader.js";
+import { resolveRuntimeConfig } from "../config/runtime-source.js";
 import type { GatewayConfig } from "../config/types.js";
 import { KeyStore, keyStorePath, openKeyStoreDatabase, resolveDataDir } from "../persistence/key-store.js";
 import { RequestLogStore, openRequestLogDatabase } from "../persistence/request-log-store.js";
@@ -56,10 +57,16 @@ export interface RunningGateway {
  * Throws on an invalid config (the CLI prints it and exits 1).
  */
 export async function bootstrap(configPath: string, overrides: ServeOverrides = {}): Promise<RunningGateway> {
-  const config: GatewayConfig = loadConfigFromPath(configPath);
+  const fileConfig: GatewayConfig = loadConfigFromPath(configPath);
 
   const dataDir = resolveDataDir(overrides.dataDir);
   mkdirSync(dataDir, { recursive: true });
+
+  // Runtime sections from the config store (imported from the file on first
+  // start) unless runtimeConfig.source: file. Throws on a missing/wrong
+  // GATEWAY_SECRET_KEY or a failed migration: never start half-configured.
+  const runtime = await resolveRuntimeConfig(fileConfig, dataDir, { configPath });
+  const config: GatewayConfig = runtime.config;
 
   // WAL + busy timeout: `ai-gateway keys ...` may write while the server runs.
   const keyDb = openKeyStoreDatabase(keyStorePath(dataDir));
@@ -72,6 +79,7 @@ export async function bootstrap(configPath: string, overrides: ServeOverrides = 
   } catch (err) {
     keyDb.close();
     logDb.close();
+    runtime.store?.close();
     throw err;
   }
 
@@ -162,6 +170,7 @@ export async function bootstrap(configPath: string, overrides: ServeOverrides = 
     console.warn(credentialWarning);
     console.warn("!".repeat(80));
   }
+  console.log(`Runtime config: ${runtime.source === "file" ? "config file (read-only)" : "config store"}`);
   console.log(`Strategy: ${config.strategy.mode}`);
   console.log(`Targets: ${config.targets.map((t) => t.name).join(", ")}`);
 
@@ -210,6 +219,8 @@ export async function bootstrap(configPath: string, overrides: ServeOverrides = 
   shutdown.register({ name: "request-logger", close: () => getRequestLogger().close() });
   shutdown.register({ name: "api-key-store", close: () => keyStore.close() });
   shutdown.register({ name: "request-log-store", close: () => logStore.close() });
+  const configStore = runtime.store;
+  if (configStore) shutdown.register({ name: "config-store", close: () => configStore.close() });
   if (overrides.installSignalHandlers !== false) shutdown.installSignalHandlers();
 
   return {

@@ -94,13 +94,15 @@ docker run -d --name ai-gateway -p 3000:3000 \
   -v "$PWD/config.yaml:/config/config.yaml:ro" \
   -v ai-gateway-data:/data \
   -e OPENAI_API_KEY \
+  -e GATEWAY_SECRET_KEY \
   ai-gateway
 ```
 
 The image runs as a non-root user (uid 1000) under `tini`, with
 `GATEWAY_ENV=production` (so the config must enable auth with at least one key;
-an `adminSecret` must be 16+ characters) and `GATEWAY_DATA_DIR=/data` (API keys
-and request logs; mount a volume to keep them). Mount the config at
+an `adminSecret` must be 16+ characters) and `GATEWAY_DATA_DIR=/data` (API keys,
+request logs and the runtime config store; mount a volume to keep them). Production
+also requires `GATEWAY_SECRET_KEY` (see [Runtime config store](#runtime-config-store-030)). Mount the config at
 `/config/config.yaml` (read-only is fine). The built-in `HEALTHCHECK` probes
 `/livez` on port 3000; point your load balancer / k8s readiness probe at
 `/readyz`. `docker stop` sends SIGTERM: `/readyz` turns 503, new connections are
@@ -118,19 +120,23 @@ Usage:
   ai-gateway keys create [--admin] [--read-only] [--name <name>] [--expires <ISO>] [--json] -c <config.yaml>
   ai-gateway keys list [--json] -c <config.yaml>
   ai-gateway keys revoke <id> -c <config.yaml>
+  ai-gateway config import [--force] -c <config.yaml>
+  ai-gateway config status [--json] -c <config.yaml>
   ai-gateway version
 
 Commands:
   serve      Start the gateway server
   validate   Validate a config file and report errors
   keys       Manage the API key store directly (works with the server stopped or running)
+  config     Runtime config store: import the file's runtime sections (--force replaces
+             stored config), status shows channels (key hints only) and versions
   version    Print version
 
 Options:
   -c, --config <path>   Config file path (YAML or JSON)
   -p, --port <port>     Override server.port
   -h, --host <host>     Override server.host
-  --data-dir <dir>      (keys) Data directory; default GATEWAY_DATA_DIR or ./.data
+  --data-dir <dir>      (keys, config) Data directory; default GATEWAY_DATA_DIR or ./.data
 ```
 
 `--help` (or `help`) prints this text, `ai-gateway keys --help` the `keys` options; `--version` / `-v` is the same as `version`. `-h` always means `--host`. Unknown options are an error.
@@ -301,6 +307,26 @@ observability:
     port: 9090
 ```
 
+### Runtime config store (0.3.0)
+
+Config is split in two layers:
+
+- **Startup settings** — `server`, `auth`, `adminSecret`, `cors`, `observability`, `mcpServers`, `requestTimeout`, `maxRequestBytes`, `passthroughProxy` — always come from the config file; changing them needs a restart.
+- **Runtime resources** — `targets` (channels), `strategy`, `aliases`, `plugins`, `compatibility` — live in `<data dir>/config.sqlite` by default (`runtimeConfig.source: database`), so the admin API and console (0.3.0) can change them without a restart.
+
+On the first start with an empty store, the file's runtime sections are imported once (logged as `[config] imported N target(s)…`, recorded as config version 1). From then on the store is the source of truth: if the file's runtime sections change, startup prints a warning that they are **ignored**. To replace the stored config with the file, run `ai-gateway config import --force -c config.yaml` and restart. `ai-gateway config status -c config.yaml` shows the channels (key hints only) and recent versions.
+
+Upstream keys are never stored in plaintext:
+
+- A literal `apiKey` is encrypted with AES-256-GCM under a key derived (HKDF-SHA256) from **`GATEWAY_SECRET_KEY`** and bound to its channel, so a ciphertext copied to another row does not decrypt. Generate the master key with `openssl rand -base64 32` (base64 or hex, at least 32 bytes) and keep it safe: without it the stored keys cannot be decrypted. Startup refuses to store or read an encrypted key without it, and `GATEWAY_ENV=production` refuses to start without it.
+- An `apiKey` that is only an environment reference (`"${OPENAI_API_KEY}"`) is stored as that reference and resolved from the environment at use, as before — no master key needed for it.
+- Lists, logs, config versions and the audit log only ever show a hint such as `sk-…abcd`.
+- Rotating the master key: set the new one as `GATEWAY_SECRET_KEY` and the old one in `GATEWAY_SECRET_KEY_PREVIOUS` (comma-separated for several); both decrypt.
+
+Every change is one SQLite transaction that also writes a config version (full snapshot, key ciphertext only) and an audit entry. Before a schema migration the existing database is copied to `config.sqlite.pre-migration-<time>.bak`, and a failed migration stops startup. The database and its backups are created owner-only (`0600`).
+
+For GitOps deployments, `runtimeConfig: { source: file }` keeps the 0.2.0 behaviour: the file is the only source, nothing is stored, and the runtime config is read-only.
+
 ### Environment Variable Overrides
 
 Any config field can be overridden with `AI_GATEWAY_` prefix, using `_` as path separator:
@@ -323,6 +349,8 @@ These are read directly from the environment (not via `AI_GATEWAY_*`):
 | Variable | Default | Meaning |
 | --- | --- | --- |
 | `GATEWAY_DATA_DIR` | `.data` (relative to the working directory) | Where the SQLite databases live (see below). Put it on a persistent volume. |
+| `GATEWAY_SECRET_KEY` | unset | Master key (≥ 32 random bytes, base64 or hex; `openssl rand -base64 32`) that encrypts upstream keys in the runtime config store. Required to store or read a literal upstream key, and always when `GATEWAY_ENV=production` with the database source. See [Runtime config store](#runtime-config-store-030). |
+| `GATEWAY_SECRET_KEY_PREVIOUS` | unset | Older master key(s), comma-separated, still accepted for decryption after a rotation. |
 | `GATEWAY_ENV` | unset | `production` turns on the startup safety guard: refuses `auth.enabled: false`, `ALLOW_UNAUTHENTICATED_PROXY=true`, an `adminSecret` shorter than 16 chars, and starting with no client key at all (no `auth.keys` and an empty key store). |
 | `ADMIN_BOOTSTRAP_KEY` | unset | First-run admin credential; refused once a real admin credential exists, permanently once an admin key has been created (see [Key scopes](#key-scopes-key-store-mode)). |
 | `ADMIN_BOOTSTRAP_READ_ONLY_KEY` | unset | Same, with `read_only` scope. |
@@ -340,6 +368,7 @@ These are read directly from the environment (not via `AI_GATEWAY_*`):
 
 - `api-keys.sqlite` — the API key store: SHA-256 hashes of keys (never the keys themselves), display prefixes, names, scopes, expiry and usage counters. Losing it revokes every store key; anyone who can write to it can mint keys, so keep it private (`chmod 700` the directory).
 - `request-logs.sqlite` — request log for `/admin/logs`: trace id, model, provider, token counts and error messages (no prompts or completions). Error messages can quote upstream responses. Opened in WAL mode (`synchronous=NORMAL`, 1 s busy timeout).
+- `config.sqlite` — the runtime config store (channels, encrypted upstream keys, routing settings, config versions, audit log); see [Runtime config store](#runtime-config-store-030). `config.sqlite.pre-migration-*.bak` are automatic pre-migration backups.
 - `gateway-config.sqlite` — only from versions before 0.2.0; ignored (a warning is printed) and safe to delete.
 
 ---
@@ -1469,8 +1498,9 @@ src/
 ├── version.ts               # VERSION
 │
 ├── cli/
-│   ├── index.ts             # serve | validate | keys | version (raw argv parsing)
-│   └── keys.ts              # keys create | list | revoke on the SQLite key store
+│   ├── index.ts             # serve | validate | keys | config | version (raw argv parsing)
+│   ├── keys.ts              # keys create | list | revoke on the SQLite key store
+│   └── config.ts            # config import | status on the runtime config store
 ├── server/
 │   ├── bootstrap.ts         # One server start path: stores, safety checks, OTel, listeners
 │   ├── shutdown.ts          # SIGTERM/SIGINT drain, in-flight tracker, grace + force close
@@ -1479,6 +1509,8 @@ src/
 ├── config/
 │   ├── schema.ts            # Strict Zod schema (unknown keys are errors, with hints)
 │   ├── loader.ts            # YAML/JSON file + AI_GATEWAY_* overrides, validateConfig()
+│   ├── runtime-source.ts    # Startup: file vs config store, first-start import, compose + re-validate
+│   ├── stable-key.ts        # Deterministic JSON identity keys
 │   ├── validate.ts          # Cross-reference + built-in plugin config checks
 │   ├── removed.ts           # Removed / unsupported keys and modes with migration hints
 │   ├── strict.ts            # Strict objects with did-you-mean / migration-hint errors
@@ -1543,8 +1575,10 @@ src/
 │
 ├── mcp/                     # stdio client (MCP 2025-03-26 subset), registry, executor
 ├── proxy/proxy.ts           # Pass-through proxy for allow-listed /v1/* routes
+├── secrets/secret-box.ts    # AES-256-GCM + HKDF envelope for upstream keys (GATEWAY_SECRET_KEY)
 ├── persistence/
 │   ├── key-store.ts         # API keys (SHA-256), scopes, WAL, bootstrap latch
+│   ├── config-store.ts      # Runtime config store: channels, encrypted keys, models, versions, audit
 │   ├── request-log-store.ts # /admin/logs storage
 │   └── migrations.ts        # Versioned SQLite migrations
 ├── auth/                    # bootstrap.ts (bootstrap-key gate), key-hash.ts

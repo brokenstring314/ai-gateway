@@ -4,6 +4,14 @@
 
 ### Added
 
+- Runtime config store (0.3.0 P1): `targets`, `strategy`, `aliases`, `plugins` and `compatibility` now live in
+  `<data dir>/config.sqlite` (channels, channel keys, models, bindings, settings, config versions, audit log), imported
+  from the config file on the first start. Later starts use the store and warn when the file's runtime sections changed
+  (they are ignored). `runtimeConfig.source: file` keeps the file as the only, read-only source.
+- Upstream keys are encrypted at rest with AES-256-GCM (WebCrypto) under a key derived with HKDF-SHA256 from
+  `GATEWAY_SECRET_KEY`, bound to their channel; `"${VAR}"` references are stored as references. Rotation via
+  `GATEWAY_SECRET_KEY_PREVIOUS`. Store files are created `0600`; existing databases are backed up before a migration.
+- CLI: `ai-gateway config import [--force]` and `ai-gateway config status [--json]`.
 - `Gateway.reload(config)` (0.3.0 P0, live config): assembles a new runtime snapshot and swaps it in atomically.
   Requests and streams in flight finish on the snapshot they started on; an invalid config throws and the old
   snapshot keeps serving; breakers, concurrency limiters and plugins with unchanged config keep their state;
@@ -11,6 +19,12 @@
   `registerProvider` / `registerPlugin` registrations now survive reloads. Not yet exposed over HTTP.
 
 ### Breaking changes
+
+- The runtime sections of the config file are imported once into `<data dir>/config.sqlite` and ignored afterwards
+  (startup warns when they change); re-import with `ai-gateway config import --force`, or set
+  `runtimeConfig.source: file` to keep the 0.2.0 behaviour.
+- A literal upstream `apiKey` now requires `GATEWAY_SECRET_KEY` (startup refuses without it), and
+  `GATEWAY_ENV=production` with the database source always requires it. The Docker smoke test passes one.
 
 Configs that relied on keys or values that were accepted but had no effect
 now fail `ai-gateway validate` and startup with a migration hint:

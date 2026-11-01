@@ -258,6 +258,10 @@ export const GatewayConfigSchema = strictObject({
       .optional(),
   }).optional(),
   adminSecret: z.string().min(8).optional(),
+  // Where targets/strategy/aliases/plugins/compatibility come from (0.3.0):
+  // "database" (default; imported from this file on first start, then
+  // managed live) or "file" (this file only, read-only, as in 0.2.0).
+  runtimeConfig: strictObject({ source: z.enum(["database", "file"]).optional() }).optional(),
   auth: strictObject({
     // No default: client auth is disabled ONLY when enabled === false is set
     // explicitly. Omitting it (e.g. `auth: { keys: [...] }`) keeps auth on;

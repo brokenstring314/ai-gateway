@@ -156,6 +156,14 @@ export interface GatewayConfig {
     routes?: string[];
   };
   adminSecret?: string;
+  /**
+   * Where the runtime sections (targets, strategy, aliases, plugins,
+   * compatibility) come from. "database" (default): imported from this file
+   * on first start into <dataDir>/config.sqlite, then managed live; the
+   * file's runtime sections are ignored afterwards. "file": this file only,
+   * read-only (0.2.0 behaviour, for GitOps).
+   */
+  runtimeConfig?: { source?: "database" | "file" };
   auth?: {
     enabled?: boolean;
     keys?: string[];

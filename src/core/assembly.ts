@@ -8,6 +8,7 @@ import type { GatewayConfig, RetryConfig } from "../config/types.js";
 import { assertConfigReferences } from "../config/validate.js";
 import type { McpExecutor } from "../mcp/executor.js";
 import { getMetrics } from "../metrics/metrics.js";
+import { stableKey } from "../config/stable-key.js";
 import {
   buildPluginsFromConfig,
   normalizePluginName,
@@ -54,19 +55,7 @@ export interface CarryState {
   readonly plugins: ReadonlyMap<string, readonly PluginRegistration[]>;
 }
 
-/** Deterministic JSON (sorted object keys) used as a config identity key. */
-export function stableKey(value: unknown): string {
-  return JSON.stringify(value, (_k, v: unknown) => {
-    if (v && typeof v === "object" && !Array.isArray(v)) {
-      const sorted: Record<string, unknown> = {};
-      for (const key of Object.keys(v as Record<string, unknown>).sort()) {
-        sorted[key] = (v as Record<string, unknown>)[key];
-      }
-      return sorted;
-    }
-    return v;
-  });
-}
+export { stableKey } from "../config/stable-key.js";
 
 export interface AssemblyHooks {
   /** The MCP tool executor at request time (null: no MCP loop). */

@@ -6,6 +6,7 @@
  *   ai-gateway serve    -c <config.yaml> [-p <port>] [-h <host>]
  *   ai-gateway validate -c <config.yaml>
  *   ai-gateway keys     create|list|revoke ... -c <config.yaml>   (see cli/keys.ts)
+ *   ai-gateway config   import|status ... -c <config.yaml>        (see cli/config.ts)
  *   ai-gateway version
  */
 
@@ -61,6 +62,8 @@ Usage:
   ai-gateway keys create [--admin] [--read-only] [--name <name>] [--expires <ISO>] [--json] -c <config.yaml>
   ai-gateway keys list [--json] -c <config.yaml>
   ai-gateway keys revoke <id> -c <config.yaml>
+  ai-gateway config import [--force] -c <config.yaml>
+  ai-gateway config status [--json] -c <config.yaml>
   ai-gateway version
 
 Commands:
@@ -69,13 +72,16 @@ Commands:
   keys       Manage the API key store directly (works with the server stopped or running).
              Admin recovery: \`ai-gateway keys create --admin -c config.yaml\` prints a new
              admin key once on stdout. See \`ai-gateway keys --help\`.
+  config     Runtime config store (<data dir>/config.sqlite): \`import\` the file's
+             targets/strategy/aliases/plugins/compatibility (--force replaces stored
+             config), \`status\` shows channels (key hints only) and versions.
   version    Print version
 
 Options:
   -c, --config <path>   Config file path (YAML or JSON)
   -p, --port <port>     Override server.port
   -h, --host <host>     Override server.host
-  --data-dir <dir>      (keys) Data directory; default GATEWAY_DATA_DIR or ./.data
+  --data-dir <dir>      (keys, config) Data directory; default GATEWAY_DATA_DIR or ./.data
 `;
 }
 
@@ -102,6 +108,10 @@ export function validateCommand(configPath: string, out: Pick<Console, "log" | "
 
 /** Run the CLI. Exits the process except for `serve`, which keeps running. */
 export async function runCli(args: readonly string[]): Promise<void> {
+  if (args[0] === "config") {
+    const { configCommand } = await import("./config.js");
+    process.exit(await configCommand(args.slice(1)));
+  }
   if (args[0] === "keys") {
     const { keysCommand } = await import("./keys.js");
     process.exit(await keysCommand(args.slice(1)));
