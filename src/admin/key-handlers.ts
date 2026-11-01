@@ -18,6 +18,8 @@ import type { Context, MiddlewareHandler } from "hono";
 import type { ConfigState } from "./config-handlers.js";
 import {
   BootstrapLatchedError,
+  InvalidAllowedModelsError,
+  normalizeAllowedModels,
   KeyNotFoundError,
   VALID_SCOPES,
   type APIKey,
@@ -72,7 +74,16 @@ function serializeKey(key: APIKey) {
     active: key.active,
     usageCount: key.usageCount,
     lastUsedAt: key.lastUsedAt !== null ? key.lastUsedAt.toISOString() : null,
+    allowedModels: key.allowedModels,
   };
+}
+
+/** `allowedModels` from a request body: undefined = not given, null = every model, else the list. Throws on bad input. */
+function parseAllowedModelsField(value: unknown): string[] | null | undefined {
+  if (value === undefined) return undefined;
+  if (value === null) return null;
+  if (!Array.isArray(value)) throw new InvalidAllowedModelsError(value);
+  return normalizeAllowedModels(value);
 }
 
 /**
@@ -141,6 +152,7 @@ export function createKeyHandler(state: KeyHandlerState) {
       name?: unknown;
       scopes?: unknown;
       expiresAt?: unknown;
+      allowedModels?: unknown;
     } | null;
 
     if (typeof body?.name !== "string" || body.name.trim().length === 0) {
@@ -172,10 +184,17 @@ export function createKeyHandler(state: KeyHandlerState) {
       }
     }
 
+    let allowedModels: string[] | null | undefined;
+    try {
+      allowedModels = parseAllowedModelsField(body.allowedModels);
+    } catch (err) {
+      return invalidRequest(c, err instanceof Error ? err.message : "invalid 'allowedModels'");
+    }
+
     // Empty/omitted scopes default to ["inference"] in the store.
     let created: APIKey;
     try {
-      created = state.keyStore.create(name, scopes, expiresAt, writeOptions(c));
+      created = state.keyStore.create(name, scopes, expiresAt, { ...writeOptions(c), allowedModels });
     } catch (err) {
       if (err instanceof BootstrapLatchedError) return bootstrapRefused(c);
       throw err;
@@ -187,6 +206,7 @@ export function createKeyHandler(state: KeyHandlerState) {
         keyDisplay: created.keyDisplay,
         name: created.name,
         scopes: created.scopes,
+        allowedModels: created.allowedModels,
       },
       201,
     );
@@ -199,21 +219,24 @@ export function updateKeyHandler(state: KeyHandlerState) {
     const body = (await c.req.json().catch(() => null)) as {
       name?: unknown;
       scopes?: unknown;
+      allowedModels?: unknown;
     } | null;
 
     const parsedScopes = parseScopes(body?.scopes);
     if (parsedScopes === null) return invalidScopes(c);
     const scopes = parsedScopes;
+    let allowedModels: string[] | null | undefined;
+    try {
+      allowedModels = parseAllowedModelsField(body?.allowedModels);
+    } catch (err) {
+      return invalidRequest(c, err instanceof Error ? err.message : "invalid 'allowedModels'");
+    }
 
     try {
       const id = c.req.param("id");
       if (id === undefined) return notFound(c);
-      const updated = state.keyStore.update(
-        id,
-        typeof body?.name === "string" ? body.name : "",
-        scopes,
-        writeOptions(c),
-      );
+      let updated = state.keyStore.update(id, typeof body?.name === "string" ? body.name : "", scopes, writeOptions(c));
+      if (allowedModels !== undefined) updated = state.keyStore.setAllowedModels(id, allowedModels);
       return c.json(serializeKey(updated));
     } catch (err) {
       if (err instanceof KeyNotFoundError) return notFound(c);

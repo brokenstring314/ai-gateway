@@ -28,7 +28,7 @@ async function start(): Promise<string> {
     cfg,
     `strategy: { mode: single, targets: [a] }
 targets:
-  - { name: a, provider: openai, apiKey: sk-x, baseURL: "${mock.url}" }
+  - { name: a, provider: openai, apiKey: sk-x, baseURL: "${mock.url}", models: [m, bad-400, reasoning-nousage, upstream-model-x] }
 auth: { enabled: true, keys: ["client-key-123"] }
 `,
   );

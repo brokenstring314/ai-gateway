@@ -1,0 +1,189 @@
+/**
+ * Published models (0.3.0 P2, plan §3.5): which model names this gateway
+ * serves and which targets serve each one.
+ *
+ * Two modes, fixed per config:
+ *  - explicit (`config.models` set): each model has its own bindings and
+ *    strategy (fallback by priority, or loadbalance by weight) and may rename
+ *    the model per binding. The global `strategy` does not route.
+ *  - implicit (`config.models` unset, the 0.2.0 shape): every model a
+ *    provider declares (targets[].models, plus providers registered by an
+ *    embedder; a custom provider's supportsModel() counts too) is published; requests for it follow the global strategy's
+ *    order restricted to the targets that list it (then any other target
+ *    that lists it), with the name unchanged.
+ *
+ * A name that is neither published nor an alias of a published name is
+ * rejected (404 model_not_found): it never reaches an upstream.
+ */
+
+import type { GatewayConfig, ModelMetadata, PublishedModelConfig } from "../config/types.js";
+import type { ChatCompletionRequest, IProvider } from "../providers/types.js";
+import { FallbackStrategy } from "./fallback.js";
+import { LoadBalanceStrategy } from "./loadbalance.js";
+import type { IStrategy, StrategyMode } from "./types.js";
+
+/** How a request for one published model is routed. */
+export interface ModelRoute {
+  /** Orders the candidate targets (only targets bound to the model). */
+  readonly strategy: IStrategy;
+  /** Model name to send to each target. */
+  readonly upstreamModel: (target: string) => string;
+}
+
+export interface CatalogEntry {
+  readonly name: string;
+  readonly enabled: boolean;
+  readonly displayName?: string;
+  readonly description?: string;
+  readonly metadata?: ModelMetadata;
+  /** Targets serving it, in binding order. */
+  readonly targets: readonly string[];
+  readonly route: ModelRoute;
+}
+
+/** Global strategy order restricted to the bound targets, then the remaining bound targets. */
+class RestrictedStrategy implements IStrategy {
+  readonly mode: StrategyMode;
+  constructor(
+    private readonly inner: IStrategy,
+    private readonly bound: readonly string[],
+  ) {
+    this.mode = inner.mode;
+  }
+  selectTargets(req: ChatCompletionRequest): readonly string[] {
+    let ordered: readonly string[];
+    try {
+      ordered = this.inner.selectTargets(req);
+    } catch {
+      ordered = [];
+    }
+    const allowed = new Set(this.bound);
+    const out = [...new Set(ordered)].filter((t) => allowed.has(t));
+    for (const t of this.bound) if (!out.includes(t)) out.push(t);
+    return out;
+  }
+}
+
+function explicitRoute(m: PublishedModelConfig): ModelRoute {
+  const byTarget = new Map(m.bindings.map((b) => [b.target, b.model ?? m.name]));
+  const upstreamModel = (t: string) => byTarget.get(t) ?? m.name;
+  if (m.strategy === "loadbalance") {
+    const pool = m.bindings.map((b) => ({ name: b.target, weight: b.weight ?? 1 }));
+    return { strategy: new LoadBalanceStrategy({ targets: pool }), upstreamModel };
+  }
+  const ordered = m.bindings
+    .map((b, i) => ({ t: b.target, p: b.priority ?? i, i }))
+    .sort((a, b) => a.p - b.p || a.i - b.i)
+    .map((x) => x.t);
+  return { strategy: new FallbackStrategy({ targets: ordered }), upstreamModel };
+}
+
+/** Where implicit mode reads the declared models: the provider registry. */
+export interface ProviderSource {
+  readonly revision: number;
+  all(): readonly IProvider[];
+}
+
+export class ModelCatalog {
+  private entries: ReadonlyMap<string, CatalogEntry>;
+  private readonly aliases: Readonly<Record<string, string>>;
+  /** True when built from config.models (else derived from the providers' models). */
+  readonly explicit: boolean;
+  private seenRevision = -1;
+
+  constructor(
+    config: Pick<GatewayConfig, "models" | "aliases">,
+    private readonly globalStrategy: IStrategy,
+    private readonly providers: ProviderSource,
+  ) {
+    this.aliases = config.aliases ?? {};
+    this.explicit = config.models !== undefined;
+    const entries = new Map<string, CatalogEntry>();
+    if (config.models !== undefined) {
+      for (const m of config.models) {
+        entries.set(m.name, {
+          name: m.name,
+          enabled: m.enabled !== false,
+          ...(m.displayName !== undefined ? { displayName: m.displayName } : {}),
+          ...(m.description !== undefined ? { description: m.description } : {}),
+          ...(m.metadata !== undefined ? { metadata: m.metadata } : {}),
+          targets: m.bindings.map((b) => b.target),
+          route: explicitRoute(m),
+        });
+      }
+    }
+    this.entries = entries;
+  }
+
+  /** Implicit mode: re-derive when the provider registry changed (embedder registerProvider). */
+  private current(): ReadonlyMap<string, CatalogEntry> {
+    if (this.explicit || this.seenRevision === this.providers.revision) return this.entries;
+    const bound = new Map<string, string[]>();
+    for (const p of this.providers.all()) {
+      for (const m of p.models()) {
+        const list = bound.get(m.id) ?? [];
+        if (!list.includes(p.name)) list.push(p.name);
+        bound.set(m.id, list);
+      }
+    }
+    const entries = new Map<string, CatalogEntry>();
+    for (const [name, targets] of bound) {
+      entries.set(name, {
+        name,
+        enabled: true,
+        targets,
+        route: { strategy: new RestrictedStrategy(this.globalStrategy, targets), upstreamModel: () => name },
+      });
+    }
+    this.entries = entries;
+    this.seenRevision = this.providers.revision;
+    return entries;
+  }
+
+  /** The published model a requested name means (after aliases), enabled or not. */
+  lookup(requested: string): CatalogEntry | undefined {
+    const name = this.aliases[requested] ?? requested;
+    const found = this.current().get(name);
+    if (found || this.explicit || name === "") return found;
+    // Implicit mode: a provider that answers supportsModel() for a name it
+    // does not list (an embedder's custom provider) serves it too. Built per
+    // request and never cached, so arbitrary names cannot grow memory.
+    const targets = this.providers
+      .all()
+      .filter((p) => p.supportsModel(name))
+      .map((p) => p.name);
+    if (targets.length === 0) return undefined;
+    return {
+      name,
+      enabled: true,
+      targets,
+      route: { strategy: new RestrictedStrategy(this.globalStrategy, targets), upstreamModel: () => name },
+    };
+  }
+
+  /** Every published model, in definition order. */
+  list(): readonly CatalogEntry[] {
+    return [...this.current().values()];
+  }
+
+  /** Alias name → published model name. */
+  aliasMap(): Readonly<Record<string, string>> {
+    return this.aliases;
+  }
+
+  /** Targets that serve no published model (implicit mode: no targets[].models list). */
+  unusedTargets(targetNames: readonly string[]): string[] {
+    const used = new Set(this.list().flatMap((e) => e.targets));
+    return targetNames.filter((t) => !used.has(t));
+  }
+}
+
+/** Whether a key restricted to `allowed` may use `requested` (or the model it aliases). */
+export function modelAllowed(
+  allowed: readonly string[] | undefined | null,
+  requested: string,
+  resolved: string,
+): boolean {
+  if (allowed === undefined || allowed === null) return true;
+  return allowed.includes(requested) || allowed.includes(resolved);
+}

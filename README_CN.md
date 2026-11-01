@@ -114,7 +114,7 @@ CI 用 `scripts/docker-smoke.sh <image>` 对镜像做冒烟测试。
 Usage:
   ai-gateway serve    -c <config.yaml> [-p <port>] [-h <host>]
   ai-gateway validate -c <config.yaml>
-  ai-gateway keys create [--admin] [--read-only] [--name <name>] [--expires <ISO>] [--json] -c <config.yaml>
+  ai-gateway keys create [--admin] [--read-only] [--name <name>] [--expires <ISO>] [--models <a,b>] [--json] -c <config.yaml>
   ai-gateway keys list [--json] -c <config.yaml>
   ai-gateway keys revoke <id> -c <config.yaml>
   ai-gateway config import [--force] -c <config.yaml>
@@ -512,7 +512,7 @@ POST /v1/images/generations
 GET /v1/models
 ```
 
-返回所有已配置提供商的所有模型：
+返回调用者的 key 可用的已发布模型和别名，见[发布的模型](#发布的模型030)：
 
 ```json
 {
@@ -1209,6 +1209,53 @@ aliases:
 
 ---
 
+## 发布的模型（0.3.0）
+
+网关只服务**已发布**的模型名。请求其他任何名字，都会在到达上游之前被拒绝：返回 `404 model_not_found`，并在提示里说明该模型未发布，可用 `GET /v1/models` 查看可用模型。
+
+**默认（没有 `models:` 段）：** 各 target 的 `models` 列表里的模型都算已发布。请求只会发到列出了该模型的 target，顺序按全局 `strategy`（之后是其余列出它的 target），模型名不变。没有 `models` 列表的 target 不接任何请求（启动时会警告）。
+
+**显式（`models:` 段）：** 由你决定对外模型名、由哪些渠道提供、上游用什么名字、以及在渠道间怎么选。此时全局 `strategy` 不再参与路由。
+
+```yaml
+strategy:
+  mode: fallback
+  targets: [deepseek-official, relay]
+targets:
+  - name: deepseek-official
+    provider: deepseek
+    apiKey: "${DEEPSEEK_API_KEY}"
+  - name: relay
+    provider: openai
+    apiKey: "${RELAY_API_KEY}"
+    baseURL: "https://relay.example.com/v1"
+models:
+  - name: my-chat                    # 客户端使用的名字
+    displayName: "My Chat"
+    strategy: fallback               # fallback（按优先级，默认）| loadbalance（按权重）
+    bindings:
+      - { target: deepseek-official, model: deepseek-chat }      # 发给上游时用 deepseek-chat
+      - { target: relay, model: deepseek-chat-relay }            # 备用渠道，有自己的上游名
+    metadata: { contextWindow: 65536, maxOutputTokens: 8192, tools: true, inputModalities: [text] }
+  - name: gpt-4o
+    bindings: [{ target: relay }]    # 上游名 = 对外名
+  - name: preview
+    enabled: false                   # 已发布但关闭：404「已禁用」
+    bindings: [{ target: relay }]
+aliases:
+  chat: my-chat                      # 别名必须指向已发布的模型
+```
+
+`loadbalance` 下 `weight: 0` 的绑定不接流量。每个模型对同一个 target 只能绑定一次。`metadata` 会显示在 `/v1/models` 中（P3 起会据此校验请求）。使用配置库（`runtimeConfig.source: database`）时，模型和绑定与 target 一样入库、导入。
+
+**每个 key 的模型白名单。** 密钥库里的 key 可以限定只能用部分已发布模型：`ai-gateway keys create --models my-chat,gpt-4o`，或在 `POST /admin/keys` / `PUT /admin/keys/:id` 中传 `"allowedModels": ["my-chat"]`（`null` = 全部模型）。别名本身或它指向的模型在白名单里即可使用。其他任何模型（无论是否发布）都返回 `403 model_not_allowed`（「This API key is not allowed to use the model …」），受限 key 无法借此探测白名单以外的模型。配置里的静态 `auth.keys` 不受限制。
+
+**`GET /v1/models`** 只列出调用者的 key 可用的、已启用的模型和别名；`display_name`、`description`、`metadata`、`alias_of` 是扩展字段，OpenAI SDK 会忽略。
+
+**透传代理：** 转发请求体里的 `model` 必须已发布且在 key 的白名单内；受限 key 必须带 `model`。没有 `X-Provider` 时发给该模型的第一个绑定；`X-Provider` 指定的渠道不提供该模型时返回 `400 provider_not_bound`。请求体原样转发，所以绑定里的上游改名在透传代理上不生效。
+
+---
+
 ## 兼容性模式
 
 不同提供商支持不同的 OpenAI 参数。兼容性模式控制当客户端发送提供商不支持的参数时如何处理：
@@ -1461,6 +1508,7 @@ src/
 │   ├── types.ts             # IStrategy { mode, selectTargets }
 │   ├── strategy-factory.ts
 │   ├── single.ts  fallback.ts  loadbalance.ts  conditional.ts
+│   ├── model-catalog.ts     # 已发布模型：绑定、按模型路由、key 白名单
 │   ├── circuit-breaker.ts   # 基于 permit 的状态机 + 注册表
 │   ├── concurrency-limiter.ts # 每目标槽位、可中止的等待队列
 │   ├── retry.ts             # 带抖动的指数退避

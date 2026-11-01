@@ -30,6 +30,8 @@ export function handlerRequest(c: AnyContext): HandlerRequest {
     traceId: c.req.header("X-Request-Id") ?? crypto.randomUUID(),
     metadata: { apiKey: c.get("apiKey") },
   };
+  const allowedModels = c.get("allowedModels");
+  if (allowedModels !== undefined) ctx.allowedModels = allowedModels;
   return { ctx, upstreamAbort };
 }
 

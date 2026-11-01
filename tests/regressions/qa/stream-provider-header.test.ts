@@ -24,7 +24,7 @@ beforeAll(async () => {
     cfg,
     `strategy: { mode: single, targets: [tgt-a] }
 targets:
-  - { name: tgt-a, provider: openai, apiKey: sk-x, baseURL: "${mock.url}" }
+  - { name: tgt-a, provider: openai, apiKey: sk-x, baseURL: "${mock.url}", models: [m, bad-400, reasoning-nousage, upstream-model-x] }
 auth: { enabled: true, keys: ["client-key-123"] }
 `,
   );

@@ -172,6 +172,7 @@ export async function bootstrap(configPath: string, overrides: ServeOverrides = 
   }
   console.log(`Runtime config: ${runtime.source === "file" ? "config file (read-only)" : "config store"}`);
   console.log(`Strategy: ${config.strategy.mode}`);
+  for (const warning of publishedModelWarnings(gateway, config)) console.warn(warning);
   console.log(`Targets: ${config.targets.map((t) => t.name).join(", ")}`);
 
   const server = Bun.serve({
@@ -280,4 +281,27 @@ function parseEnvNumber(value: string | undefined): number | undefined {
   if (value === undefined || value.trim() === "") return undefined;
   const parsed = Number(value);
   return Number.isFinite(parsed) ? parsed : undefined;
+}
+
+/** Startup hints when published models leave targets idle or publish nothing (0.3.0: unknown models are rejected). */
+export function publishedModelWarnings(gateway: Gateway, config: GatewayConfig): string[] {
+  const catalog = gateway.modelCatalog();
+  const out: string[] = [];
+  if (catalog.list().length === 0) {
+    out.push(
+      "[models] no models are published, so every model request is rejected (404 model_not_found). " +
+        (catalog.explicit
+          ? "Add entries to models:."
+          : "List each target's models in targets[].models, or add a models: section."),
+    );
+    return out;
+  }
+  const unused = catalog.unusedTargets(config.targets.map((t) => t.name));
+  if (unused.length > 0) {
+    out.push(
+      `[models] target(s) ${unused.join(", ")} serve no published model and get no requests: ` +
+        (catalog.explicit ? "bind them in models[].bindings." : "list their models in targets[].models."),
+    );
+  }
+  return out;
 }

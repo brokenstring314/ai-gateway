@@ -90,6 +90,11 @@ export function invalidRequest(message: string, code = "invalid_request", param?
   return new GatewayError("invalid_request", { status: 400, message, type: "invalid_request_error", code, param });
 }
 
+/** 403: the caller's API key may not use this model (key allowed_models). */
+export function modelNotAllowed(message: string): GatewayError {
+  return new GatewayError("auth", { status: 403, message, type: "permission_error", code: "model_not_allowed" });
+}
+
 export function modelNotFound(message: string): GatewayError {
   return new GatewayError("model_not_found", {
     status: 404,

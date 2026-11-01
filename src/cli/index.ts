@@ -59,7 +59,7 @@ export function usage(): string {
 Usage:
   ai-gateway serve    -c <config.yaml> [-p <port>] [-h <host>]
   ai-gateway validate -c <config.yaml>
-  ai-gateway keys create [--admin] [--read-only] [--name <name>] [--expires <ISO>] [--json] -c <config.yaml>
+  ai-gateway keys create [--admin] [--read-only] [--name <name>] [--expires <ISO>] [--models <a,b>] [--json] -c <config.yaml>
   ai-gateway keys list [--json] -c <config.yaml>
   ai-gateway keys revoke <id> -c <config.yaml>
   ai-gateway config import [--force] -c <config.yaml>

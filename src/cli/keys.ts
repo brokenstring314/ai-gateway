@@ -4,7 +4,7 @@
  * any more (e.g. every admin key was revoked: ADMIN_BOOTSTRAP_KEY stays
  * refused once the bootstrap latch is set, see auth/bootstrap.ts).
  *
- *   ai-gateway keys create [--admin] [--read-only] [--name N] [--expires ISO] [--json] -c <config>
+ *   ai-gateway keys create [--admin] [--read-only] [--name N] [--expires ISO] [--models a,b] [--json] -c <config>
  *   ai-gateway keys list   [--json] -c <config>
  *   ai-gateway keys revoke <id> -c <config>
  *
@@ -49,6 +49,8 @@ export interface ParsedKeysArgs {
   readOnly: boolean;
   name?: string;
   expires?: string;
+  /** --models a,b: restrict the new key to these published models. */
+  models?: string[];
   json: boolean;
   id?: string;
   help: boolean;
@@ -83,6 +85,15 @@ export function parseKeysArgs(args: readonly string[]): ParsedKeysArgs {
       case "--expires":
         parsed.expires = value(++i, arg);
         break;
+      case "--models": {
+        const v = value(++i, arg);
+        if (v !== undefined)
+          parsed.models = v
+            .split(",")
+            .map((m) => m.trim())
+            .filter((m) => m !== "");
+        break;
+      }
       case "--admin":
         parsed.admin = true;
         break;
@@ -110,7 +121,7 @@ export function parseKeysArgs(args: readonly string[]): ParsedKeysArgs {
 
 export function keysUsage(): string {
   return `Usage:
-  ai-gateway keys create [--admin] [--read-only] [--name <name>] [--expires <ISO date>] [--json] -c <config>
+  ai-gateway keys create [--admin] [--read-only] [--name <name>] [--expires <ISO date>] [--models <a,b>] [--json] -c <config>
   ai-gateway keys list   [--json] -c <config>
   ai-gateway keys revoke <id> -c <config>
 
@@ -125,6 +136,7 @@ Options:
   --read-only           Create with "read_only" scope (default without either: "inference")
   --name <name>         Key name (default: cli-admin / cli-read-only / cli-key)
   --expires <ISO date>  Expiry, e.g. 2027-01-01T00:00:00Z (must be in the future)
+  --models <a,b>        Restrict the key to these published models (default: every model)
   --json                Machine-readable output on stdout
 
 The new key's secret is printed once, on stdout, and never stored or logged.`;
@@ -228,6 +240,7 @@ export async function keysCommand(args: readonly string[], io: KeysIO = defaultI
                 revokedAt: iso(k.revokedAt),
                 lastUsedAt: iso(k.lastUsedAt),
                 usageCount: k.usageCount,
+                allowedModels: k.allowedModels,
               })),
               bootstrapLatchedAt: iso(latchedAt),
             },
@@ -236,7 +249,7 @@ export async function keysCommand(args: readonly string[], io: KeysIO = defaultI
           ),
         );
       } else {
-        io.out(["ID", "KEY", "NAME", "SCOPES", "STATUS", "CREATED", "EXPIRES"].join("\t"));
+        io.out(["ID", "KEY", "NAME", "SCOPES", "MODELS", "STATUS", "CREATED", "EXPIRES"].join("\t"));
         for (const k of keys) {
           io.out(
             [
@@ -244,6 +257,7 @@ export async function keysCommand(args: readonly string[], io: KeysIO = defaultI
               k.keyDisplay,
               k.name,
               k.scopes.join(","),
+              k.allowedModels ? k.allowedModels.join(",") || "(none)" : "*",
               status(k, now),
               k.createdAt.toISOString(),
               iso(k.expiresAt) ?? "-",
@@ -279,7 +293,7 @@ export async function keysCommand(args: readonly string[], io: KeysIO = defaultI
     if (p.readOnly) scopes.push(SCOPE_READ_ONLY);
     if (scopes.length === 0) scopes.push(SCOPE_INFERENCE);
     const name = p.name ?? (p.admin ? "cli-admin" : p.readOnly ? "cli-read-only" : "cli-key");
-    const created = store.create(name, scopes, expiresAt);
+    const created = store.create(name, scopes, expiresAt, { allowedModels: p.models ?? null });
     if (p.json) {
       io.out(
         JSON.stringify({
@@ -289,6 +303,7 @@ export async function keysCommand(args: readonly string[], io: KeysIO = defaultI
           name: created.name,
           scopes: created.scopes,
           expiresAt: iso(created.expiresAt),
+          allowedModels: created.allowedModels,
         }),
       );
     } else {
@@ -296,6 +311,7 @@ export async function keysCommand(args: readonly string[], io: KeysIO = defaultI
     }
     io.err(
       `Created key ${created.id} (${created.name}, scopes: ${created.scopes.join(",")}` +
+        `${created.allowedModels ? `, models: ${created.allowedModels.join(",")}` : ""}` +
         `${created.expiresAt ? `, expires ${created.expiresAt.toISOString()}` : ""}) in ${dbPath}. ` +
         "The secret was printed once on stdout; store it now, it cannot be shown again.",
     );

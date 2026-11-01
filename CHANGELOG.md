@@ -12,6 +12,11 @@
   `GATEWAY_SECRET_KEY`, bound to their channel; `"${VAR}"` references are stored as references. Rotation via
   `GATEWAY_SECRET_KEY_PREVIOUS`. Store files are created `0600`; existing databases are backed up before a migration.
 - CLI: `ai-gateway config import [--force]` and `ai-gateway config status [--json]`.
+- Published models (0.3.0 P2): optional `models:` section — public model names, each bound to one or more targets
+  with a per-binding upstream model name, `fallback` (priority) or `loadbalance` (weight) routing, `enabled`,
+  display name and metadata. Stored in the config store. Per-key `allowedModels` (key store migration 5; CLI
+  `keys create --models`, admin API `allowedModels`). `GET /v1/models` lists only what the calling key may use, with
+  metadata extension fields.
 - `Gateway.reload(config)` (0.3.0 P0, live config): assembles a new runtime snapshot and swaps it in atomically.
   Requests and streams in flight finish on the snapshot they started on; an invalid config throws and the old
   snapshot keeps serving; breakers, concurrency limiters and plugins with unchanged config keep their state;
@@ -19,6 +24,13 @@
   `registerProvider` / `registerPlugin` registrations now survive reloads. Not yet exposed over HTTP.
 
 ### Breaking changes
+
+- Only published models are served (user decision 2026-11-01): any other model name is rejected with
+  `404 model_not_found` explaining why, before reaching an upstream. Without a `models:` section, the names in
+  `targets[].models` are published and a request goes only to targets that list its model (previously every
+  request followed the global strategy regardless of `targets[].models`). A target without a `models` list
+  serves nothing. Restricted keys get `403 model_not_allowed` for any model outside their list. `/v1/models`
+  `owned_by` is the first serving target. Aliases in an explicit `models:` config must point to published models.
 
 - The runtime sections of the config file are imported once into `<data dir>/config.sqlite` and ignored afterwards
   (startup warns when they change); re-import with `ai-gateway config import --force`, or set

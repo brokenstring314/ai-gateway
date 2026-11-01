@@ -23,7 +23,7 @@ import type {
 } from "../providers/types.js";
 import { CircuitOpenError } from "../routing/circuit-breaker.js";
 import { ConcurrencyLimitError } from "../routing/concurrency-limiter.js";
-import type { IStrategy } from "../routing/types.js";
+import type { ModelRoute } from "../routing/model-catalog.js";
 import { toGatewayError } from "./errors.js";
 import { strategyRunOptions, type TargetExecutor } from "./executor.js";
 import type { Pipeline } from "./pipeline.js";
@@ -53,22 +53,22 @@ export function streamSurfaceOf(surface: ChatShapedSurface): ChatShapedSurface {
   return variant;
 }
 
-/** Stream plan over the strategy's candidates, opening each through the surface. */
+/** Stream plan over the model's bound targets, opening each through the surface (model renamed per binding). */
 export function surfaceStreamPlan(
   executor: TargetExecutor,
-  strategy: IStrategy,
+  route: ModelRoute,
   surface: ChatShapedSurface,
   ctx: RequestContext,
   req: ChatCompletionRequest,
 ): StreamPlan<StreamChunk> {
-  const candidates = strategy.selectTargets(req);
+  const candidates = route.strategy.selectTargets(req);
   const open = surface.callStream;
   if (!open) throw new Error(`surface ${surface.name} does not stream`);
   return {
     executor,
     candidates,
-    open: (p: IProvider) => open(p, ctx, req),
-    run: strategyRunOptions(strategy, true, candidates.length),
+    open: (p: IProvider) => open(p, ctx, surface.withModel(req, route.upstreamModel(p.name))),
+    run: strategyRunOptions(route.strategy, true, candidates.length),
   };
 }
 
@@ -81,7 +81,6 @@ export function surfaceStreamPlan(
 export async function* runChatStream(
   pipeline: Pipeline,
   executor: TargetExecutor,
-  strategy: IStrategy,
   baseSurface: ChatShapedSurface,
   req: ChatCompletionRequest,
   ctx: RequestContext,
@@ -122,7 +121,7 @@ export async function* runChatStream(
   };
   let result: Awaited<ReturnType<typeof executeStream<StreamChunk>>>;
   try {
-    const plan = surfaceStreamPlan(executor, strategy, surface, ctx, finalReq);
+    const plan = surfaceStreamPlan(executor, pipeline.route(finalReq.model), surface, ctx, finalReq);
     result = await executeStream(ctx, plan, { mapError: toPipelineError, finalize });
     if (ctx) ctx.servedTarget = result.target;
   } catch (err) {

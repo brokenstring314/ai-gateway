@@ -22,7 +22,7 @@ import type { Database } from "bun:sqlite";
 import { chmodSync, copyFileSync, existsSync } from "node:fs";
 import { join } from "node:path";
 import { Database as SqliteDatabase } from "bun:sqlite";
-import type { GatewayConfig, TargetConfig } from "../config/types.js";
+import type { GatewayConfig, ModelBindingConfig, PublishedModelConfig, TargetConfig } from "../config/types.js";
 import { stableKey } from "../config/stable-key.js";
 import { maskSecret, type SecretBox, SECRET_KEY_HELP } from "../secrets/secret-box.js";
 import { type MigrationStep, runMigrations } from "./migrations.js";
@@ -30,7 +30,7 @@ import { type MigrationStep, runMigrations } from "./migrations.js";
 const LEDGER = "config_schema_migrations";
 
 /** Top-level config sections that live in the store (everything else is startup config). */
-export const RUNTIME_SECTIONS = ["targets", "strategy", "aliases", "plugins", "compatibility"] as const;
+export const RUNTIME_SECTIONS = ["targets", "models", "strategy", "aliases", "plugins", "compatibility"] as const;
 type SettingKey = "strategy" | "aliases" | "plugins" | "compatibility";
 const SETTING_KEYS: readonly SettingKey[] = ["strategy", "aliases", "plugins", "compatibility"];
 
@@ -369,6 +369,35 @@ export class ConfigStore {
           insKey.run(k.id, id, k.kind, k.value, k.hint, pos, now, now);
         });
       }
+      const channelIdByName = new Map(channels.map((c) => [c.target.name, c.id]));
+      const insModel = this.db.prepare(
+        `INSERT INTO models (id, name, display_name, description, enabled, metadata_json, pricing_json, routing_json, revision, created_at, updated_at)
+         VALUES (?, ?, ?, ?, ?, ?, '{}', ?, 1, ?, ?)`,
+      );
+      const insBinding = this.db.prepare(
+        `INSERT INTO model_bindings (id, model_id, channel_id, upstream_model, priority, weight, enabled, overrides_json)
+         VALUES (?, ?, ?, ?, ?, ?, 1, '{}')`,
+      );
+      for (const m of config.models ?? []) {
+        const modelId = newId("mdl");
+        insModel.run(
+          modelId,
+          m.name,
+          m.displayName ?? null,
+          m.description ?? null,
+          m.enabled === false ? 0 : 1,
+          JSON.stringify(m.metadata ?? {}),
+          JSON.stringify({ strategy: m.strategy ?? "fallback" }),
+          now,
+          now,
+        );
+        m.bindings.forEach((b, i) => {
+          const channelId = channelIdByName.get(b.target);
+          if (channelId === undefined)
+            throw new ConfigStoreError(`model "${m.name}" binds unknown target "${b.target}"`);
+          insBinding.run(newId("bnd"), modelId, channelId, b.model ?? m.name, b.priority ?? i, b.weight ?? 1);
+        });
+      }
       const insSetting = this.db.prepare(
         "INSERT INTO runtime_settings (key, value_json, revision, updated_at) VALUES (?, ?, 1, ?)",
       );
@@ -378,6 +407,8 @@ export class ConfigStore {
       }
       const setMeta = this.db.prepare("INSERT OR REPLACE INTO config_meta (key, value) VALUES (?, ?)");
       setMeta.run("yaml_runtime_hash", yamlHash);
+      // Explicit published models (models: section) vs derived from targets[].models.
+      setMeta.run("models_explicit", config.models !== undefined ? "1" : "0");
       setMeta.run("yaml_imported_at", now);
       if (!this.isInitialized()) setMeta.run("initialized_at", now);
       const summary = opts.summary ?? `Imported ${channels.length} target(s) and routing settings from config file`;
@@ -519,8 +550,58 @@ export class ConfigStore {
     );
     const out: Record<string, unknown> = { targets };
     for (const key of SETTING_KEYS) if (settings.has(key)) out[key] = settings.get(key);
+    if (this.getMeta("models_explicit") === "1") out["models"] = this.loadModels();
     if (!out["strategy"]) throw new ConfigStoreError("runtime config store has no routing strategy");
     return out as Pick<GatewayConfig, "targets" | "strategy"> & Partial<GatewayConfig>;
+  }
+
+  /** Published models with their enabled bindings (to enabled channels), in config shape. */
+  private loadModels(): PublishedModelConfig[] {
+    const models = this.db
+      .query(
+        "SELECT id, name, display_name, description, enabled, metadata_json, routing_json FROM models ORDER BY created_at, rowid",
+      )
+      .all() as Array<{
+      id: string;
+      name: string;
+      display_name: string | null;
+      description: string | null;
+      enabled: number;
+      metadata_json: string;
+      routing_json: string;
+    }>;
+    const bindings = this.db
+      .query(
+        `SELECT b.model_id, c.name AS target, b.upstream_model, b.priority, b.weight
+         FROM model_bindings b JOIN channels c ON c.id = b.channel_id
+         WHERE b.enabled = 1 AND c.enabled = 1
+         ORDER BY b.priority, b.rowid`,
+      )
+      .all() as Array<{ model_id: string; target: string; upstream_model: string; priority: number; weight: number }>;
+    const out: PublishedModelConfig[] = [];
+    for (const m of models) {
+      const own = bindings.filter((b) => b.model_id === m.id);
+      // A model whose every binding is gone (disabled channel) cannot be served: publish it disabled.
+      const list: ModelBindingConfig[] = own.map((b, i) => ({
+        target: b.target,
+        ...(b.upstream_model !== m.name ? { model: b.upstream_model } : {}),
+        ...(b.priority !== i ? { priority: b.priority } : {}),
+        ...(b.weight !== 1 ? { weight: b.weight } : {}),
+      }));
+      const metadata = JSON.parse(m.metadata_json) as Record<string, unknown>;
+      const routing = JSON.parse(m.routing_json) as { strategy?: "fallback" | "loadbalance" };
+      if (list.length === 0) continue;
+      out.push({
+        name: m.name,
+        ...(m.enabled === 1 ? {} : { enabled: false }),
+        ...(m.display_name !== null ? { displayName: m.display_name } : {}),
+        ...(m.description !== null ? { description: m.description } : {}),
+        ...(routing.strategy === "loadbalance" ? { strategy: "loadbalance" as const } : {}),
+        bindings: list,
+        ...(Object.keys(metadata).length > 0 ? { metadata } : {}),
+      });
+    }
+    return out;
   }
 
   // ── Internals ──

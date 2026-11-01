@@ -40,6 +40,46 @@ export interface TargetConfig {
   concurrency?: ConcurrencyConfig;
 }
 
+/** Capabilities of a published model (0.3.0, plan §3.4); shown on /v1/models. P3 enforces them. */
+export interface ModelMetadata {
+  contextWindow?: number;
+  maxOutputTokens?: number;
+  inputModalities?: Array<"text" | "image" | "audio" | "video" | "pdf">;
+  tools?: boolean;
+  parallelTools?: boolean;
+  structuredOutput?: "none" | "json_object" | "json_schema";
+  reasoning?: boolean;
+  webSearch?: boolean;
+  logprobs?: boolean;
+}
+
+/** One channel serving a published model. */
+export interface ModelBindingConfig {
+  /** Target (channel) name. */
+  target: string;
+  /** Model name sent upstream; default: the published name. */
+  model?: string;
+  /** fallback: lower first (default: list order). */
+  priority?: number;
+  /** loadbalance: relative share (0 = drained). Default 1. */
+  weight?: number;
+}
+
+/**
+ * A model name this gateway serves (0.3.0). Requests for it go only to its
+ * bindings, with the upstream model name rewritten per binding.
+ */
+export interface PublishedModelConfig {
+  name: string;
+  enabled?: boolean;
+  displayName?: string;
+  description?: string;
+  /** How to pick among the bindings. Default fallback. */
+  strategy?: "fallback" | "loadbalance";
+  bindings: ModelBindingConfig[];
+  metadata?: ModelMetadata;
+}
+
 export interface StrategyConfig {
   mode: StrategyMode;
   /** single: [target]. fallback: ordered targets. loadbalance: the pool. conditional: [defaultTarget]. */
@@ -117,6 +157,13 @@ export interface GatewayConfig {
   requestTimeout?: string;
   plugins?: PluginConfig[];
   aliases?: Record<string, string>;
+  /**
+   * Published models (0.3.0). Only these names (and aliases of them) are
+   * served; anything else is rejected with 404 model_not_found. When unset,
+   * every name in targets[].models is published, routed by `strategy` over
+   * the targets that list it.
+   */
+  models?: PublishedModelConfig[];
   mcpServers?: McpServerConfig[];
   observability?: ObservabilityConfig;
   compatibility?: CompatibilityConfig;

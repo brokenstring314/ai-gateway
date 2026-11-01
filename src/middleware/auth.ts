@@ -94,6 +94,8 @@ export function authMiddleware(opts: AuthMiddlewareOptions): MiddlewareHandler {
     if (apiKey !== null) {
       c.set("apiKey", token);
       c.set("keyScopes", apiKey.scopes);
+      // Per-key model allow-list (0.3.0): enforced by the pipeline.
+      if (apiKey.allowedModels !== null) c.set("allowedModels", apiKey.allowedModels);
       await next();
       return;
     }

@@ -14,7 +14,7 @@ describe("round-2: initRequestLogger never called", () => {
     const cfg: any = {
       auth: { enabled: false },
       strategy: { mode: "single", targets: ["a"] },
-      targets: [{ name: "a", provider: "openai", apiKey: "k", baseURL: up.url }],
+      targets: [{ name: "a", provider: "openai", apiKey: "k", baseURL: up.url, models: ["m"] }],
     };
     const app = createApp(new Gateway(cfg), cfg, undefined, undefined, { logStore: ls });
     const r = await app.request("/v1/chat/completions", {

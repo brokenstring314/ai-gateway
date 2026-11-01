@@ -14,7 +14,8 @@ export interface ConfigIssue {
   message: string;
 }
 
-type CheckedConfig = Pick<GatewayConfig, "targets" | "strategy"> & Partial<Pick<GatewayConfig, "plugins">>;
+type CheckedConfig = Pick<GatewayConfig, "targets" | "strategy"> &
+  Partial<Pick<GatewayConfig, "plugins" | "models" | "aliases">>;
 
 function positive(v: unknown): boolean {
   return typeof v === "number" && Number.isFinite(v) && v > 0;
@@ -69,6 +70,7 @@ export function configReferenceIssues(cfg: CheckedConfig): ConfigIssue[] {
   });
 
   const known = () => [...names].join(", ");
+  issues.push(...modelIssues(cfg, names, known));
   const sc = cfg.strategy;
   if (sc === undefined) return issues;
 
@@ -105,6 +107,59 @@ export function configReferenceIssues(cfg: CheckedConfig): ConfigIssue[] {
         path: ["strategy", "weights"],
         message: "loadbalance: every target has weight 0 (0 = drained); at least one weight must be > 0",
       });
+    }
+  }
+  return issues;
+}
+
+/** Published models: unique names, known targets, one binding per target, a usable loadbalance pool, aliases. */
+function modelIssues(cfg: CheckedConfig, targetNames: ReadonlySet<string>, known: () => string): ConfigIssue[] {
+  const issues: ConfigIssue[] = [];
+  const models = cfg.models;
+  const aliases = cfg.aliases ?? {};
+  if (models !== undefined) {
+    const seen = new Set<string>();
+    models.forEach((m, i) => {
+      if (seen.has(m.name)) {
+        issues.push({ path: ["models", i, "name"], message: `duplicate model name "${m.name}"` });
+      }
+      seen.add(m.name);
+      if (aliases[m.name] !== undefined) {
+        issues.push({
+          path: ["models", i, "name"],
+          message: `model name "${m.name}" is also an alias key; rename one of them`,
+        });
+      }
+      const bound = new Set<string>();
+      m.bindings.forEach((b, j) => {
+        if (!targetNames.has(b.target)) {
+          issues.push({
+            path: ["models", i, "bindings", j, "target"],
+            message: `model "${m.name}" binds unknown target "${b.target}" (targets: ${known()})`,
+          });
+        }
+        if (bound.has(b.target)) {
+          issues.push({
+            path: ["models", i, "bindings", j, "target"],
+            message: `model "${m.name}" binds target "${b.target}" twice; one binding per target`,
+          });
+        }
+        bound.add(b.target);
+      });
+      if (m.strategy === "loadbalance" && m.bindings.every((b) => (b.weight ?? 1) === 0)) {
+        issues.push({
+          path: ["models", i, "bindings"],
+          message: `model "${m.name}": every binding has weight 0 (0 = drained); at least one must be > 0`,
+        });
+      }
+    });
+    for (const [alias, target] of Object.entries(aliases)) {
+      if (!seen.has(target)) {
+        issues.push({
+          path: ["aliases", alias],
+          message: `alias "${alias}" points to "${target}", which is not a published model (models[].name)`,
+        });
+      }
     }
   }
   return issues;

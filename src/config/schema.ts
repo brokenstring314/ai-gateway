@@ -107,6 +107,37 @@ export const TargetConfigSchema = strictObject(
   REMOVED_TARGET_KEYS,
 );
 
+export const ModelMetadataSchema = strictObject({
+  contextWindow: z.number().int().positive().optional(),
+  maxOutputTokens: z.number().int().positive().optional(),
+  inputModalities: z.array(z.enum(["text", "image", "audio", "video", "pdf"])).optional(),
+  tools: z.boolean().optional(),
+  parallelTools: z.boolean().optional(),
+  structuredOutput: z.enum(["none", "json_object", "json_schema"]).optional(),
+  reasoning: z.boolean().optional(),
+  webSearch: z.boolean().optional(),
+  logprobs: z.boolean().optional(),
+});
+
+export const PublishedModelSchema = strictObject({
+  name: z.string().min(1).max(200),
+  enabled: z.boolean().optional(),
+  displayName: z.string().max(200).optional(),
+  description: z.string().max(2000).optional(),
+  strategy: z.enum(["fallback", "loadbalance"]).optional(),
+  bindings: z
+    .array(
+      strictObject({
+        target: z.string().min(1),
+        model: z.string().min(1).optional(),
+        priority: z.number().int().optional(),
+        weight: z.number().nonnegative().optional(),
+      }),
+    )
+    .min(1),
+  metadata: ModelMetadataSchema.optional(),
+});
+
 export const ConditionalRuleSchema = strictObject({
   field: z.enum(["model", "user", "message", "prompt"]),
   pattern: z.string().min(1).optional(),
@@ -232,6 +263,7 @@ export const GatewayConfigSchema = strictObject({
   requestTimeout: durationString("requestTimeout").optional(),
   plugins: z.array(PluginConfigSchema).optional(),
   aliases: z.record(z.string(), z.string()).optional(),
+  models: z.array(PublishedModelSchema).optional(),
   mcpServers: z.array(McpServerConfigSchema).optional(),
   observability: ObservabilityConfigSchema.optional(),
   compatibility: CompatibilityConfigSchema.optional(),

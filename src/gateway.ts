@@ -9,6 +9,7 @@
  */
 
 import { assembleGateway, breakerStates, type GatewayParts, stableKey } from "./core/assembly.js";
+import type { ModelCatalog } from "./routing/model-catalog.js";
 import type { ChatShapedSurface } from "./core/chat-stream.js";
 import { connectMcpServers, createMcpExecutor, mcpReadiness } from "./core/mcp-runtime.js";
 import type { Pipeline, RequestLogSink } from "./core/pipeline.js";
@@ -259,7 +260,12 @@ export class Gateway {
 
   /** List all models from all providers. */
   listModels(): readonly ModelInfo[] {
-    return this.snapshot.parts.registry.allModels();
+    return this.snapshot.parts.catalog.list().map((e) => ({ id: e.name, ownedBy: e.targets[0] ?? "gateway" }));
+  }
+
+  /** Published models of the current snapshot (routing/model-catalog.ts). */
+  modelCatalog(): ModelCatalog {
+    return this.snapshot.parts.catalog;
   }
 
   /** Add a provider to the registry at runtime (kept across reloads). */

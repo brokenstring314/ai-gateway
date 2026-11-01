@@ -117,7 +117,7 @@ refused and in-flight requests drain for `SHUTDOWN_GRACE_MS` (default 10000).
 Usage:
   ai-gateway serve    -c <config.yaml> [-p <port>] [-h <host>]
   ai-gateway validate -c <config.yaml>
-  ai-gateway keys create [--admin] [--read-only] [--name <name>] [--expires <ISO>] [--json] -c <config.yaml>
+  ai-gateway keys create [--admin] [--read-only] [--name <name>] [--expires <ISO>] [--models <a,b>] [--json] -c <config.yaml>
   ai-gateway keys list [--json] -c <config.yaml>
   ai-gateway keys revoke <id> -c <config.yaml>
   ai-gateway config import [--force] -c <config.yaml>
@@ -544,7 +544,7 @@ POST /v1/images/generations
 GET /v1/models
 ```
 
-Returns all models across all configured providers:
+Returns the published models (and aliases) the calling key may use; see [Published Models](#published-models-030):
 
 ```json
 {
@@ -673,7 +673,7 @@ curl -X POST \
 
 #### Key scopes (key-store mode)
 
-When the server runs with the API key store (`ai-gateway serve` / `bun src/index.ts serve`), `POST /admin/keys` takes `{"name": "...", "scopes": [...], "expiresAt"?: "..."}` and returns the generated key once. Scopes:
+When the server runs with the API key store (`ai-gateway serve` / `bun src/index.ts serve`), `POST /admin/keys` takes `{"name": "...", "scopes": [...], "expiresAt"?: "...", "allowedModels"?: [...]}` and returns the generated key once. Scopes:
 
 | Scope       | `/v1/*` | `GET /admin/*` | Mutating `/admin/*` |
 | ----------- | ------- | -------------- | ------------------- |
@@ -1297,6 +1297,53 @@ Clients can then use `"model": "fast"` and the gateway resolves it to `"gpt-4o-m
 
 ---
 
+## Published Models (0.3.0)
+
+The gateway serves only **published** model names. A request for any other name is rejected before it reaches an upstream: `404 model_not_found` with a message saying the model is not published and pointing to `GET /v1/models`.
+
+**Default (no `models:` section):** every model listed in a target's `models` is published. A request goes to the targets that list its model, in the order of the global `strategy` (then any other target that lists it), with the name unchanged. A target without a `models` list serves nothing (startup warns).
+
+**Explicit (`models:` section):** you choose the public names, which channels serve each one, under which upstream name, and how to pick among them. The global `strategy` then no longer routes.
+
+```yaml
+strategy:
+  mode: fallback
+  targets: [deepseek-official, relay]
+targets:
+  - name: deepseek-official
+    provider: deepseek
+    apiKey: "${DEEPSEEK_API_KEY}"
+  - name: relay
+    provider: openai
+    apiKey: "${RELAY_API_KEY}"
+    baseURL: "https://relay.example.com/v1"
+models:
+  - name: my-chat                    # what clients send
+    displayName: "My Chat"
+    strategy: fallback               # fallback (by priority, default) | loadbalance (by weight)
+    bindings:
+      - { target: deepseek-official, model: deepseek-chat }      # sent upstream as deepseek-chat
+      - { target: relay, model: deepseek-chat-relay }            # backup, its own upstream name
+    metadata: { contextWindow: 65536, maxOutputTokens: 8192, tools: true, inputModalities: [text] }
+  - name: gpt-4o
+    bindings: [{ target: relay }]    # upstream name = published name
+  - name: preview
+    enabled: false                   # published but switched off: 404 "disabled"
+    bindings: [{ target: relay }]
+aliases:
+  chat: my-chat                      # aliases must point to published models
+```
+
+A binding with `weight: 0` is drained under `loadbalance`. One binding per target per model. `metadata` is shown on `/v1/models` (P3 will enforce it). In the config store (`runtimeConfig.source: database`) the models and bindings are stored and imported like the targets.
+
+**Per-key model allow-lists.** A key-store key can be limited to some published models: `ai-gateway keys create --models my-chat,gpt-4o`, or `"allowedModels": ["my-chat"]` on `POST /admin/keys` / `PUT /admin/keys/:id` (`null` = every model). An alias counts when either it or its target is allowed. Any other model, published or not, gets `403 model_not_allowed` ("This API key is not allowed to use the model …"), so a restricted key learns nothing about models outside its list. Static `auth.keys` are unrestricted.
+
+**`GET /v1/models`** lists the enabled published models and aliases the calling key may use; `display_name`, `description`, `metadata` and `alias_of` are extension fields that OpenAI SDKs ignore.
+
+**Pass-through proxy:** a forwarded body's `model` must be published and allowed for the key; a restricted key must send one. Without `X-Provider`, the request goes to the model's first binding; an `X-Provider` that does not serve the model gets `400 provider_not_bound`. The body is forwarded unchanged, so a binding's upstream rename does not apply there.
+
+---
+
 ## Compatibility Mode
 
 Different providers support different OpenAI parameters. The compatibility mode controls what happens when a client sends a parameter the provider doesn't support:
@@ -1554,6 +1601,7 @@ src/
 │   ├── types.ts             # IStrategy { mode, selectTargets }
 │   ├── strategy-factory.ts
 │   ├── single.ts  fallback.ts  loadbalance.ts  conditional.ts
+│   ├── model-catalog.ts     # Published models: bindings, per-model routing, key allow-lists
 │   ├── circuit-breaker.ts   # Permit-based state machine + registry
 │   ├── concurrency-limiter.ts # Per-target slots, abortable queue
 │   ├── retry.ts             # Exponential backoff with jitter

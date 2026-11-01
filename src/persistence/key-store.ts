@@ -32,6 +32,8 @@ export interface APIKey {
   active: boolean;
   usageCount: number;
   lastUsedAt: Date | null;
+  /** Published model names this key may use (aliases count by either name); null = every model. */
+  allowedModels: string[] | null;
 }
 
 /**
@@ -54,6 +56,26 @@ export interface KeyWriteOptions {
    * the first succeeds.
    */
   requireUnlatched?: boolean;
+}
+
+/** Normalize an allowed-models list: trimmed, non-empty, unique; null = unrestricted. */
+export function normalizeAllowedModels(models: readonly unknown[] | null | undefined): string[] | null {
+  if (models === null || models === undefined) return null;
+  const out: string[] = [];
+  for (const m of models) {
+    if (typeof m !== "string" || m.trim() === "" || m.length > 200) {
+      throw new InvalidAllowedModelsError(m);
+    }
+    if (!out.includes(m.trim())) out.push(m.trim());
+  }
+  return out;
+}
+
+export class InvalidAllowedModelsError extends Error {
+  constructor(value: unknown) {
+    super(`invalid allowed model: ${JSON.stringify(value)}; expected non-empty model names (max 200 chars)`);
+    this.name = "InvalidAllowedModelsError";
+  }
 }
 
 /** Data directory used when none is given: GATEWAY_DATA_DIR, else ./.data. */
@@ -125,7 +147,7 @@ export function assertValidScopes(scopes: readonly unknown[]): asserts scopes is
 }
 
 const KEY_ROW_SELECT =
-  "SELECT id, key_display, name, scopes, created_at, revoked_at, expires_at, rotated_at, active, usage_count, last_used_at FROM api_keys";
+  "SELECT id, key_display, name, scopes, created_at, revoked_at, expires_at, rotated_at, active, usage_count, last_used_at, allowed_models FROM api_keys";
 
 // ---------------------------------------------------------------------------
 // Migration steps
@@ -205,6 +227,17 @@ CREATE TABLE IF NOT EXISTS api_keys (
         }
       },
     },
+    {
+      // 0.3.0 P2: per-key model allow-list (JSON array; NULL = every model).
+      version: 5,
+      name: "api_keys_allowed_models",
+      fn: (db) => {
+        const cols = db.query("PRAGMA table_info(api_keys)").all() as Array<{ name: string }>;
+        if (!cols.some((c) => c.name === "allowed_models")) {
+          db.exec("ALTER TABLE api_keys ADD COLUMN allowed_models TEXT NULL");
+        }
+      },
+    },
   ];
 }
 
@@ -233,6 +266,7 @@ interface KeyRow {
   active: number;
   usage_count: number;
   last_used_at: string | null;
+  allowed_models: string | null;
 }
 
 function parseRow(row: KeyRow): APIKey {
@@ -255,7 +289,19 @@ function parseRow(row: KeyRow): APIKey {
     active: row.active === 1,
     usageCount: row.usage_count,
     lastUsedAt: row.last_used_at !== null ? new Date(row.last_used_at) : null,
+    allowedModels: parseAllowedModels(row.allowed_models),
   };
+}
+
+/** A stored list that cannot be read restricts the key to nothing (fail closed). */
+function parseAllowedModels(raw: string | null): string[] | null {
+  if (raw === null) return null;
+  try {
+    const v: unknown = JSON.parse(raw);
+    return Array.isArray(v) ? v.filter((m): m is string => typeof m === "string") : [];
+  } catch {
+    return [];
+  }
 }
 
 // ---------------------------------------------------------------------------
@@ -359,8 +405,14 @@ export class KeyStore {
    * InvalidScopeError for an unknown scope. An admin-scoped key sets the
    * bootstrap latch in the same transaction.
    */
-  create(name: string, scopes: string[], expiresAt?: Date, opts?: KeyWriteOptions): APIKey {
+  create(
+    name: string,
+    scopes: string[],
+    expiresAt?: Date,
+    opts?: KeyWriteOptions & { allowedModels?: readonly string[] | null },
+  ): APIKey {
     assertValidScopes(scopes);
+    const allowedModels = normalizeAllowedModels(opts?.allowedModels);
     const finalScopes = scopes.length > 0 ? [...new Set(scopes)] : [...DEFAULT_SCOPES];
     const key = generateAPIKey();
     const id = generateID();
@@ -369,8 +421,8 @@ export class KeyStore {
     this.latchedWrite(finalScopes.includes(SCOPE_ADMIN), opts, () =>
       this.db
         .prepare(
-          `INSERT INTO api_keys(id, key_hash, key_display, name, scopes, created_at, revoked_at, expires_at, rotated_at, active, usage_count, last_used_at)
-         VALUES(?, ?, ?, ?, ?, ?, NULL, ?, NULL, ?, ?, NULL)`,
+          `INSERT INTO api_keys(id, key_hash, key_display, name, scopes, created_at, revoked_at, expires_at, rotated_at, active, usage_count, last_used_at, allowed_models)
+         VALUES(?, ?, ?, ?, ?, ?, NULL, ?, NULL, ?, ?, NULL, ?)`,
         )
         .run(
           id,
@@ -382,6 +434,7 @@ export class KeyStore {
           expiresAt ? expiresAt.toISOString() : null,
           1,
           0,
+          allowedModels === null ? null : JSON.stringify(allowedModels),
         ),
     );
 
@@ -398,6 +451,7 @@ export class KeyStore {
       active: true,
       usageCount: 0,
       lastUsedAt: null,
+      allowedModels,
     };
   }
 
@@ -520,6 +574,17 @@ export class KeyStore {
    * ignored (matching Go). Throws InvalidScopeError for an unknown scope.
    * Returns the updated key.
    */
+  /** Replace a key's model allow-list (null = every model). Throws KeyNotFoundError. */
+  setAllowedModels(id: string, models: readonly unknown[] | null): APIKey {
+    const allowedModels = normalizeAllowedModels(models);
+    const current = this.get(id);
+    if (current === null) throw new KeyNotFoundError(id);
+    this.db
+      .prepare("UPDATE api_keys SET allowed_models = ? WHERE id = ?")
+      .run(allowedModels === null ? null : JSON.stringify(allowedModels), id);
+    return { ...current, allowedModels };
+  }
+
   update(id: string, name: string, scopes: string[], opts?: KeyWriteOptions): APIKey {
     assertValidScopes(scopes);
     const current = this.get(id);

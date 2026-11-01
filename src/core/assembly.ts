@@ -19,6 +19,7 @@ import { ProviderRegistry } from "../providers/registry.js";
 import { CircuitBreaker, CircuitBreakerRegistry } from "../routing/circuit-breaker.js";
 import { ConcurrencyLimiter, ConcurrencyLimiterRegistry } from "../routing/concurrency-limiter.js";
 import { createStrategy } from "../routing/strategy-factory.js";
+import { ModelCatalog } from "../routing/model-catalog.js";
 import type { IStrategy } from "../routing/types.js";
 import { toGatewayError } from "./errors.js";
 import { TargetExecutor } from "./executor.js";
@@ -37,6 +38,8 @@ export interface GatewayParts {
   readonly executor: TargetExecutor;
   /** The request pipeline (core/pipeline.ts): plugins, executor, MCP loop, finalize. */
   readonly pipeline: Pipeline;
+  /** Published models: the only names served (routing/model-catalog.ts). */
+  readonly catalog: ModelCatalog;
   /**
    * Stateful pieces keyed by the config that built them, so a reload
    * (Gateway.reload) can carry them into the next snapshot when that config
@@ -132,12 +135,13 @@ export function assembleGateway(config: GatewayConfig, hooks: AssemblyHooks, pre
   });
 
   const targets = new Map(config.targets.map((t) => [t.name, t]));
+  const catalog = new ModelCatalog(config, strategy, registry);
   const pipeline = new Pipeline({
     plugins,
     strategy,
     executor,
     lookup: (name) => registry.get(name),
-    findByModel: (model) => registry.findByModel(model),
+    catalog,
     aliases: config.aliases ?? {},
     strategyLabel: config.strategy.mode,
     targetConfig: (name) => targets.get(name),
@@ -156,6 +160,7 @@ export function assembleGateway(config: GatewayConfig, hooks: AssemblyHooks, pre
     concurrencyLimiters,
     executor,
     pipeline,
+    catalog,
     carry: { breakers: carriedBreakers, limiters: carriedLimiters, plugins: carriedPlugins },
   };
 }

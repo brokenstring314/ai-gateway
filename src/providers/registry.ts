@@ -8,10 +8,22 @@ import type { IProvider, IProviderSource, ModelInfo } from "./types.js";
 
 export class ProviderRegistry implements IProviderSource {
   private readonly providers = new Map<string, IProvider>();
+  private rev = 0;
+
+  /** Bumped on every register/unregister (lets derived caches notice). */
+  get revision(): number {
+    return this.rev;
+  }
 
   /** Register a provider. Overwrites any existing provider with the same name. */
   register(provider: IProvider): void {
     this.providers.set(provider.name, provider);
+    this.rev++;
+  }
+
+  /** Registered providers, in registration order. */
+  all(): IProvider[] {
+    return [...this.providers.values()];
   }
 
   /** Get a provider by name. Returns undefined if not found. */
@@ -49,6 +61,7 @@ export class ProviderRegistry implements IProviderSource {
 
   /** Remove a provider by name. */
   unregister(name: string): boolean {
+    this.rev++;
     return this.providers.delete(name);
   }
 

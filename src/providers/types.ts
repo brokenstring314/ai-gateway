@@ -54,6 +54,11 @@ export interface RequestContext {
    * it). Unset when no upstream was used (e.g. a cache hit).
    */
   servedTarget?: string;
+  /**
+   * Published model names the caller's API key may use (key-store keys with
+   * allowed models). Unset: no restriction (config keys, embedded callers).
+   */
+  allowedModels?: readonly string[];
 }
 
 export interface ModelInfo {

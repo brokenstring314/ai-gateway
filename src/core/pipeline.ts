@@ -28,7 +28,8 @@ import type { ChatCompletionRequest, IProvider, RequestContext, StreamChunk, Usa
 import { CircuitOpenError } from "../routing/circuit-breaker.js";
 import { ConcurrencyLimitError } from "../routing/concurrency-limiter.js";
 import type { IStrategy } from "../routing/types.js";
-import { invalidRequest, modelNotFound, toGatewayError } from "./errors.js";
+import { type ModelCatalog, type ModelRoute, modelAllowed } from "../routing/model-catalog.js";
+import { invalidRequest, modelNotAllowed, modelNotFound, toGatewayError } from "./errors.js";
 import { strategyRunOptions, type TargetExecutor } from "./executor.js";
 import type { McpLoop } from "./mcp-loop.js";
 import { runChatStream, type ChatShapedSurface } from "./chat-stream.js";
@@ -49,7 +50,8 @@ export interface PipelineDeps {
   readonly strategy: IStrategy;
   readonly executor: TargetExecutor;
   readonly lookup: (name: string) => IProvider | undefined;
-  readonly findByModel: (model: string) => IProvider | undefined;
+  /** Published models: the only names served, and the targets serving each (routing/model-catalog.ts). */
+  readonly catalog: ModelCatalog;
   readonly aliases: Readonly<Record<string, string>>;
   readonly strategyLabel: string;
   readonly targetConfig: (name: string) => TargetConfig | undefined;
@@ -108,7 +110,7 @@ export class Pipeline {
     req: ChatCompletionRequest,
     ctx: RequestContext,
   ): AsyncGenerator<StreamChunk> {
-    return runChatStream(this, this.deps.executor, this.deps.strategy, surface, req, ctx);
+    return runChatStream(this, this.deps.executor, surface, req, ctx);
   }
 
   /**
@@ -143,6 +145,13 @@ export class Pipeline {
       finalized: false,
       span,
     };
+
+    try {
+      this.checkModelAccess(surface, requestedModel, ctx);
+    } catch (err) {
+      await this.finalize(run, { kind: "error", error: err });
+      throw err;
+    }
 
     try {
       await this.deps.plugins.runBefore(pluginCtx);
@@ -185,32 +194,69 @@ export class Pipeline {
     return { kind: "proceed", run };
   }
 
-  /** Step 4: ordered candidate targets for a request. */
-  candidates<Req, Res, Chunk>(surface: Surface<Req, Res, Chunk>, req: Req): readonly string[] {
-    const model = surface.model(req);
-    if (surface.candidates === "strategy") {
-      return this.deps.strategy.selectTargets(surface.toPluginView(req));
+  /**
+   * Step 1b: the requested name must be a published model (or an alias of
+   * one) that the caller's key may use. Restricted keys are checked first,
+   * so they learn nothing about models outside their list.
+   */
+  checkModelAccess<Req, Res, Chunk>(surface: Surface<Req, Res, Chunk>, requested: string, ctx: RequestContext): void {
+    const allowed = ctx?.allowedModels;
+    if (requested === "" && surface.name === "passthrough") {
+      // A forwarded body without a model (e.g. /v1/audio/* multipart).
+      if (allowed !== undefined) {
+        throw modelNotAllowed(
+          "This API key is restricted to specific models, and this request names no model. " +
+            'Send a JSON body with a "model" field.',
+        );
+      }
+      return;
     }
-    let ordered: readonly string[] = [];
-    try {
-      ordered = this.deps.strategy.selectTargets({ model, messages: [] });
-    } catch {
-      ordered = [];
-    }
-    const candidates = [...new Set(ordered)].filter((name) => {
-      const p = this.deps.lookup(name);
-      return !!p && surface.supports(p) && p.supportsModel(model);
-    });
-    if (candidates.length > 0) return candidates;
-    const provider = this.deps.findByModel(model);
-    if (!provider) throw modelNotFound(`No provider found for ${surface.logLabel} model "${model}"`);
-    if (!surface.supports(provider)) {
-      throw invalidRequest(
-        `The model "${model}" does not support ${surface.unsupportedLabel ?? surface.name}`,
-        "unsupported_capability",
+    const entry = this.deps.catalog.lookup(requested);
+    if (!modelAllowed(allowed, requested, entry?.name ?? requested)) {
+      throw modelNotAllowed(
+        `This API key is not allowed to use the model "${requested}". GET /v1/models lists the models it can use.`,
       );
     }
-    return [provider.name];
+    if (!entry) {
+      throw modelNotFound(
+        requested === ""
+          ? "The request names no model. GET /v1/models lists the models you can use."
+          : `The model "${requested}" does not exist on this gateway: it is not a published model or alias. ` +
+              "GET /v1/models lists the models you can use.",
+      );
+    }
+    if (!entry.enabled) {
+      throw modelNotFound(`The model "${requested}" is currently disabled on this gateway.`);
+    }
+  }
+
+  /** How `model` (a published name, aliases already applied) is routed; throws 404 when it is not served. */
+  route(model: string): ModelRoute {
+    const entry = this.deps.catalog.lookup(model);
+    if (!entry) {
+      throw modelNotFound(
+        `The model "${model}" does not exist on this gateway: it is not a published model or alias. ` +
+          "GET /v1/models lists the models you can use.",
+      );
+    }
+    if (!entry.enabled) throw modelNotFound(`The model "${model}" is currently disabled on this gateway.`);
+    return entry.route;
+  }
+
+  /** Step 4: ordered candidate targets for a request: only targets bound to its model. */
+  candidates<Req, Res, Chunk>(surface: Surface<Req, Res, Chunk>, req: Req, route?: ModelRoute): readonly string[] {
+    const model = surface.model(req);
+    const r = route ?? this.route(model);
+    if (surface.candidates === "strategy") return r.strategy.selectTargets(surface.toPluginView(req));
+    const ordered = [...new Set(r.strategy.selectTargets({ model, messages: [] }))].filter(
+      (name) => this.deps.lookup(name) !== undefined,
+    );
+    const capable = ordered.filter((name) => surface.supports(this.deps.lookup(name)!));
+    if (capable.length > 0) return capable;
+    throw invalidRequest(
+      `The model "${model}" does not support ${surface.unsupportedLabel ?? surface.name}`,
+      "unsupported_capability",
+    );
   }
 
   /** Step 5: one upstream call over the candidates (breaker, limiter, retry, failover). */
@@ -219,17 +265,24 @@ export class Pipeline {
     req: Req,
     ctx: RequestContext,
   ): Promise<{ value: Res; target: string }> {
-    const candidates = this.candidates(surface, req);
+    const route = this.route(surface.model(req));
+    const candidates = this.candidates(surface, req, route);
     let target = candidates[0] ?? "unknown";
     const onServed = (name: string) => {
       target = name;
     };
     const opts =
       surface.candidates === "strategy"
-        ? strategyRunOptions(this.deps.strategy, false, candidates.length, onServed)
+        ? strategyRunOptions(route.strategy, false, candidates.length, onServed)
         : { label: `Gateway(${surface.logLabel})`, supports: (p: IProvider) => surface.supports(p), onServed };
     try {
-      const value = await this.deps.executor.run(ctx, candidates, (p) => surface.call(p, ctx, req), opts);
+      // Each binding may name the model differently upstream.
+      const value = await this.deps.executor.run(
+        ctx,
+        candidates,
+        (p) => surface.call(p, ctx, surface.withModel(req, route.upstreamModel(p.name))),
+        opts,
+      );
       return { value, target };
     } catch (err) {
       if (err instanceof ConcurrencyLimitError || err instanceof CircuitOpenError) throw toGatewayError(err);

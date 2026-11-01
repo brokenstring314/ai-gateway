@@ -21,6 +21,7 @@ import { securityHeadersMiddleware } from "./middleware/security-headers.js";
 import { corsMiddleware } from "./middleware/cors.js";
 import { authMiddleware } from "./middleware/auth.js";
 import { getNormalizedPath } from "./server/route-path.js";
+import { GatewayError, invalidRequest } from "./core/errors.js";
 import { PluginRejectionError } from "./plugins/error.js";
 import { isClientAuthEnabled } from "./config/production-safety.js";
 import { createBootstrapGate, type BootstrapGate } from "./auth/bootstrap.js";
@@ -53,6 +54,8 @@ import { requestLogStoreSink } from "./observability/request-log.js";
 export type AppEnv = {
   Variables: {
     apiKey: string | undefined;
+    /** Model allow-list of the authenticated store key; unset = every model. */
+    allowedModels: string[] | undefined;
     abortController: AbortController;
   };
 };
@@ -234,13 +237,20 @@ export function createApp(
   registerImagesHandler(app, gateway);
   registerModelsHandler(app, gateway);
 
+  // Proxy target: X-Provider names a target; otherwise the first target bound
+  // to the body's (published) model. Read from the gateway's current config.
   const resolveTarget = (selector: { provider: string } | { model: string }) => {
-    const target =
-      "provider" in selector
-        ? config.targets.find(
-            (candidate) => candidate.name === selector.provider || candidate.provider === selector.provider,
-          )
-        : config.targets.find((candidate) => candidate.models?.includes(selector.model));
+    const targets = gateway.getConfig().targets;
+    let target: (typeof targets)[number] | undefined;
+    if ("provider" in selector) {
+      target = targets.find((t) => t.name === selector.provider || t.provider === selector.provider);
+    } else {
+      const entry = gateway.modelCatalog().lookup(selector.model);
+      const first = entry?.enabled
+        ? entry.route.strategy.selectTargets({ model: entry.name, messages: [] })[0]
+        : undefined;
+      target = first !== undefined ? targets.find((t) => t.name === first) : undefined;
+    }
     if (target === undefined) return undefined;
     const expanded = expandTargetEnvRefs(target);
     // A target without baseURL uses its provider preset's default.
@@ -293,13 +303,30 @@ export function createApp(
               {
                 traceId: c.req.header("X-Request-Id") ?? crypto.randomUUID(),
                 metadata: { apiKey: (c.get as unknown as (k: string) => unknown)("apiKey") },
+                allowedModels: (c.get as unknown as (k: string) => string[] | undefined)("allowedModels"),
               },
               bodyText,
               new URL(c.req.url).pathname,
             );
+            const explicit = c.req.header("X-Provider");
+            const model = passthroughModel(bodyText);
+            if (explicit && model) {
+              const entry = gateway.modelCatalog().lookup(model);
+              const targets = gateway.getConfig().targets;
+              const named = targets.filter((t) => t.name === explicit || t.provider === explicit).map((t) => t.name);
+              if (entry && !named.some((n) => entry.targets.includes(n))) {
+                return respondError(
+                  c as unknown as Context,
+                  invalidRequest(
+                    `X-Provider "${explicit}" does not serve the model "${model}" on this gateway`,
+                    "provider_not_bound",
+                  ),
+                );
+              }
+            }
             return rewritten === undefined ? undefined : { bodyText: rewritten };
           } catch (err) {
-            if (err instanceof PluginRejectionError) {
+            if (err instanceof PluginRejectionError || err instanceof GatewayError) {
               return respondError(c as unknown as Context, err);
             }
             throw err;
@@ -402,4 +429,16 @@ function trackStreamedBody(res: Response, onEnd: () => void): Response | undefin
     },
   });
   return new Response(wrapped, { status: res.status, statusText: res.statusText, headers: res.headers });
+}
+
+/** Top-level "model" of a JSON pass-through body, or undefined. */
+function passthroughModel(bodyText: string | undefined): string | undefined {
+  if (bodyText === undefined) return undefined;
+  try {
+    const v: unknown = JSON.parse(bodyText);
+    const m = v && typeof v === "object" ? (v as Record<string, unknown>)["model"] : undefined;
+    return typeof m === "string" && m !== "" ? m : undefined;
+  } catch {
+    return undefined;
+  }
 }
