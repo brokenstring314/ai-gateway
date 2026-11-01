@@ -17,6 +17,13 @@
   display name and metadata. Stored in the config store. Per-key `allowedModels` (key store migration 5; CLI
   `keys create --models`, admin API `allowedModels`). `GET /v1/models` lists only what the calling key may use, with
   metadata extension fields.
+- Model metadata enforcement (0.3.0 P3): requests are checked against the published model's metadata before
+  leaving the gateway (output limit, estimated context window, input types, tools, parallel tools, structured
+  output, logprobs, web search, reasoning efforts) and rejected with 400 and a specific `code`/`param`, never
+  clamped. Lossless rewrites: developer -> system (default), system merged into the first user message,
+  `reasoning.map` (effort -> upstream params, e.g. DeepSeek `thinking`), binding `params`. Known upstream models
+  (`src/core/model-presets.ts`: DeepSeek flash / v4-pro from its /models list) fill unset metadata, and a published
+  model promising more than a known upstream is a config error.
 - `Gateway.reload(config)` (0.3.0 P0, live config): assembles a new runtime snapshot and swaps it in atomically.
   Requests and streams in flight finish on the snapshot they started on; an invalid config throws and the old
   snapshot keeps serving; breakers, concurrency limiters and plugins with unchanged config keep their state;
@@ -24,6 +31,11 @@
   `registerProvider` / `registerPlugin` registrations now survive reloads. Not yet exposed over HTTP.
 
 ### Breaking changes
+
+- Requests that exceed a published model's limits or ask for a feature it lacks are rejected with 400 (P3, user
+  decision 2026-11-01), including limits filled in from known upstream models. `developer` messages are now always
+  sent as `system` to providers without the role (DeepSeek answered 422), in every compatibility mode. DeepSeek
+  targets no longer drop/warn on `logprobs` (supported per QA 2026-10-19).
 
 - Only published models are served (user decision 2026-11-01): any other model name is rejected with
   `404 model_not_found` explaining why, before reaching an upstream. Without a `models:` section, the names in

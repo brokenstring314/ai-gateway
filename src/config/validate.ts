@@ -4,6 +4,7 @@
  * errors) and by the embedded `new Gateway(config)`, which skips the schema.
  */
 
+import { knownUpstreamModel } from "../core/model-presets.js";
 import { baseURLProblem } from "../core/provider-presets.js";
 import { builtinPluginConfigIssues } from "../plugins/builtins/config-schemas.js";
 import { piiSecretGuardConfigIssues } from "../plugins/builtins/pii-secret-guard/config.js";
@@ -146,6 +147,7 @@ function modelIssues(cfg: CheckedConfig, targetNames: ReadonlySet<string>, known
         }
         bound.add(b.target);
       });
+      issues.push(...upstreamLimitIssues(cfg, m, i));
       if (m.strategy === "loadbalance" && m.bindings.every((b) => (b.weight ?? 1) === 0)) {
         issues.push({
           path: ["models", i, "bindings"],
@@ -160,6 +162,66 @@ function modelIssues(cfg: CheckedConfig, targetNames: ReadonlySet<string>, known
           message: `alias "${alias}" points to "${target}", which is not a published model (models[].name)`,
         });
       }
+    }
+  }
+  return issues;
+}
+
+const STRUCTURED_RANK = { none: 0, json_object: 1, json_schema: 2 } as const;
+
+/**
+ * A published model must not promise more than a bound upstream that is
+ * known to support less (core/model-presets.ts): the gateway's limits are
+ * what downstream callers rely on, so they must fit inside every upstream.
+ */
+function upstreamLimitIssues(
+  cfg: CheckedConfig,
+  m: NonNullable<CheckedConfig["models"]>[number],
+  i: number,
+): ConfigIssue[] {
+  const issues: ConfigIssue[] = [];
+  const meta = m.metadata;
+  if (!meta) return issues;
+  const providerOf = new Map((cfg.targets ?? []).map((t) => [t.name, t.provider]));
+  for (const b of m.bindings) {
+    const provider = providerOf.get(b.target);
+    if (provider === undefined) continue;
+    const upstream = b.model ?? m.name;
+    const known = knownUpstreamModel(provider, upstream);
+    if (!known) continue;
+    const where = `upstream "${upstream}" on target "${b.target}"`;
+    const at = (field: string): (string | number)[] => ["models", i, "metadata", field];
+    if (meta.contextWindow !== undefined && meta.contextWindow > known.contextWindow) {
+      issues.push({
+        path: at("contextWindow"),
+        message: `model "${m.name}": contextWindow ${meta.contextWindow} exceeds ${where} (${known.contextWindow})`,
+      });
+    }
+    if (meta.maxOutputTokens !== undefined && meta.maxOutputTokens > known.maxOutputTokens) {
+      issues.push({
+        path: at("maxOutputTokens"),
+        message: `model "${m.name}": maxOutputTokens ${meta.maxOutputTokens} exceeds ${where} (${known.maxOutputTokens})`,
+      });
+    }
+    const missing = (meta.inputModalities ?? []).filter((x) => !known.inputModalities.includes(x));
+    if (missing.length > 0) {
+      issues.push({
+        path: at("inputModalities"),
+        message: `model "${m.name}": ${where} does not accept ${missing.join(", ")} input`,
+      });
+    }
+    if (meta.tools === true && known.tools === false) {
+      issues.push({ path: at("tools"), message: `model "${m.name}": ${where} does not support tool calls` });
+    }
+    if (
+      meta.structuredOutput !== undefined &&
+      known.structuredOutput !== undefined &&
+      STRUCTURED_RANK[meta.structuredOutput] > STRUCTURED_RANK[known.structuredOutput]
+    ) {
+      issues.push({
+        path: at("structuredOutput"),
+        message: `model "${m.name}": ${where} supports structured output up to "${known.structuredOutput}"`,
+      });
     }
   }
   return issues;

@@ -55,6 +55,7 @@ export function streamSurfaceOf(surface: ChatShapedSurface): ChatShapedSurface {
 
 /** Stream plan over the model's bound targets, opening each through the surface (model renamed per binding). */
 export function surfaceStreamPlan(
+  pipeline: Pipeline,
   executor: TargetExecutor,
   route: ModelRoute,
   surface: ChatShapedSurface,
@@ -67,7 +68,7 @@ export function surfaceStreamPlan(
   return {
     executor,
     candidates,
-    open: (p: IProvider) => open(p, ctx, surface.withModel(req, route.upstreamModel(p.name))),
+    open: (p: IProvider) => open(p, ctx, pipeline.forTarget(surface, req, route, p.name)),
     run: strategyRunOptions(route.strategy, true, candidates.length),
   };
 }
@@ -121,7 +122,7 @@ export async function* runChatStream(
   };
   let result: Awaited<ReturnType<typeof executeStream<StreamChunk>>>;
   try {
-    const plan = surfaceStreamPlan(executor, pipeline.route(finalReq.model), surface, ctx, finalReq);
+    const plan = surfaceStreamPlan(pipeline, executor, pipeline.route(finalReq.model), surface, ctx, finalReq);
     result = await executeStream(ctx, plan, { mapError: toPipelineError, finalize });
     if (ctx) ctx.servedTarget = result.target;
   } catch (err) {

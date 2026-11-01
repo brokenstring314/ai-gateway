@@ -111,7 +111,7 @@ describe("capabilities keyed on target.provider + compatibility wired (T3-8)", (
     expect(req["temperature"]).toBe(1);
   });
 
-  it("developer role: rejected on ollama in reject mode, mapped to system in drop mode", () => {
+  it("developer role: always sent as system where unsupported (0.3.0: lossless rewrite, any mode)", () => {
     const req = {
       model: "m",
       messages: [
@@ -119,9 +119,16 @@ describe("capabilities keyed on target.provider + compatibility wired (T3-8)", (
         { role: "user", content: "hi" },
       ],
     } as never;
-    const rej = enforceUnsupportedParams("ollama", req, "reject");
-    expect(rej.action).toBe("rejected");
-    expect((rej as { reason: string }).reason).toContain("developer_role");
+    const rej = enforceUnsupportedParams("ollama", req, "reject") as unknown as {
+      action: string;
+      request: { messages: Array<{ role: string }> };
+    };
+    expect(rej.action).toBe("ok");
+    expect(rej.request.messages[0]!.role).toBe("system");
+    const ds = enforceUnsupportedParams("deepseek", req, "warn") as unknown as {
+      request: { messages: Array<{ role: string }> };
+    };
+    expect(ds.request.messages[0]!.role).toBe("system");
     const drop = enforceUnsupportedParams("ollama", req, "drop") as unknown as {
       request: { messages: Array<{ role: string }> };
     };

@@ -1246,7 +1246,41 @@ aliases:
   chat: my-chat                      # 别名必须指向已发布的模型
 ```
 
-`loadbalance` 下 `weight: 0` 的绑定不接流量。每个模型对同一个 target 只能绑定一次。`metadata` 会显示在 `/v1/models` 中（P3 起会据此校验请求）。使用配置库（`runtimeConfig.source: database`）时，模型和绑定与 target 一样入库、导入。
+`loadbalance` 下 `weight: 0` 的绑定不接流量。每个模型对同一个 target 只能绑定一次。`metadata` 会显示在 `/v1/models` 中，并被强制执行（见下文）。使用配置库（`runtimeConfig.source: database`）时，模型和绑定与 target 一样入库、导入。
+
+### 模型元数据会被强制执行（0.3.0）
+
+请求离开网关前，会先对照已发布模型的 `metadata` 检查。模型做不到的请求**直接返回 `400` 并说明原因**，不会被压低或悄悄修改：
+
+| 请求情况 | 依据的元数据 | `error.code`（`param`） |
+|---|---|---|
+| `max_tokens` / `max_completion_tokens` 超过上限 | `maxOutputTokens` | `max_tokens_exceeded` |
+| 估算输入（UTF-8 字节 / 4）+ 输出上限超过上下文窗口 | `contextWindow` | `context_length_exceeded`（`messages`） |
+| 模型不接受的图片 / 音频 / 视频 / 文件 | `inputModalities` | `unsupported_input_modality`（`messages`） |
+| `tools` / `parallel_tool_calls: true` | `tools` / `parallelTools: false` | `tools_not_supported` / `parallel_tool_calls_not_supported` |
+| 超出支持级别的 `response_format` | `structuredOutput`（`none` < `json_object` < `json_schema`） | `unsupported_response_format` |
+| `logprobs` / `top_logprobs` | `logprobs: false` | `logprobs_not_supported` |
+| `web_search_options` | `webSearch: false` | `web_search_not_supported` |
+| `reasoning_effort` | `reasoning: false`，或不在 `reasoning.efforts` 中 | `reasoning_not_supported` / `unsupported_reasoning_effort` |
+
+不改变含义的改写会自动进行：`developer` 消息按 `system` 发送（设 `developerRole: passthrough` 可保留原样）；`systemMessage: merge_into_user` 会把 system 内容并入第一条 user 消息；`reasoning.map` 把某个 `reasoning_effort` 值换成上游自己的参数。绑定上的 `params` 只给该渠道追加上游请求体字段：
+
+```yaml
+strategy: { mode: single, targets: [deepseek] }
+targets:
+  - { name: deepseek, provider: deepseek, apiKey: "${DEEPSEEK_API_KEY}" }
+models:
+  - name: chat
+    bindings: [{ target: deepseek, model: deepseek-flash, params: { user_id: "gateway" } }]
+    metadata:
+      maxOutputTokens: 8192            # 对调用者的上限，必须在上游上限之内
+      reasoning:
+        efforts: [none, low, high, max]
+        map:
+          none: { thinking: { type: disabled } }
+```
+
+未填写的元数据取所有绑定上游都支持的部分（目前收录 DeepSeek 的 `deepseek-flash`、`deepseek-v4-pro`，数据来自 DeepSeek 自己的模型列表）：取最小的上限和共同支持的输入类型。已发布模型的承诺不能超过已知上游：`contextWindow` / `maxOutputTokens` 更大，或声明了上游没有的输入类型、结构化输出级别，都会配置报错。未知上游不做检查。旧版 `/v1/completions` 也做输出上限和上下文检查。
 
 **每个 key 的模型白名单。** 密钥库里的 key 可以限定只能用部分已发布模型：`ai-gateway keys create --models my-chat,gpt-4o`，或在 `POST /admin/keys` / `PUT /admin/keys/:id` 中传 `"allowedModels": ["my-chat"]`（`null` = 全部模型）。别名本身或它指向的模型在白名单里即可使用。其他任何模型（无论是否发布）都返回 `403 model_not_allowed`（「This API key is not allowed to use the model …」），受限 key 无法借此探测白名单以外的模型。配置里的静态 `auth.keys` 不受限制。
 

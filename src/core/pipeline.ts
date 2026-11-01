@@ -30,6 +30,7 @@ import { ConcurrencyLimitError } from "../routing/concurrency-limiter.js";
 import type { IStrategy } from "../routing/types.js";
 import { type ModelCatalog, type ModelRoute, modelAllowed } from "../routing/model-catalog.js";
 import { invalidRequest, modelNotAllowed, modelNotFound, toGatewayError } from "./errors.js";
+import { checkLimits, enforceChatPolicy } from "./model-policy.js";
 import { strategyRunOptions, type TargetExecutor } from "./executor.js";
 import type { McpLoop } from "./mcp-loop.js";
 import { runChatStream, type ChatShapedSurface } from "./chat-stream.js";
@@ -182,6 +183,7 @@ export class Pipeline {
 
     try {
       run.request = surface.applyPluginView(resolved, pluginCtx.request);
+      run.request = this.applyModelPolicy(surface, run.request);
     } catch (err) {
       const plugin =
         (err instanceof PluginRejectionError ? err.plugin : undefined) ?? pluginCtx._modifiedBy?.join(",") ?? "unknown";
@@ -228,6 +230,32 @@ export class Pipeline {
     if (!entry.enabled) {
       throw modelNotFound(`The model "${requested}" is currently disabled on this gateway.`);
     }
+  }
+
+  /**
+   * Step 3b (0.3.0 P3): check the final request against the model's
+   * metadata (400 with the reason when it cannot be served) and apply the
+   * meaning-preserving rewrites. Chat gets the full policy; legacy
+   * completions the output-limit and context checks.
+   */
+  applyModelPolicy<Req, Res, Chunk>(surface: Surface<Req, Res, Chunk>, req: Req): Req {
+    const model = surface.model(req);
+    const entry = this.deps.catalog.lookup(model);
+    if (!entry) return req;
+    if (surface.name === "chat") {
+      return enforceChatPolicy(req as unknown as ChatCompletionRequest, entry.metadata, model) as unknown as Req;
+    }
+    if (surface.name === "completions") checkLimits(surface.toPluginView(req), entry.metadata, model);
+    return req;
+  }
+
+  /** The request as sent to one target: its upstream model name and binding params. */
+  forTarget<Req, Res, Chunk>(surface: Surface<Req, Res, Chunk>, req: Req, route: ModelRoute, target: string): Req {
+    const renamed = surface.withModel(req, route.upstreamModel(target));
+    const params = route.params(target);
+    if (!params || surface.name !== "chat") return renamed;
+    const chat = renamed as unknown as ChatCompletionRequest;
+    return { ...chat, extra: { ...chat.extra, ...structuredClone(params) } } as unknown as Req;
   }
 
   /** How `model` (a published name, aliases already applied) is routed; throws 404 when it is not served. */
@@ -280,7 +308,7 @@ export class Pipeline {
       const value = await this.deps.executor.run(
         ctx,
         candidates,
-        (p) => surface.call(p, ctx, surface.withModel(req, route.upstreamModel(p.name))),
+        (p) => surface.call(p, ctx, this.forTarget(surface, req, route, p.name)),
         opts,
       );
       return { value, target };

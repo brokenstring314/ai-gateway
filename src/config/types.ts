@@ -40,7 +40,21 @@ export interface TargetConfig {
   concurrency?: ConcurrencyConfig;
 }
 
-/** Capabilities of a published model (0.3.0, plan §3.4); shown on /v1/models. P3 enforces them. */
+/** How a model handles reasoning_effort (0.3.0 P3). */
+export interface ReasoningConfig {
+  /** Accepted reasoning_effort values; any other value is rejected. Unset: any value. */
+  efforts?: string[];
+  /** reasoning_effort value → upstream parameters sent instead of it (e.g. none → {thinking: {type: disabled}}). */
+  map?: Record<string, Record<string, unknown>>;
+}
+
+/**
+ * Capabilities and limits of a published model (0.3.0, plan §3.4). Shown on
+ * /v1/models and enforced before a request leaves the gateway (P3): a
+ * request the model cannot serve is rejected with 400 and the reason.
+ * Unset fields fall back to what is known about the bound upstream models
+ * (core/model-presets.ts); unknown stays unchecked.
+ */
 export interface ModelMetadata {
   contextWindow?: number;
   maxOutputTokens?: number;
@@ -48,9 +62,14 @@ export interface ModelMetadata {
   tools?: boolean;
   parallelTools?: boolean;
   structuredOutput?: "none" | "json_object" | "json_schema";
-  reasoning?: boolean;
+  /** false: reasoning_effort rejected; true: passed through; object: allowed efforts / mapping. */
+  reasoning?: boolean | ReasoningConfig;
   webSearch?: boolean;
   logprobs?: boolean;
+  /** "supported" (default) or "merge_into_user": system messages are prepended to the first user message. */
+  systemMessage?: "supported" | "merge_into_user";
+  /** "as_system" (default): developer messages are sent as system; "passthrough": unchanged. */
+  developerRole?: "as_system" | "passthrough";
 }
 
 /** One channel serving a published model. */
@@ -63,6 +82,8 @@ export interface ModelBindingConfig {
   priority?: number;
   /** loadbalance: relative share (0 = drained). Default 1. */
   weight?: number;
+  /** Extra upstream body fields for this binding (win over the request's and the reasoning map's). */
+  params?: Record<string, unknown>;
 }
 
 /**

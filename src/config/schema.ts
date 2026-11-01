@@ -114,9 +114,19 @@ export const ModelMetadataSchema = strictObject({
   tools: z.boolean().optional(),
   parallelTools: z.boolean().optional(),
   structuredOutput: z.enum(["none", "json_object", "json_schema"]).optional(),
-  reasoning: z.boolean().optional(),
+  reasoning: z
+    .union([
+      z.boolean(),
+      strictObject({
+        efforts: z.array(z.string().min(1)).min(1).optional(),
+        map: z.record(z.string().min(1), z.record(z.string(), z.unknown())).optional(),
+      }),
+    ])
+    .optional(),
   webSearch: z.boolean().optional(),
   logprobs: z.boolean().optional(),
+  systemMessage: z.enum(["supported", "merge_into_user"]).optional(),
+  developerRole: z.enum(["as_system", "passthrough"]).optional(),
 });
 
 export const PublishedModelSchema = strictObject({
@@ -132,6 +142,7 @@ export const PublishedModelSchema = strictObject({
         model: z.string().min(1).optional(),
         priority: z.number().int().optional(),
         weight: z.number().nonnegative().optional(),
+        params: z.record(z.string(), z.unknown()).optional(),
       }),
     )
     .min(1),

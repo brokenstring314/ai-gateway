@@ -376,7 +376,7 @@ export class ConfigStore {
       );
       const insBinding = this.db.prepare(
         `INSERT INTO model_bindings (id, model_id, channel_id, upstream_model, priority, weight, enabled, overrides_json)
-         VALUES (?, ?, ?, ?, ?, ?, 1, '{}')`,
+         VALUES (?, ?, ?, ?, ?, ?, 1, ?)`,
       );
       for (const m of config.models ?? []) {
         const modelId = newId("mdl");
@@ -395,7 +395,15 @@ export class ConfigStore {
           const channelId = channelIdByName.get(b.target);
           if (channelId === undefined)
             throw new ConfigStoreError(`model "${m.name}" binds unknown target "${b.target}"`);
-          insBinding.run(newId("bnd"), modelId, channelId, b.model ?? m.name, b.priority ?? i, b.weight ?? 1);
+          insBinding.run(
+            newId("bnd"),
+            modelId,
+            channelId,
+            b.model ?? m.name,
+            b.priority ?? i,
+            b.weight ?? 1,
+            JSON.stringify(b.params ?? {}),
+          );
         });
       }
       const insSetting = this.db.prepare(
@@ -572,22 +580,33 @@ export class ConfigStore {
     }>;
     const bindings = this.db
       .query(
-        `SELECT b.model_id, c.name AS target, b.upstream_model, b.priority, b.weight
+        `SELECT b.model_id, c.name AS target, b.upstream_model, b.priority, b.weight, b.overrides_json
          FROM model_bindings b JOIN channels c ON c.id = b.channel_id
          WHERE b.enabled = 1 AND c.enabled = 1
          ORDER BY b.priority, b.rowid`,
       )
-      .all() as Array<{ model_id: string; target: string; upstream_model: string; priority: number; weight: number }>;
+      .all() as Array<{
+      model_id: string;
+      target: string;
+      upstream_model: string;
+      priority: number;
+      weight: number;
+      overrides_json: string;
+    }>;
     const out: PublishedModelConfig[] = [];
     for (const m of models) {
       const own = bindings.filter((b) => b.model_id === m.id);
       // A model whose every binding is gone (disabled channel) cannot be served: publish it disabled.
-      const list: ModelBindingConfig[] = own.map((b, i) => ({
-        target: b.target,
-        ...(b.upstream_model !== m.name ? { model: b.upstream_model } : {}),
-        ...(b.priority !== i ? { priority: b.priority } : {}),
-        ...(b.weight !== 1 ? { weight: b.weight } : {}),
-      }));
+      const list: ModelBindingConfig[] = own.map((b, i) => {
+        const params = JSON.parse(b.overrides_json) as Record<string, unknown>;
+        return {
+          target: b.target,
+          ...(b.upstream_model !== m.name ? { model: b.upstream_model } : {}),
+          ...(b.priority !== i ? { priority: b.priority } : {}),
+          ...(b.weight !== 1 ? { weight: b.weight } : {}),
+          ...(Object.keys(params).length > 0 ? { params } : {}),
+        };
+      });
       const metadata = JSON.parse(m.metadata_json) as Record<string, unknown>;
       const routing = JSON.parse(m.routing_json) as { strategy?: "fallback" | "loadbalance" };
       if (list.length === 0) continue;

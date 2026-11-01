@@ -17,6 +17,7 @@
  */
 
 import type { GatewayConfig, ModelMetadata, PublishedModelConfig } from "../config/types.js";
+import { knownUpstreamModel } from "../core/model-presets.js";
 import type { ChatCompletionRequest, IProvider } from "../providers/types.js";
 import { FallbackStrategy } from "./fallback.js";
 import { LoadBalanceStrategy } from "./loadbalance.js";
@@ -28,6 +29,8 @@ export interface ModelRoute {
   readonly strategy: IStrategy;
   /** Model name to send to each target. */
   readonly upstreamModel: (target: string) => string;
+  /** Extra upstream body fields for each target (binding params), if any. */
+  readonly params: (target: string) => Readonly<Record<string, unknown>> | undefined;
 }
 
 export interface CatalogEntry {
@@ -35,6 +38,10 @@ export interface CatalogEntry {
   readonly enabled: boolean;
   readonly displayName?: string;
   readonly description?: string;
+  /**
+   * Effective metadata: what was configured, with unset fields filled from
+   * what every bound upstream is known to support (core/model-presets.ts).
+   */
   readonly metadata?: ModelMetadata;
   /** Targets serving it, in binding order. */
   readonly targets: readonly string[];
@@ -64,19 +71,57 @@ class RestrictedStrategy implements IStrategy {
   }
 }
 
+const STRUCTURED_ORDER = ["none", "json_object", "json_schema"] as const;
+
+/**
+ * Metadata every listed upstream supports: smallest limits, common input
+ * types, features all of them have. Undefined when any upstream is unknown.
+ */
+export function commonUpstreamMetadata(
+  upstreams: ReadonlyArray<{ provider: string; model: string }>,
+): ModelMetadata | undefined {
+  if (upstreams.length === 0) return undefined;
+  const known = upstreams.map((u) => knownUpstreamModel(u.provider, u.model));
+  if (known.some((k) => k === undefined)) return undefined;
+  const ks = known as NonNullable<(typeof known)[number]>[];
+  const modalities = ks.map((k) => k.inputModalities).reduce((acc, list) => acc.filter((m) => list.includes(m)));
+  const out: ModelMetadata = {
+    contextWindow: Math.min(...ks.map((k) => k.contextWindow)),
+    maxOutputTokens: Math.min(...ks.map((k) => k.maxOutputTokens)),
+    inputModalities: [...modalities],
+  };
+  if (ks.every((k) => k.tools !== undefined)) out.tools = ks.every((k) => k.tools === true);
+  if (ks.every((k) => k.structuredOutput !== undefined)) {
+    out.structuredOutput = STRUCTURED_ORDER[Math.min(...ks.map((k) => STRUCTURED_ORDER.indexOf(k.structuredOutput!)))];
+  }
+  return out;
+}
+
+function mergeMetadata(
+  configured: ModelMetadata | undefined,
+  derived: ModelMetadata | undefined,
+): ModelMetadata | undefined {
+  if (!configured && !derived) return undefined;
+  return { ...(derived ?? {}), ...(configured ?? {}) };
+}
+
 function explicitRoute(m: PublishedModelConfig): ModelRoute {
   const byTarget = new Map(m.bindings.map((b) => [b.target, b.model ?? m.name]));
+  const paramsByTarget = new Map(m.bindings.filter((b) => b.params).map((b) => [b.target, b.params!]));
   const upstreamModel = (t: string) => byTarget.get(t) ?? m.name;
+  const params = (t: string) => paramsByTarget.get(t);
   if (m.strategy === "loadbalance") {
     const pool = m.bindings.map((b) => ({ name: b.target, weight: b.weight ?? 1 }));
-    return { strategy: new LoadBalanceStrategy({ targets: pool }), upstreamModel };
+    return { strategy: new LoadBalanceStrategy({ targets: pool }), upstreamModel, params };
   }
   const ordered = m.bindings
     .map((b, i) => ({ t: b.target, p: b.priority ?? i, i }))
     .sort((a, b) => a.p - b.p || a.i - b.i)
     .map((x) => x.t);
-  return { strategy: new FallbackStrategy({ targets: ordered }), upstreamModel };
+  return { strategy: new FallbackStrategy({ targets: ordered }), upstreamModel, params };
 }
+
+const noParams = () => undefined;
 
 /** Where implicit mode reads the declared models: the provider registry. */
 export interface ProviderSource {
@@ -91,12 +136,15 @@ export class ModelCatalog {
   readonly explicit: boolean;
   private seenRevision = -1;
 
+  private readonly providerOf: ReadonlyMap<string, string>;
+
   constructor(
-    config: Pick<GatewayConfig, "models" | "aliases">,
+    config: Pick<GatewayConfig, "models" | "aliases" | "targets">,
     private readonly globalStrategy: IStrategy,
     private readonly providers: ProviderSource,
   ) {
     this.aliases = config.aliases ?? {};
+    this.providerOf = new Map(config.targets.map((t) => [t.name, t.provider]));
     this.explicit = config.models !== undefined;
     const entries = new Map<string, CatalogEntry>();
     if (config.models !== undefined) {
@@ -106,7 +154,14 @@ export class ModelCatalog {
           enabled: m.enabled !== false,
           ...(m.displayName !== undefined ? { displayName: m.displayName } : {}),
           ...(m.description !== undefined ? { description: m.description } : {}),
-          ...(m.metadata !== undefined ? { metadata: m.metadata } : {}),
+          ...optionalMetadata(
+            mergeMetadata(
+              m.metadata,
+              commonUpstreamMetadata(
+                m.bindings.map((b) => ({ provider: this.providerOf.get(b.target) ?? "", model: b.model ?? m.name })),
+              ),
+            ),
+          ),
           targets: m.bindings.map((b) => b.target),
           route: explicitRoute(m),
         });
@@ -128,12 +183,7 @@ export class ModelCatalog {
     }
     const entries = new Map<string, CatalogEntry>();
     for (const [name, targets] of bound) {
-      entries.set(name, {
-        name,
-        enabled: true,
-        targets,
-        route: { strategy: new RestrictedStrategy(this.globalStrategy, targets), upstreamModel: () => name },
-      });
+      entries.set(name, this.implicitEntry(name, targets));
     }
     this.entries = entries;
     this.seenRevision = this.providers.revision;
@@ -153,11 +203,23 @@ export class ModelCatalog {
       .filter((p) => p.supportsModel(name))
       .map((p) => p.name);
     if (targets.length === 0) return undefined;
+    return this.implicitEntry(name, targets);
+  }
+
+  private implicitEntry(name: string, targets: string[]): CatalogEntry {
+    const derived = commonUpstreamMetadata(
+      targets.map((t) => ({ provider: this.providerOf.get(t) ?? "", model: name })),
+    );
     return {
       name,
       enabled: true,
       targets,
-      route: { strategy: new RestrictedStrategy(this.globalStrategy, targets), upstreamModel: () => name },
+      ...optionalMetadata(derived),
+      route: {
+        strategy: new RestrictedStrategy(this.globalStrategy, targets),
+        upstreamModel: () => name,
+        params: noParams,
+      },
     };
   }
 
@@ -186,4 +248,8 @@ export function modelAllowed(
 ): boolean {
   if (allowed === undefined || allowed === null) return true;
   return allowed.includes(requested) || allowed.includes(resolved);
+}
+
+function optionalMetadata(metadata: ModelMetadata | undefined): { metadata?: ModelMetadata } {
+  return metadata !== undefined ? { metadata } : {};
 }

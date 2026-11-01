@@ -1334,7 +1334,41 @@ aliases:
   chat: my-chat                      # aliases must point to published models
 ```
 
-A binding with `weight: 0` is drained under `loadbalance`. One binding per target per model. `metadata` is shown on `/v1/models` (P3 will enforce it). In the config store (`runtimeConfig.source: database`) the models and bindings are stored and imported like the targets.
+A binding with `weight: 0` is drained under `loadbalance`. One binding per target per model. `metadata` is shown on `/v1/models` and enforced (below). In the config store (`runtimeConfig.source: database`) the models and bindings are stored and imported like the targets.
+
+### Model metadata is enforced (0.3.0)
+
+Before a request leaves the gateway it is checked against the published model's `metadata`. A request the model cannot serve is **rejected with `400` and the reason**, never clamped or silently changed:
+
+| Request | Metadata | `error.code` (`param`) |
+|---|---|---|
+| `max_tokens` / `max_completion_tokens` above the limit | `maxOutputTokens` | `max_tokens_exceeded` |
+| estimated input (UTF-8 bytes / 4) + output limit above the window | `contextWindow` | `context_length_exceeded` (`messages`) |
+| image / audio / video / file parts the model does not take | `inputModalities` | `unsupported_input_modality` (`messages`) |
+| `tools` / `parallel_tool_calls: true` | `tools` / `parallelTools: false` | `tools_not_supported` / `parallel_tool_calls_not_supported` |
+| `response_format` stronger than supported | `structuredOutput` (`none` < `json_object` < `json_schema`) | `unsupported_response_format` |
+| `logprobs` / `top_logprobs` | `logprobs: false` | `logprobs_not_supported` |
+| `web_search_options` | `webSearch: false` | `web_search_not_supported` |
+| `reasoning_effort` | `reasoning: false`, or not in `reasoning.efforts` | `reasoning_not_supported` / `unsupported_reasoning_effort` |
+
+Rewrites that keep the meaning are applied automatically: `developer` messages are sent as `system` (set `developerRole: passthrough` to keep them); `systemMessage: merge_into_user` prepends system text to the first user message; `reasoning.map` replaces a `reasoning_effort` value with the upstream's own parameters. A binding's `params` adds upstream body fields for that channel only:
+
+```yaml
+strategy: { mode: single, targets: [deepseek] }
+targets:
+  - { name: deepseek, provider: deepseek, apiKey: "${DEEPSEEK_API_KEY}" }
+models:
+  - name: chat
+    bindings: [{ target: deepseek, model: deepseek-flash, params: { user_id: "gateway" } }]
+    metadata:
+      maxOutputTokens: 8192            # what callers get; must fit inside the upstream
+      reasoning:
+        efforts: [none, low, high, max]
+        map:
+          none: { thinking: { type: disabled } }
+```
+
+Unset metadata falls back to what every bound upstream is known to support (currently DeepSeek's `deepseek-flash` and `deepseek-v4-pro`, from DeepSeek's own model list): the smallest limits and the common input types. A published model may never promise more than a known upstream: a larger `contextWindow` / `maxOutputTokens`, or an input type or structured-output level the upstream lacks, is a config error. Unknown upstreams stay unchecked. Legacy `/v1/completions` gets the output-limit and context checks.
 
 **Per-key model allow-lists.** A key-store key can be limited to some published models: `ai-gateway keys create --models my-chat,gpt-4o`, or `"allowedModels": ["my-chat"]` on `POST /admin/keys` / `PUT /admin/keys/:id` (`null` = every model). An alias counts when either it or its target is allowed. Any other model, published or not, gets `403 model_not_allowed` ("This API key is not allowed to use the model …"), so a restricted key learns nothing about models outside its list. Static `auth.keys` are unrestricted.
 

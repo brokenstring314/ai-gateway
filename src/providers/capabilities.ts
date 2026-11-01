@@ -47,8 +47,8 @@ const ALL_CAPABILITIES: ReadonlySet<ProviderCapability> = new Set(Object.values(
  * Providers listed here have only their listed capabilities.
  */
 const PROVIDER_CAPABILITY_MAP: Readonly<Record<string, ReadonlySet<ProviderCapability>>> = {
-  // DeepSeek: no logprobs support.
-  deepseek: without(ALL_CAPABILITIES, ProviderCapability.Logprobs, ProviderCapability.TopLogprobs),
+  // DeepSeek: logprobs work (QA 2026-10-19); the developer role is rejected with 422.
+  deepseek: without(ALL_CAPABILITIES, ProviderCapability.DeveloperRole),
 
   // Groq: no logprobs, no seed.
   groq: without(ALL_CAPABILITIES, ProviderCapability.Logprobs, ProviderCapability.TopLogprobs, ProviderCapability.Seed),
@@ -194,11 +194,12 @@ export type CapabilityEnforcementResult =
  */
 export function enforceUnsupportedParams(
   providerName: string,
-  request: ChatCompletionRequest,
+  input: ChatCompletionRequest,
   mode: CompatibilityConfig["onUnsupportedParam"],
   /** Name used in messages (the target); defaults to providerName. */
   displayName: string = providerName,
 ): CapabilityEnforcementResult {
+  let request = input;
   const capabilities = getCapabilities(providerName);
   // Unsupported request fields, by their ChatCompletionRequest (camelCase) key.
   const unsupportedFields: Array<keyof ChatCompletionRequest> = [];
@@ -222,6 +223,16 @@ export function enforceUnsupportedParams(
     request.messages?.some((m) => Array.isArray(m.content) && m.content.some((p) => p.type === "image_url")) ?? false;
   if (hasVision && !capabilities.has(ProviderCapability.Vision)) {
     unsupportedFeatures.push("vision");
+  }
+
+  // developer → system keeps the meaning: always rewrite instead of
+  // warning, dropping or rejecting (DeepSeek answers 422 otherwise).
+  if (unsupportedFeatures.includes("developer_role")) {
+    unsupportedFeatures.splice(unsupportedFeatures.indexOf("developer_role"), 1);
+    request = {
+      ...request,
+      messages: request.messages.map((m) => (m.role === "developer" ? { ...m, role: "system" } : m)),
+    };
   }
 
   // Wire (snake_case) parameter names, as the client sent them.
