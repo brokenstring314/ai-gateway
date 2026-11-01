@@ -365,7 +365,9 @@ export class ConfigStore {
           now,
           now,
         );
-        keys.forEach((k, pos) => insKey.run(k.id, id, k.kind, k.value, k.hint, pos, now, now));
+        keys.forEach((k, pos) => {
+          insKey.run(k.id, id, k.kind, k.value, k.hint, pos, now, now);
+        });
       }
       const insSetting = this.db.prepare(
         "INSERT INTO runtime_settings (key, value_json, revision, updated_at) VALUES (?, ?, 1, ?)",
@@ -429,9 +431,7 @@ export class ConfigStore {
     return rows.map((r) => ({ version: r.version, createdAt: r.created_at, actor: r.actor, summary: r.summary }));
   }
 
-  listAudit(
-    limit = 100,
-  ): Array<{
+  listAudit(limit = 100): Array<{
     id: number;
     at: string;
     actor: string | null;
