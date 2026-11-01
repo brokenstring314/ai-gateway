@@ -115,6 +115,11 @@ export class ConcurrencyLimiterRegistry {
     return limiter;
   }
 
+  /** Register an existing limiter under `name` (a reload carrying its slots over). */
+  adopt(name: string, limiter: ConcurrencyLimiter): void {
+    this.limiters.set(name, limiter);
+  }
+
   get(name: string): ConcurrencyLimiter | undefined {
     return this.limiters.get(name);
   }

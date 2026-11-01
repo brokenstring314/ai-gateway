@@ -1240,12 +1240,24 @@ gateway.close();
 | `generateImage(ctx, req)`            | 图片生成                               |
 | `generateImageWithPlugins(ctx, req)` | 带插件生命周期的图片生成                       |
 | `listModels()`                       | 列出所有模型                             |
-| `registerProvider(provider)`         | 运行时添加提供商                           |
-| `registerPlugin(stage, plugin)`      | 运行时添加插件                            |
+| `registerProvider(provider)`         | 运行时添加 provider（重载后保留）             |
+| `registerPlugin(stage, plugin)`      | 运行时添加插件（重载后保留）                  |
+| `reload(config)`                     | 不重启换上新配置（见下文）                    |
+| `currentSnapshot()`                  | 当前运行时代：`version`、`config`、`createdAt` |
+| `onReload(listener)`                 | 每次重载成功后调用；返回取消订阅函数            |
 | `getConfig()`                        | 获取当前配置（只读）                         |
 | `initMcp()`                          | 连接配置的 MCP 服务器                      |
 | `addRequestLogSink(sink)`            | 接收每条 finalize 后的请求日志                |
 | `close()`                            | 优雅关闭                               |
+
+### 实时重载（嵌入模式）
+
+`gateway.reload(config)` 用 `config` 组装一套完整的新运行时（provider、策略、插件、熔断器、并发限制器、pipeline），再用一次引用赋值换上。传入的配置与构造函数的形式相同（已校验：`loadConfigFromPath` / schema）。0.3.0 的 Admin API 和控制台建立在它之上；HTTP 服务目前还没有暴露它。
+
+- 已在运行的请求（包括流）在开始时的运行时上跑完；新请求用新运行时。
+- 配置无效时抛错，当前运行时继续服务（`currentSnapshot().version` 不变）。
+- 配置未变的熔断器、并发限制器、插件保留状态（熔断状态、占用中的并发槽位、限流窗口）；配置变了的重新开始。并发上限改变时换新限制器，已持有旧槽位的请求短时间内不计入新上限。
+- `mcpServers` 不能在运行时修改（抛 `ReloadRejectedError`）。server、auth、CORS 等进程级设置由 HTTP 层在启动时读取，不受重载影响。
 
 ---
 

@@ -201,6 +201,11 @@ export class CircuitBreakerRegistry {
     return breaker;
   }
 
+  /** Register an existing breaker under `name` (a reload carrying its state over). */
+  adopt(name: string, breaker: CircuitBreaker): void {
+    this.breakers.set(name, breaker);
+  }
+
   get(name: string): CircuitBreaker | undefined {
     return this.breakers.get(name);
   }

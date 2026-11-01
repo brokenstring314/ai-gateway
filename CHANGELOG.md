@@ -2,6 +2,14 @@
 
 ## Unreleased
 
+### Added
+
+- `Gateway.reload(config)` (0.3.0 P0, live config): assembles a new runtime snapshot and swaps it in atomically.
+  Requests and streams in flight finish on the snapshot they started on; an invalid config throws and the old
+  snapshot keeps serving; breakers, concurrency limiters and plugins with unchanged config keep their state;
+  `mcpServers` is startup-only (`ReloadRejectedError`). Also `currentSnapshot()`, `onReload(listener)`, and
+  `registerProvider` / `registerPlugin` registrations now survive reloads. Not yet exposed over HTTP.
+
 ### Breaking changes
 
 Configs that relied on keys or values that were accepted but had no effect

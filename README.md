@@ -1329,12 +1329,24 @@ gateway.close();
 | `generateImage(ctx, req)`            | Image generation                           |
 | `generateImageWithPlugins(ctx, req)` | Image generation with plugin lifecycle     |
 | `listModels()`                       | List all models                            |
-| `registerProvider(provider)`         | Add a provider at runtime                  |
-| `registerPlugin(stage, plugin)`      | Add a plugin at runtime                    |
+| `registerProvider(provider)`         | Add a provider at runtime (kept across reloads) |
+| `registerPlugin(stage, plugin)`      | Add a plugin at runtime (kept across reloads) |
+| `reload(config)`                     | Swap in a new config without a restart (see below) |
+| `currentSnapshot()`                  | Current runtime generation: `version`, `config`, `createdAt` |
+| `onReload(listener)`                 | Called after every successful reload; returns an unsubscribe function |
 | `getConfig()`                        | Get current config (read-only)             |
 | `initMcp()`                          | Connect the configured MCP servers         |
 | `addRequestLogSink(sink)`            | Receive every finalized request-log entry  |
 | `close()`                            | Graceful shutdown                          |
+
+### Live reload (embedded)
+
+`gateway.reload(config)` assembles a complete new runtime (providers, strategy, plugins, breakers, limiters, pipeline) from `config` and swaps it in with one reference assignment. Pass a config in the same form the constructor takes (already validated: `loadConfigFromPath` / the schema). The 0.3.0 Admin API and console are built on it; the HTTP server does not expose it yet.
+
+- Requests already running, streams included, finish on the runtime they started on; new requests use the new one.
+- An invalid config throws and the current runtime keeps serving (`currentSnapshot().version` is unchanged).
+- Circuit breakers, concurrency limiters and plugins whose config is unchanged keep their state (breaker state, in-flight slots, rate-limit windows); changed ones start fresh. A changed concurrency limit gets a new limiter, so requests already holding a slot in the old one briefly count against neither.
+- `mcpServers` cannot change at runtime (`ReloadRejectedError`). Server, auth, CORS and other process settings are read by the HTTP layer at startup and are not affected.
 
 ---
 
