@@ -48,3 +48,5 @@ item were fixed in 2.1; their e2e cases in `tests/e2e/errors.e2e.ts` are plain
 
 Black-box findings (B3-*) are covered by the e2e contract suite in `tests/e2e/`
 (`bun run test:e2e`); all of its cases are plain `it` as well.
+| core/c04-stream-usage-requested | Review 2026-11-02 C4 (redteam RB2): streams never asked the upstream for usage, chars/4 estimate undercounted CJK 2.5–6x — fixed (always `include_usage` upstream, usage-only chunk kept off a client stream that did not ask, one CJK-aware estimator) | post-0.3.0 |
+| core/c07-client-402-keeps-operator-key | Review 2026-11-02 C7 (redteam RB4): a request-level upstream 402 disabled the operator's key for good — fixed (soft cooldown, disable only after 3 consecutive account-level 402s) | post-0.3.0 |

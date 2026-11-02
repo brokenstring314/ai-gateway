@@ -279,15 +279,18 @@ export async function bootstrap(configPath: string, overrides: ServeOverrides = 
 
 /**
  * Upstream key health → config store, asynchronously (the request path
- * never waits on the database): a key disabled after a 401/402 is recorded
- * (status, last error, audit row) and stays out of later runtime builds; a
- * 429 cooldown is in memory only and just logged.
+ * never waits on the database): a key disabled after a 401 (or repeated
+ * account-level 402s) is recorded (status, last error, audit row) and stays
+ * out of later runtime builds; a 429 / 402 cooldown is in memory only and
+ * just logged.
  */
 export function persistKeyHealth(gateway: Gateway, store: ConfigStore): () => void {
   return gateway.onKeyEvent((e) => {
     if (e.kind === "cooldown") {
       console.warn(
-        `[keys] channel "${e.channel}" key ${e.keyId} rate limited upstream; cooling down for ${e.seconds}s`,
+        e.httpStatus === 402
+          ? `[keys] channel "${e.channel}" key ${e.keyId} got upstream 402 (payment required); cooling down for ${e.seconds}s`
+          : `[keys] channel "${e.channel}" key ${e.keyId} rate limited upstream; cooling down for ${e.seconds}s`,
       );
       return;
     }

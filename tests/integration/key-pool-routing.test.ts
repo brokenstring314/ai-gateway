@@ -93,7 +93,7 @@ describe("config file: apiKeys", () => {
     expect(events).toEqual([expect.objectContaining({ kind: "cooldown", channel: "a", seconds: 60 })]);
   });
 
-  it("402 disables a key; the channel fails only when every key is out, then the next channel serves", async () => {
+  it("402 cools a key, 401 disables one; the channel fails only when every key is out, then the next channel serves", async () => {
     const { g, events } = gateway({
       strategy: { mode: "fallback", targets: ["a", "b"] },
       targets: [target("a", { apiKeys: ["sk-a1-1111", "sk-a2-2222"] }), target("b", { apiKey: "sk-b-3333" })],
@@ -106,14 +106,30 @@ describe("config file: apiKeys", () => {
       "a.upstream.test|Bearer sk-a2-2222",
       "b.upstream.test|Bearer sk-b-3333",
     ]);
-    expect(events.map((e) => (e.kind === "disabled" ? [e.keyId, e.status] : e.kind))).toEqual([
-      ["cfg-0", "quota"],
+    expect(events.map((e) => (e.kind === "disabled" ? [e.keyId, e.status] : [e.keyId, e.kind]))).toEqual([
+      ["cfg-0", "cooldown"],
       ["cfg-1", "invalid"],
     ]);
-    // Channel a now has no usable key: skipped without an upstream call.
+    // A 402 never takes a channel down on its own (C7): the 402-cooling key is
+    // still used when it is the channel's only usable one.
     up.reset();
-    expect((await g.route(ctx(), chat("m"))).choices[0]?.message?.content).toBe("b:m");
-    expect(up.hits("a.upstream.test")).toHaveLength(0);
+    expect((await g.route(ctx(), chat("m"))).choices[0]?.message?.content).toBe("a:m");
+    expect(up.calls.map((c) => c.auth)).toEqual(["Bearer sk-a1-1111"]);
+  });
+
+  it("a 402 on every channel reaches the client as 402 and opens no breaker", async () => {
+    const { g } = gateway({
+      strategy: { mode: "fallback", targets: ["a", "b"] },
+      targets: [target("a", { apiKey: "sk-a-1111" }), target("b", { apiKey: "sk-b-2222" })],
+    });
+    for (let i = 0; i < 2; i++) {
+      up.enqueue("a.upstream.test", 402);
+      up.enqueue("b.upstream.test", 402);
+      const err = toGatewayError(await g.route(ctx(), chat("m")).catch((e: unknown) => e));
+      expect(err.status).toBe(402);
+      up.reset();
+    }
+    expect((await g.route(ctx(), chat("m"))).choices[0]?.message?.content).toBe("a:m");
   });
 
   it("every key cooling down on the only channel: 429 with the remaining Retry-After, no upstream call", async () => {

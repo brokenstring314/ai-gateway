@@ -694,7 +694,7 @@ ai-gateway keys revoke <id> -c config.yaml
 
 | 字段 | 含义 | `null` / 不设置 |
 | ---- | ---- | --------------- |
-| `quotaTokens` | 该 key 在被重置之前总共可用的 token（prompt + completion，以上游返回的 usage 为准；没有 usage 分块的流按估算） | 不限 |
+| `quotaTokens` | 该 key 在被重置之前总共可用的 token（prompt + completion，以上游返回的 usage 为准；流式请求总是向上游要 usage，只有上游确实不给时才估算） | 不限 |
 | `rpm` | 该 key 自己的每分钟请求数 | `rate-limit` 插件的 `maxRequestsPerMinute`（如有） |
 | `tpm` | 该 key 自己的每分钟 token 数（请求结束时计入） | `rate-limit` 插件的 `maxTokensPerMinute`（如有） |
 | `allowedModels`、`expiresAt` | 可用的对外模型；过期时间 | 全部模型；永不过期 |
@@ -1335,7 +1335,7 @@ models:
       - { target: relay, priority: 1 }        # 只有 ds-a 和 ds-b 都不可用时才用
 ```
 
-**每个渠道多个 key。** `apiKeys`（配合 `keyStrategy`：`round_robin`、`weighted`、`fill_first`）把请求分摊到渠道的多个上游 key。上游返回 `429` 时该 key 暂停（按 Retry-After，上限 1 小时；没有则用 `keyCooldownSeconds`），同一请求立即换下一个 key 重试；`401` / `402` 会禁用该 key（状态 `invalid` / `quota` 并记录错误，在配置库中持久化并写审计）然后换下一个 key。只有渠道的 key 全部用尽，才算该渠道失败并降级到下一个渠道；若全部 key 都在冷却，返回 `429` 和剩余的 `Retry-After`，若全部被禁用，返回 `503 no_upstream_key`。key 状态在内存中（每个请求零数据库读取），改配置不会清零。
+**每个渠道多个 key。** `apiKeys`（配合 `keyStrategy`：`round_robin`、`weighted`、`fill_first`）把请求分摊到渠道的多个上游 key。上游返回 `429` 时该 key 暂停（按 Retry-After，上限 1 小时；没有则用 `keyCooldownSeconds`），同一请求立即换下一个 key 重试；`401` 会禁用该 key（状态 `invalid` 并记录错误，在配置库中持久化并写审计）然后换下一个 key。`402` 像 `429` 一样让该 key 冷却，但只是“软冷却”（渠道没有其他可用 key 时仍会用它，所以单个 `402`——例如 OpenRouter 针对请求的 “requires more credits, or fewer max_tokens”——不会让渠道下线），然后换下一个 key；只有同一个 key 在一小时内连续 3 次账户级 `402`、中间没有任何成功，才会被禁用（状态 `quota`）。`402` 不计入熔断，所有渠道都失败时原样以 `402` 返回给客户端。只有渠道的 key 全部用尽，才算该渠道失败并降级到下一个渠道；若全部 key 都在冷却，返回 `429` 和剩余的 `Retry-After`，若全部被禁用，返回 `503 no_upstream_key`。key 状态在内存中（每个请求零数据库读取），改配置不会清零。
 
 如果一个模型的所有绑定都被关闭、摘除或指向已关闭的 target，它仍然保持发布：请求（包括它的别名）返回 `503 model_unavailable`，`/v1/models` 中以 `"available": false` 列出。每个模型对同一个 target 只能绑定一次。`metadata` 会显示在 `/v1/models` 中，并被强制执行（见下文）。使用配置库（`runtimeConfig.source: database`）时，模型和绑定与 target 一样入库、导入。
 
@@ -1346,7 +1346,7 @@ models:
 | 请求情况 | 依据的元数据 | `error.code`（`param`） |
 |---|---|---|
 | `max_tokens` / `max_completion_tokens` 超过上限 | `maxOutputTokens` | `max_tokens_exceeded` |
-| 估算输入（UTF-8 字节 / 4）+ 输出上限超过上下文窗口 | `contextWindow` | `context_length_exceeded`（`messages`） |
+| 估算输入（中日韩字符每字 1 token，其他文本 UTF-8 字节 / 4）+ 输出上限超过上下文窗口 | `contextWindow` | `context_length_exceeded`（`messages`） |
 | 模型不接受的图片 / 音频 / 视频 / 文件 | `inputModalities` | `unsupported_input_modality`（`messages`） |
 | `tools` / `parallel_tool_calls: true` | `tools` / `parallelTools: false` | `tools_not_supported` / `parallel_tool_calls_not_supported` |
 | 超出支持级别的 `response_format` | `structuredOutput`（`none` < `json_object` < `json_schema`） | `unsupported_response_format` |
@@ -1564,7 +1564,8 @@ gateway.close();
 `core/chat-stream.ts` 和 `core/stream-runner.ts`：before 插件和候选目标与上面相同；
 首个 chunk 之前的失败按第 5 步 failover，之后目标固定。流的结束类型为 `done`、
 `truncated`、`upstream_error`、`idle_timeout` 或 `client_cancel`；无论哪种结束，
-finalize 都只运行一次（上游没给 usage 时按估算计）。只有正常完成的流才写
+finalize 都只运行一次。网关总是向上游要 usage 分块（`stream_options.include_usage`），
+客户端自己没要时不把这个分块转给它；只有上游确实没给 usage 时才估算（区分中日韩字符）。只有正常完成的流才写
 `data: [DONE]`，其他结束方式发送不带 `[DONE]` 的 SSE 错误事件。流式请求不注入 MCP 工具。
 
 透传（`passthroughProxy.enabled`）：白名单检查 → before 插件（`core/surfaces/passthrough.ts`）
@@ -1638,7 +1639,7 @@ src/
 │   ├── single.ts  fallback.ts  loadbalance.ts  conditional.ts
 │   ├── model-catalog.ts     # 已发布模型：绑定、按模型路由、key 白名单
 │   ├── balancer.ts          # 优先级组；组内 weighted / round_robin / least_inflight
-│   ├── key-pool.ts          # 每个渠道多个上游 key：选择、429 冷却、401/402 禁用
+│   ├── key-pool.ts          # 每个渠道多个上游 key：选择、429/402 冷却、401 禁用
 │   ├── circuit-breaker.ts   # 基于 permit 的状态机 + 注册表
 │   ├── concurrency-limiter.ts # 每目标槽位、可中止的等待队列
 │   ├── retry.ts             # 带抖动的指数退避

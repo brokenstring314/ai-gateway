@@ -5,9 +5,12 @@
  * Before plugins, candidates and the single finalize come from the
  * pipeline; the after-request plugins, the request log and the metrics see
  * the streamed request exactly once, however it ends: normal completion,
- * upstream error, or the client going away (generator return()). Without a
- * usage chunk, usage is estimated (~4 chars/token) so a token quota cannot be
- * bypassed.
+ * upstream error, or the client going away (generator return()). The
+ * provider always asks the upstream for a usage chunk (stream_options
+ * .include_usage); when the client did not ask for one, that usage-only
+ * chunk (choices: []) is metered but not forwarded, so the client stream is
+ * unchanged. Only an upstream that sends no usage at all is estimated
+ * (core/usage.ts estimateTextTokens, CJK-aware) so a quota is not bypassed.
  *
  * Breaker, limiter, retry and failover before the first chunk:
  * core/executor.ts; first chunk, StreamEnd and settle-once:
@@ -130,10 +133,17 @@ export async function* runChatStream(
     await pipeline.finalize(run, { kind: "error", error: err });
     throw err;
   }
+  const clientWantsUsage = finalReq.streamOptions?.includeUsage === true;
   for await (const chunk of iterateStream(result, ctx?.signal, toPipelineError)) {
     accumulateChunk(acc, chunk);
+    if (!clientWantsUsage && isUsageOnlyChunk(chunk)) continue;
     yield chunk;
   }
+}
+
+/** The trailing usage chunk of an include_usage stream: usage and no choices. */
+function isUsageOnlyChunk(chunk: StreamChunk): boolean {
+  return chunk.usage !== undefined && (chunk.choices?.length ?? 0) === 0;
 }
 
 /**

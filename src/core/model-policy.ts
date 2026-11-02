@@ -13,27 +13,14 @@
 import type { ModelMetadata, ReasoningConfig } from "../config/types.js";
 import type { ChatCompletionRequest, ChatMessage, ContentPart } from "../providers/types.js";
 import { invalidRequest } from "./errors.js";
+import { estimatePromptTokens } from "./usage.js";
+
+/** Re-exported: the one shared estimator lives in core/usage.ts. */
+export { estimatePromptTokens };
 
 type Modality = NonNullable<ModelMetadata["inputModalities"]>[number];
 
 const STRUCTURED_RANK = { none: 0, json_object: 1, json_schema: 2 } as const;
-
-/** Rough input size: UTF-8 bytes / 4 of all text, plus 4 tokens of framing per message. */
-export function estimatePromptTokens(req: Pick<ChatCompletionRequest, "messages" | "tools">): number {
-  const enc = new TextEncoder();
-  let bytes = 0;
-  let framing = 0;
-  for (const m of req.messages ?? []) {
-    framing += 4;
-    if (typeof m.content === "string") bytes += enc.encode(m.content).length;
-    else if (Array.isArray(m.content)) {
-      for (const p of m.content) if (typeof p.text === "string") bytes += enc.encode(p.text).length;
-    }
-    for (const tc of m.toolCalls ?? []) bytes += enc.encode(tc.function?.arguments ?? "").length;
-  }
-  if (req.tools && req.tools.length > 0) bytes += enc.encode(JSON.stringify(req.tools)).length;
-  return Math.ceil(bytes / 4) + framing;
-}
 
 /** Input type of a content part, or undefined for text / unknown parts. */
 function modalityOf(part: ContentPart): Modality | undefined {

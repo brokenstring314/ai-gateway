@@ -1,4 +1,4 @@
-/** Upstream key pools (0.3.0 P4): selection modes, 429 cooldown, 401/402 auto-disable. */
+/** Upstream key pools (0.3.0 P4): selection modes, 429 cooldown, 401 auto-disable, 402 soft cooldown (C7). */
 import { describe, expect, it } from "bun:test";
 import {
   type KeyEvent,
@@ -90,7 +90,7 @@ describe("KeyPool health", () => {
     }
   });
 
-  it("401 disables (invalid), 402 disables (quota), once; other statuses do nothing", () => {
+  it("401 disables (invalid) once; 402 only cools down; other statuses do nothing", () => {
     const { p, events } = pool("round_robin", keys(1, 1, 1));
     expect(p.report("k0", 401, null, "401: bad key")).toBe(true);
     expect(p.report("k0", 401, null, "401: bad key")).toBe(true);
@@ -99,11 +99,15 @@ describe("KeyPool health", () => {
     expect(p.report("k2", 403, null, "403")).toBe(false);
     expect(events.filter((e) => e.kind === "disabled")).toEqual([
       expect.objectContaining({ keyId: "k0", status: "invalid", httpStatus: 401 }),
-      expect.objectContaining({ keyId: "k1", status: "quota", httpStatus: 402 }),
+    ]);
+    expect(events.filter((e) => e.kind === "cooldown")).toEqual([
+      expect.objectContaining({ keyId: "k1", seconds: 30, httpStatus: 402 }),
     ]);
     expect([1, 2].map(() => p.acquire().id)).toEqual(["k2", "k2"]);
     const snap = p.snapshot();
     expect(snap[0]?.disabled?.status).toBe("invalid");
+    expect(snap[1]?.disabled).toBeUndefined();
+    expect(snap[1]?.cooldownUntil).toBeDefined();
     expect(snap[2]?.disabled).toBeUndefined();
   });
 

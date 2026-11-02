@@ -26,7 +26,7 @@ import type {
 } from "./types.js";
 import type { CompatibilityConfig } from "../config/types.js";
 import { type KeyPool, keyErrorText, type Lease, NoUsableKeyError } from "../routing/key-pool.js";
-import { enforceUnsupportedParams } from "./capabilities.js";
+import { enforceUnsupportedParams, ProviderCapability, supportsCapability } from "./capabilities.js";
 import { chunkFromJsonResponse, parseSSEStream } from "./sse-parser.js";
 import { extractForwardableHeaders } from "./response-headers.js";
 import {
@@ -51,8 +51,9 @@ export interface OpenAiCompatOptions {
   apiKey: string;
   /**
    * Several upstream keys (0.3.0 P4): one is leased per upstream call; a
-   * 429 / 401 / 402 answer takes that key out and the call is repeated with
-   * the next usable key before the attempt counts as failed.
+   * 429 / 402 answer cools that key down (402: softly; disabled only after
+   * repeated account-level 402s), a 401 disables it, and the call is repeated
+   * with the next usable key before the attempt counts as failed.
    */
   keys?: KeyPool;
   /** fetch to use (default: the global fetch at call time). */
@@ -80,7 +81,7 @@ export type OpenAICompatProvider = IProvider &
     readonly keyPool?: KeyPool;
   };
 
-/** Upstream statuses that take one key out (cooldown / disable) and move on to the next key. */
+/** Upstream statuses that take one key out (cooldown / disable, see routing/key-pool.ts) and move on to the next key. */
 const KEY_STATUSES: ReadonlySet<number> = new Set([401, 402, 429]);
 
 export function createOpenAICompatProvider(opts: OpenAiCompatOptions): OpenAICompatProvider {
@@ -95,7 +96,7 @@ export function createOpenAICompatProvider(opts: OpenAiCompatOptions): OpenAICom
 
   /**
    * POST `payload` to `${baseURL}${path}` with a leased key; on 401/402/429
-   * the key is reported to the pool and the call repeated with the next
+   * the key is reported to the pool (a success too, ending a run of 402s) and the call repeated with the next
    * usable key. Returns the first OK response; throws ProviderError (the last
    * upstream error) or an AbortError.
    */
@@ -129,7 +130,10 @@ export function createOpenAICompatProvider(opts: OpenAiCompatOptions): OpenAICom
         if (isAbortError(err) || ctx.signal?.aborted) throw abortErrorFrom(err);
         throw new ProviderError(opts.name, 0, `fetch failed: ${err instanceof Error ? err.message : String(err)}`);
       }
-      if (response.ok) return response;
+      if (response.ok) {
+        if (pool) pool.reportSuccess(lease.id);
+        return response;
+      }
       const retryAfter = response.headers.get("Retry-After");
       const err = await buildErrorFromResponse(opts.name, response, retryAfter);
       if (pool && KEY_STATUSES.has(response.status)) {
@@ -232,6 +236,14 @@ export function createOpenAICompatProvider(opts: OpenAiCompatOptions): OpenAICom
 
       const streamReq = { ...enforced.request, stream: true as const };
       const body = buildRequestBody(streamReq);
+      // Always ask for the usage chunk where the provider supports
+      // stream_options, so quotas / TPM / usage stats meter the upstream's
+      // real token counts instead of an estimate. When the client did not ask
+      // for it, core/chat-stream.ts keeps the usage-only chunk off its stream.
+      if (supportsCapability(capabilityKey, ProviderCapability.StreamOptions)) {
+        const so = isPlainObject(body["stream_options"]) ? body["stream_options"] : {};
+        body["stream_options"] = { ...so, include_usage: true };
+      }
       const transformed = opts.bodyTransform ? opts.bodyTransform(body) : body;
 
       const response = await send(ctx, "/chat/completions", JSON.stringify(transformed));
@@ -624,4 +636,8 @@ export class ProviderError extends Error {
   }
 
   public retryAfter?: string;
+}
+
+function isPlainObject(v: unknown): v is Record<string, unknown> {
+  return typeof v === "object" && v !== null && !Array.isArray(v);
 }

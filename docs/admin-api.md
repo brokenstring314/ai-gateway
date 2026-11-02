@@ -200,9 +200,15 @@ one (`aliases: {}` / `plugins: []` / `compatibility: null` clear it). Same schem
   (ordered fallback, as before); `strategy: loadbalance` = one group by weight.
 - **Keys of a channel:** `keyStrategy` `round_robin` (default), `weighted`, `fill_first` (first usable key until it
   is out). Upstream `429`: that key cools down for `Retry-After` (capped at 1 h) or `keyCooldownSeconds` and the
-  same request is retried at once with the next key. `401` / `402`: the key is disabled (`invalid` / `quota`,
-  last error recorded, audit entry `key_auto_disabled`, persisted asynchronously) and the next key is tried. Only
-  when no key is left does the channel count as failed and the request fail over to the next channel. A channel
+  same request is retried at once with the next key. `401`: the key is disabled (`invalid`, last error recorded,
+  audit entry `key_auto_disabled`, persisted asynchronously) and the next key is tried. `402`: the key cools down
+  like a `429` (`Retry-After` capped at 1 h, else `keyCooldownSeconds`), but softly — the channel still uses it
+  when no other key is usable, so one `402` never takes a channel down — and the next key is tried; the key is
+  disabled (`quota`, audited and persisted as above) only after 3 consecutive account-level `402`s on it within
+  an hour with no successful call in between. A `402` that names the request (OpenRouter's "requires more credits,
+  or fewer max_tokens", credit held by in-flight requests) never counts toward that. A `402` is not a breaker
+  failure; it fails over to the next channel like a key error, and when no channel is left the client gets the
+  `402`. Only when no key is left does the channel count as failed and the request fail over to the next channel. A channel
   whose keys all cool down answers `429` with the remaining `Retry-After` (no upstream call); one whose keys are
   all disabled answers `503 no_upstream_key` until an operator re-enables or adds a key.
 - None of this reads the database on the request path: routing, key choice and key health are in memory.
@@ -249,8 +255,10 @@ Key view (added in 0.3.0 P5):
 ### What counts, and when a key is refused
 
 - **Tokens** = prompt + completion tokens of a finished request as the upstream reports them (cache-hit and
-  reasoning tokens are part of those), estimated (~4 characters per token) for a stream without a usage chunk or
-  a stream the client abandoned. MCP tool rounds are summed. Refused requests count 0.
+  reasoning tokens are part of those). For streams the gateway always asks the upstream for a usage chunk
+  (`stream_options.include_usage`, on every provider that supports it) and keeps that chunk off a client stream
+  that did not ask for it. Only when the upstream sends no usage (a provider without `stream_options`, a stream the
+  client abandoned) are tokens estimated: CJK characters count one token each, other text UTF-8 bytes / 4. MCP tool rounds are summed. Refused requests count 0.
 - **Quota:** checked once, before the request starts: used ≥ quota → `403 quota_exhausted` (type
   `insufficient_quota`, no `Retry-After`: the quota never refills by itself). An admitted request always runs to
   the end — streams are never cut for quota — and its tokens are added when it ends, so the last request and

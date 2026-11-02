@@ -82,6 +82,9 @@ export function isBreakerFailure(err: unknown): boolean {
  *  - circuit open / local concurrency limit (no status): yes, skip the target;
  *  - transport errors, 5xx, 408, 429: yes;
  *  - 401 / 403 / 404 (target-caused, see TARGET_CAUSED_4XX): yes;
+ *  - 402: yes (another channel bills another account; review 2026-11-02 C7),
+ *    but it is never a breaker failure (isBreakerFailure) and, when no
+ *    candidate is left, the client gets the 402;
  *  - other 4xx (400, 409, 413, 422, ...): no, the caller's request is the
  *    problem and every target would reject it the same way.
  *
@@ -93,7 +96,7 @@ export function isFailoverEligible(err: unknown): boolean {
   if (status === undefined || status === 0) return true;
   if (status >= 500) return true;
   if (status === 408 || status === 429) return true;
-  if (TARGET_CAUSED_4XX.has(status)) return true;
+  if (TARGET_CAUSED_4XX.has(status) || status === 402) return true;
   return status < 400;
 }
 

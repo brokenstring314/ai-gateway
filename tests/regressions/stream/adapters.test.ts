@@ -153,7 +153,10 @@ describe("T3-11 (known, still reproduces) protocol fields dropped", () => {
       ]),
     );
     try {
-      const t = await (await post(s.app, { stream: true, logprobs: true })).text();
+      // The client asks for usage: a usage-only chunk is kept off a stream that did not (C4).
+      const t = await (
+        await post(s.app, { stream: true, stream_options: { include_usage: true }, logprobs: true })
+      ).text();
       expect(t).toContain("thinking..."); // BUG: dropped
       expect(t).toContain('"logprob"'); // BUG: logprobs:null
       expect(t).toContain("reasoning_tokens"); // BUG: usage details dropped on stream

@@ -753,7 +753,7 @@ The gateway is a single-owner gateway, not a paid API service: there are no pric
 
 | Field | Meaning | `null` / unset |
 | ----- | ------- | -------------- |
-| `quotaTokens` | Total tokens (prompt + completion, as reported by the upstream; estimated for a stream without a usage chunk) the key may use until you reset it | unlimited |
+| `quotaTokens` | Total tokens (prompt + completion, as reported by the upstream — streams always ask the upstream for usage; estimated only when the upstream sends none) the key may use until you reset it | unlimited |
 | `rpm` | The key's own requests per minute | the `rate-limit` plugin's `maxRequestsPerMinute` (if any) |
 | `tpm` | The key's own tokens per minute (counted when a request completes) | the `rate-limit` plugin's `maxTokensPerMinute` (if any) |
 | `allowedModels`, `expiresAt` | Published models it may use; expiry | every model; never |
@@ -1436,7 +1436,7 @@ models:
       - { target: relay, priority: 1 }        # only when ds-a and ds-b are both down
 ```
 
-**Several keys per channel.** `apiKeys` (with `keyStrategy`: `round_robin`, `weighted`, `fill_first`) spreads requests over a channel's upstream keys. An upstream `429` pauses that key (Retry-After, capped at 1 h, else `keyCooldownSeconds`) and retries the request at once with the next key; `401` / `402` disables the key (status `invalid` / `quota` with the error, persisted and audited in the config store) and moves on. The channel fails over to the next channel only when none of its keys is left; if all its keys are cooling down the answer is `429` with the remaining `Retry-After`, if all are disabled `503 no_upstream_key`. Key health lives in memory (no database read per request) and survives config changes.
+**Several keys per channel.** `apiKeys` (with `keyStrategy`: `round_robin`, `weighted`, `fill_first`) spreads requests over a channel's upstream keys. An upstream `429` pauses that key (Retry-After, capped at 1 h, else `keyCooldownSeconds`) and retries the request at once with the next key; `401` disables the key (status `invalid` with the error, persisted and audited in the config store) and moves on. `402` cools the key down like a `429`, but softly (a channel whose other keys are unusable still uses it, so one `402` — e.g. OpenRouter's request-level "requires more credits, or fewer max_tokens" — never takes a channel down), and moves on; only 3 consecutive account-level `402`s within an hour with no success in between disable it (status `quota`). A `402` is not a breaker failure and reaches the client as `402` when no channel is left. The channel fails over to the next channel only when none of its keys is left; if all its keys are cooling down the answer is `429` with the remaining `Retry-After`, if all are disabled `503 no_upstream_key`. Key health lives in memory (no database read per request) and survives config changes.
 
 A model whose bindings are all disabled, drained or on disabled targets stays published: requests and its aliases get `503 model_unavailable`, and `/v1/models` lists it with `"available": false`. One binding per target per model. `metadata` is shown on `/v1/models` and enforced (below). In the config store (`runtimeConfig.source: database`) the models and bindings are stored and imported like the targets.
 
@@ -1447,7 +1447,7 @@ Before a request leaves the gateway it is checked against the published model's 
 | Request | Metadata | `error.code` (`param`) |
 |---|---|---|
 | `max_tokens` / `max_completion_tokens` above the limit | `maxOutputTokens` | `max_tokens_exceeded` |
-| estimated input (UTF-8 bytes / 4) + output limit above the window | `contextWindow` | `context_length_exceeded` (`messages`) |
+| estimated input (CJK characters 1 token each, other text UTF-8 bytes / 4) + output limit above the window | `contextWindow` | `context_length_exceeded` (`messages`) |
 | image / audio / video / file parts the model does not take | `inputModalities` | `unsupported_input_modality` (`messages`) |
 | `tools` / `parallel_tool_calls: true` | `tools` / `parallelTools: false` | `tools_not_supported` / `parallel_tool_calls_not_supported` |
 | `response_format` stronger than supported | `structuredOutput` (`none` < `json_object` < `json_schema`) | `unsupported_response_format` |
@@ -1668,7 +1668,9 @@ Streaming (`stream: true`, chat and completions) goes through
 same before plugins and candidates; failures before the first chunk fail over
 like step 5, after it the target is fixed. The stream ends as `done`,
 `truncated`, `upstream_error`, `idle_timeout` or `client_cancel`; finalize runs
-once for every end (usage estimated when the upstream sent none). `data: [DONE]`
+once for every end. The upstream is always asked for a usage chunk
+(`stream_options.include_usage`); a client that did not ask for it does not get
+that chunk. Usage is estimated (CJK-aware) only when the upstream sent none. `data: [DONE]`
 is written only for a stream that completed; any other end sends an SSE error
 event without `[DONE]`. MCP tools are not injected into streams.
 
@@ -1744,7 +1746,7 @@ src/
 │   ├── single.ts  fallback.ts  loadbalance.ts  conditional.ts
 │   ├── model-catalog.ts     # Published models: bindings, per-model routing, key allow-lists
 │   ├── balancer.ts          # Priority groups; weighted / round_robin / least_inflight within a group
-│   ├── key-pool.ts          # Several upstream keys per channel: selection, 429 cooldown, 401/402 disable
+│   ├── key-pool.ts          # Several upstream keys per channel: selection, 429/402 cooldown, 401 disable
 │   ├── circuit-breaker.ts   # Permit-based state machine + registry
 │   ├── concurrency-limiter.ts # Per-target slots, abortable queue
 │   ├── retry.ts             # Exponential backoff with jitter

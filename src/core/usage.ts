@@ -17,9 +17,30 @@ export function addUsage(a: Usage | undefined, b: Usage | undefined): Usage | un
   };
 }
 
-/** ~4 characters per token. */
-export function estimateTokens(chars: number): number {
-  return Math.ceil(chars / 4);
+/**
+ * CJK ideographs, kana, hangul and full-width forms: tokenizers (OpenAI
+ * o200k, DeepSeek, Qwen …) spend roughly 0.6–1 token per character, so each
+ * counts as one token (conservative).
+ */
+const CJK_RE =
+  /[\u1100-\u11ff\u2e80-\u2fdf\u3000-\u303f\u3040-\u30ff\u3100-\u31ff\u3200-\u4dbf\u4e00-\u9fff\ua960-\ua97f\uac00-\ud7ff\uf900-\ufaff\ufe30-\ufe4f\uff00-\uffef]|[\u{20000}-\u{3134f}]/gu;
+
+const utf8 = new TextEncoder();
+
+/**
+ * The gateway's one token estimator (stream / response usage fallback and
+ * the model policy's context-window check): CJK characters count one token
+ * each, all other text UTF-8 bytes / 4 (≈ 4 ASCII characters per token).
+ * Only used when the upstream reports no usage.
+ */
+export function estimateTextTokens(text: string): number {
+  if (text.length === 0) return 0;
+  let cjk = 0;
+  const rest = text.replace(CJK_RE, () => {
+    cjk++;
+    return "";
+  });
+  return cjk + Math.ceil(utf8.encode(rest).length / 4);
 }
 
 export function messageText(content: ChatCompletionRequest["messages"][number]["content"]): string {
@@ -30,16 +51,20 @@ export function messageText(content: ChatCompletionRequest["messages"][number]["
   return "";
 }
 
-/** Characters of prompt text in a request (all messages). */
-export function promptChars(req: Pick<ChatCompletionRequest, "messages">): number {
-  let n = 0;
-  for (const msg of req.messages) n += messageText(msg.content).length;
-  return n;
-}
-
-/** Estimated prompt tokens of a request. */
-export function estimatePromptTokens(req: Pick<ChatCompletionRequest, "messages">): number {
-  return estimateTokens(promptChars(req));
+/**
+ * Estimated prompt tokens of a request: message text and tool-call
+ * arguments, the declared tools' JSON, plus 4 tokens of framing per message.
+ */
+export function estimatePromptTokens(
+  req: Pick<ChatCompletionRequest, "messages"> & Partial<Pick<ChatCompletionRequest, "tools">>,
+): number {
+  let tokens = 0;
+  for (const m of req.messages ?? []) {
+    tokens += 4 + estimateTextTokens(messageText(m.content));
+    for (const tc of m.toolCalls ?? []) tokens += estimateTextTokens(tc.function?.arguments ?? "");
+  }
+  if (req.tools && req.tools.length > 0) tokens += estimateTextTokens(JSON.stringify(req.tools));
+  return tokens;
 }
 
 /** What a stream delivered so far (content, finish reason, usage chunk). */
@@ -48,9 +73,10 @@ export interface StreamAccumulator {
   created: number;
   model: string;
   content: string;
-  toolArgChars: number;
-  /** Characters of delta.reasoning_content / delta.reasoning / delta.refusal (reasoning models). */
-  reasoningChars: number;
+  /** Tool-call names and arguments as streamed (estimate only). */
+  toolArgText: string;
+  /** delta.reasoning_content / delta.reasoning / delta.refusal text (reasoning models; estimate only). */
+  reasoningText: string;
   finishReason: string;
   usage: Usage | undefined;
   chunks: number;
@@ -62,8 +88,8 @@ export function newStreamAccumulator(model: string, startTime = Date.now()): Str
     created: Math.floor(startTime / 1000),
     model,
     content: "",
-    toolArgChars: 0,
-    reasoningChars: 0,
+    toolArgText: "",
+    reasoningText: "",
     finishReason: "",
     usage: undefined,
     chunks: 0,
@@ -85,14 +111,14 @@ export function accumulateChunk(acc: StreamAccumulator, chunk: StreamChunk): voi
       if (typeof delta.content === "string") acc.content += delta.content;
       for (const tc of delta.toolCalls ?? []) {
         const args = (tc as { function?: { arguments?: unknown; name?: unknown } }).function;
-        if (typeof args?.arguments === "string") acc.toolArgChars += args.arguments.length;
-        if (typeof args?.name === "string") acc.toolArgChars += args.name.length;
+        if (typeof args?.arguments === "string") acc.toolArgText += args.arguments;
+        if (typeof args?.name === "string") acc.toolArgText += args.name;
       }
       const extra = delta.extra;
       if (extra) {
         for (const key of ESTIMATED_DELTA_EXTRAS) {
           const v = extra[key];
-          if (typeof v === "string") acc.reasoningChars += v.length;
+          if (typeof v === "string") acc.reasoningText += v;
         }
       }
     }
@@ -101,11 +127,16 @@ export function accumulateChunk(acc: StreamAccumulator, chunk: StreamChunk): voi
 }
 
 /**
- * Usage for a stream that sent no usage chunk: estimated (~4 chars/token)
- * so token quotas cannot be bypassed by omitting stream_options.include_usage.
+ * Usage for a stream whose upstream sent no usage chunk (the gateway asks
+ * for one — stream_options.include_usage — wherever the provider supports
+ * it): estimated with estimateTextTokens so a token quota is not undercounted.
  */
-export function estimateStreamUsage(req: Pick<ChatCompletionRequest, "messages">, acc: StreamAccumulator): Usage {
+export function estimateStreamUsage(
+  req: Pick<ChatCompletionRequest, "messages"> & Partial<Pick<ChatCompletionRequest, "tools">>,
+  acc: StreamAccumulator,
+): Usage {
   const promptTokens = estimatePromptTokens(req);
-  const completionTokens = estimateTokens(acc.content.length + acc.toolArgChars + acc.reasoningChars);
+  const completionTokens =
+    estimateTextTokens(acc.content) + estimateTextTokens(acc.toolArgText) + estimateTextTokens(acc.reasoningText);
   return { promptTokens, completionTokens, totalTokens: promptTokens + completionTokens };
 }

@@ -13,9 +13,20 @@
  *    upstream sent one (capped at one hour), else the channel's
  *    keyCooldownSeconds (default 30), and the request moves on to the
  *    channel's next usable key;
- *  - upstream 401 / 402: the key is disabled (status invalid / quota, with
- *    the error recorded) and the request moves on to the next key; a
- *    listener (Gateway.onKeyEvent) persists it asynchronously and audits it.
+ *  - upstream 402: NOT a permanent disable (review 2026-11-02 C7: some
+ *    upstreams answer 402 for a property of the request — OpenRouter's
+ *    "requires more credits, or fewer max_tokens", or credit held by
+ *    in-flight requests — so any client could otherwise take the operator's
+ *    key down). The key cools down like a 429 (Retry-After capped at one
+ *    hour, else keyCooldownSeconds), but the cooldown is soft: a channel
+ *    whose every other key is unusable still uses a 402-cooling key rather
+ *    than going down. Only DISABLE_AFTER_402 consecutive account-level 402s
+ *    (no success in between, within PAYMENT_FAILURE_WINDOW_MS) disable the
+ *    key (status quota); a 402 whose error names the request (max_tokens,
+ *    in-flight requests) never counts toward that;
+ *  - upstream 401: the key is disabled (status invalid, with the error
+ *    recorded) and the request moves on to the next key; a listener
+ *    (Gateway.onKeyEvent) persists a disable asynchronously and audits it.
  * Only when every key of a channel is unusable does the channel itself fail
  * (and the executor fails over to the next channel).
  *
@@ -28,6 +39,22 @@ export type KeyStrategy = "round_robin" | "weighted" | "fill_first";
 
 export const DEFAULT_KEY_COOLDOWN_SECONDS = 30;
 export const MAX_KEY_COOLDOWN_SECONDS = 3600;
+/** Consecutive account-level 402s (no success in between) that disable a key. */
+export const DISABLE_AFTER_402 = 3;
+/** Window in which those 402s must fall (counted from the first one). */
+export const PAYMENT_FAILURE_WINDOW_MS = 60 * 60 * 1000;
+
+/**
+ * A 402 caused by the request rather than the account: OpenRouter's
+ * "This request requires more credits, or fewer max_tokens …" and "… given
+ * your current in-flight requests. Retry after in-flight requests settle".
+ * Such a 402 never disables a key.
+ */
+const REQUEST_LEVEL_402 = /max[_ ]?tokens|in[- ]flight|fewer tokens|prompt is too long|requested up to/i;
+
+export function isRequestLevel402(error: string): boolean {
+  return REQUEST_LEVEL_402.test(error);
+}
 
 export interface PoolKey {
   /** Stable id (config-store key id, or a hash for keys from the config file). */
@@ -40,8 +67,12 @@ export interface PoolKey {
 }
 
 export interface KeyState {
-  /** Epoch ms until which the key is cooling down after a 429. */
+  /** Epoch ms until which the key is cooling down after a 429 / 402. */
   cooldownUntil: number;
+  /** The cooldown is a 402's: soft (used when no other key is usable). */
+  softCooldown?: boolean;
+  /** Consecutive account-level 402s since the last success. */
+  paymentFailures?: { count: number; since: number };
   /** Set when the key was disabled after a 401/402. */
   disabled?: { status: "invalid" | "quota"; error: string; at: string };
   lastError?: string;
@@ -64,6 +95,8 @@ export type KeyEvent =
       readonly keyId: string;
       readonly seconds: number;
       readonly at: string;
+      /** Upstream status that caused it (429 rate limit, 402 payment required). */
+      readonly httpStatus?: number;
     };
 
 /** Key state across config generations (owned by the Gateway). */
@@ -93,6 +126,8 @@ export class KeyStateRegistry {
       if (!id.startsWith(prefix)) continue;
       // Pools hold the object itself: clear it in place.
       s.cooldownUntil = 0;
+      delete s.softCooldown;
+      delete s.paymentFailures;
       delete s.disabled;
       delete s.lastError;
     }
@@ -158,12 +193,13 @@ export class KeyPool {
     return this.keys.length;
   }
 
-  private usable(i: number, t: number, exclude?: ReadonlySet<string>): boolean {
+  /** `soft`: a key in a 402 (soft) cooldown counts as usable. */
+  private usable(i: number, t: number, exclude?: ReadonlySet<string>, soft = false): boolean {
     const k = this.keys[i]!;
     const s = this.states[i]!;
     if (exclude?.has(k.id)) return false;
     if (s.disabled) return false;
-    if (s.cooldownUntil > t) return false;
+    if (s.cooldownUntil > t && !(soft && s.softCooldown)) return false;
     // Weight 0 drains a key in every mode.
     return k.weight > 0;
   }
@@ -171,7 +207,7 @@ export class KeyPool {
   /** Whether any key can be used right now (no state change). */
   available(): boolean {
     const t = this.now();
-    for (let i = 0; i < this.keys.length; i++) if (this.usable(i, t)) return true;
+    for (let i = 0; i < this.keys.length; i++) if (this.usable(i, t, undefined, true)) return true;
     return false;
   }
 
@@ -181,6 +217,8 @@ export class KeyPool {
     const n = this.keys.length;
     const candidates: number[] = [];
     for (let i = 0; i < n; i++) if (this.usable(i, t, exclude)) candidates.push(i);
+    // Only 402-cooling keys left: use them rather than take the channel down.
+    if (candidates.length === 0) for (let i = 0; i < n; i++) if (this.usable(i, t, exclude, true)) candidates.push(i);
     if (candidates.length === 0) throw this.noKey(t);
     let pick: number;
     if (this.strategy === "fill_first") {
@@ -232,12 +270,25 @@ export class KeyPool {
     if (i < 0) return false;
     const s = this.states[i]!;
     const at = new Date(this.now()).toISOString();
+    if (httpStatus === 402 && !s.disabled) {
+      const t = this.now();
+      if (!isRequestLevel402(error)) {
+        const pf = s.paymentFailures;
+        s.paymentFailures =
+          pf && t - pf.since <= PAYMENT_FAILURE_WINDOW_MS
+            ? { count: pf.count + 1, since: pf.since }
+            : { count: 1, since: t };
+      }
+      if ((s.paymentFailures?.count ?? 0) < DISABLE_AFTER_402) {
+        const capped = this.cooldown(s, retryAfter, error, true);
+        this.registry.emit({ kind: "cooldown", channel: this.channel, keyId: id, seconds: capped, at, httpStatus });
+        return true;
+      }
+      // DISABLE_AFTER_402 consecutive account-level 402s: out of credit.
+    }
     if (httpStatus === 429) {
-      const seconds = parseRetryAfter(retryAfter, this.now()) ?? this.cooldownSeconds;
-      const capped = Math.min(MAX_KEY_COOLDOWN_SECONDS, Math.max(1, seconds));
-      s.cooldownUntil = this.now() + capped * 1000;
-      s.lastError = error;
-      this.registry.emit({ kind: "cooldown", channel: this.channel, keyId: id, seconds: capped, at });
+      const capped = this.cooldown(s, retryAfter, error, false);
+      this.registry.emit({ kind: "cooldown", channel: this.channel, keyId: id, seconds: capped, at, httpStatus });
       return true;
     }
     if (httpStatus === 401 || httpStatus === 402) {
@@ -258,6 +309,38 @@ export class KeyPool {
       return true;
     }
     return false;
+  }
+
+  /** Cool a key down for Retry-After (else the channel's default), capped; returns the seconds. */
+  private cooldown(s: KeyState, retryAfter: string | null | undefined, error: string, soft: boolean): number {
+    const t = this.now();
+    const seconds = parseRetryAfter(retryAfter, t) ?? this.cooldownSeconds;
+    const capped = Math.min(MAX_KEY_COOLDOWN_SECONDS, Math.max(1, seconds));
+    const until = t + capped * 1000;
+    // A soft (402) cooldown never shortens or softens a running 429 cooldown.
+    if (soft && s.cooldownUntil > t && !s.softCooldown) {
+      s.cooldownUntil = Math.max(s.cooldownUntil, until);
+    } else {
+      s.cooldownUntil = until;
+      s.softCooldown = soft;
+    }
+    s.lastError = error;
+    return capped;
+  }
+
+  /**
+   * An upstream call with this key succeeded: ends its run of 402s (and a
+   * soft cooldown, since the key evidently has credit).
+   */
+  reportSuccess(id: string): void {
+    const i = this.indexOf(id);
+    if (i < 0) return;
+    const s = this.states[i]!;
+    if (s.paymentFailures) delete s.paymentFailures;
+    if (s.softCooldown) {
+      s.cooldownUntil = 0;
+      delete s.softCooldown;
+    }
   }
 
   /** Per-key runtime state (for the Admin API). */

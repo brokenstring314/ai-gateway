@@ -195,7 +195,12 @@ describe("OpenAI wire format — response (snake_case out)", () => {
       { ...base, choices: [], usage: { promptTokens: 1, completionTokens: 2, totalTokens: 3 } },
     ];
     const { app } = setup(chunks);
-    const res = await post(app, { model: "gpt-4o", messages: [{ role: "user", content: "a" }], stream: true });
+    const res = await post(app, {
+      model: "gpt-4o",
+      messages: [{ role: "user", content: "a" }],
+      stream: true,
+      stream_options: { include_usage: true },
+    });
     const text = await res.text();
     const events = text
       .split("\n\n")

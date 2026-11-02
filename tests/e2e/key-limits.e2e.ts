@@ -37,7 +37,12 @@ const chat = (gw: GatewayProcess, key: string, stream = false) =>
   postJson(
     gw,
     "/v1/chat/completions",
-    { model: "gpt-4o", messages: [{ role: "user", content: "hi" }], ...(stream ? { stream: true } : {}) },
+    {
+      model: "gpt-4o",
+      messages: [{ role: "user", content: "hi" }],
+      // The client asks for the usage chunk (a stream that does not ask is metered but never sees it, C4).
+      ...(stream ? { stream: true, stream_options: { include_usage: true } } : {}),
+    },
     { auth: key },
   );
 
@@ -78,6 +83,35 @@ describe("per-key token quota on a real server", () => {
       const reset = await admin(gw, "POST", `/keys/${k.id}/reset-usage`);
       expect(reset.status).toBe(200);
       expect((await chat(gw, k.key)).status).toBe(200);
+    } finally {
+      await gw.stop();
+      rmSync(dataDir, { recursive: true, force: true });
+    }
+  });
+
+  it("a stream that does not ask for usage is metered with the upstream's real usage and sees no usage chunk (C4)", async () => {
+    const dataDir = mkdtempSync(join(tmpdir(), "aigw-quota-"));
+    const gw = await startGateway({ config: baseConfig([{ name: "a", mock: up }]), dataDir });
+    try {
+      const created = await admin(gw, "POST", "/keys", { name: "sdk-default", quotaTokens: 1000 });
+      const k = (await created.json()) as { id: string; key: string };
+      up.reset();
+      const s = await postJson(
+        gw,
+        "/v1/chat/completions",
+        { model: "gpt-4o", messages: [{ role: "user", content: "你好" }], stream: true },
+        { auth: k.key },
+      );
+      expect(s.status).toBe(200);
+      const text = await s.text();
+      expect(text).not.toContain("total_tokens");
+      expect(text).not.toContain('"choices":[]');
+      expect(text.trimEnd().endsWith("data: [DONE]")).toBe(true);
+      // The gateway asked the upstream for usage although the client did not.
+      expect(up.requests.at(-1)?.body?.stream_options).toEqual({ include_usage: true });
+      await Bun.sleep(100);
+      const view = (await (await admin(gw, "GET", `/keys/${k.id}`)).json()) as any;
+      expect(view.usedTokens).toBe(USAGE.total_tokens);
     } finally {
       await gw.stop();
       rmSync(dataDir, { recursive: true, force: true });

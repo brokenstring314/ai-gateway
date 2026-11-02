@@ -87,7 +87,7 @@ describe("token quota", () => {
     const h = await adminHarness(file());
     const k = await createKey(h, { quotaTokens: 30 });
     up.enqueue(HOST, { status: 200, headers: { "content-type": "text/event-stream" }, text: sseWithUsage(100) });
-    const r = await chat(h, k.key, { stream: true });
+    const r = await chat(h, k.key, { stream: true, stream_options: { include_usage: true } });
     expect(r.status).toBe(200);
     const text = await r.text();
     // The whole stream arrived: content, usage chunk and [DONE] — nothing was cut for quota.
