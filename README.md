@@ -232,7 +232,12 @@ targets:
 
   - name: deepseek-backup
     provider: deepseek
-    apiKey: "sk-..."
+    apiKeys:                                # several upstream keys (0.3.0; instead of / after apiKey)
+      - "${DEEPSEEK_KEY_1}"
+      - { key: "${DEEPSEEK_KEY_2}", weight: 2, enabled: true }
+    keyStrategy: round_robin                # round_robin (default) | weighted | fill_first
+    keyCooldownSeconds: 30                  # 429 without Retry-After: key paused this long (default 30)
+    # enabled: false                        # switch a target off (bindings to it are skipped)
     models: ["deepseek-chat"]
 
 auth:
@@ -325,7 +330,9 @@ Upstream keys are never stored in plaintext:
 
 Every change is one SQLite transaction that also writes a config version (full snapshot, key ciphertext only) and an audit entry. Before a schema migration the existing database is copied to `config.sqlite.pre-migration-<time>.bak`, and a failed migration stops startup. The database and its backups are created owner-only (`0600`).
 
-For GitOps deployments, `runtimeConfig: { source: file }` keeps the 0.2.0 behaviour: the file is the only source, nothing is stored, and the runtime config is read-only.
+The runtime resources are changed live through the [runtime-config Admin API](#runtime-config-admin-api-030) (channels, keys, models, settings, versions and rollback). Each change is validated like a startup config before it is swapped in (a failure changes nothing: `422`), and the database is copied with `VACUUM INTO` before every change (`config.sqlite.backup-<time>.bak`, newest 5 kept; `CONFIG_BACKUP_MIN_INTERVAL_MS` spaces them out).
+
+For GitOps deployments, `runtimeConfig: { source: file }` keeps the 0.2.0 behaviour: the file is the only source, nothing is stored, and the runtime config is read-only (Admin API writes answer `403 config_read_only`).
 
 ### Environment Variable Overrides
 
@@ -351,6 +358,7 @@ These are read directly from the environment (not via `AI_GATEWAY_*`):
 | `GATEWAY_DATA_DIR` | `.data` (relative to the working directory) | Where the SQLite databases live (see below). Put it on a persistent volume. |
 | `GATEWAY_SECRET_KEY` | unset | Master key (≥ 32 random bytes, base64 or hex; `openssl rand -base64 32`) that encrypts upstream keys in the runtime config store. Required to store or read a literal upstream key, and always when `GATEWAY_ENV=production` with the database source. See [Runtime config store](#runtime-config-store-030). |
 | `GATEWAY_SECRET_KEY_PREVIOUS` | unset | Older master key(s), comma-separated, still accepted for decryption after a rotation. |
+| `CONFIG_BACKUP_MIN_INTERVAL_MS` | `0` | Minimum time between the config-store backups taken before Admin API changes (0 = before every change; the newest 5 are kept). |
 | `GATEWAY_ENV` | unset | `production` turns on the startup safety guard: refuses `auth.enabled: false`, `ALLOW_UNAUTHENTICATED_PROXY=true`, an `adminSecret` shorter than 16 chars, and starting with no client key at all (no `auth.keys` and an empty key store). |
 | `ADMIN_BOOTSTRAP_KEY` | unset | First-run admin credential; refused once a real admin credential exists, permanently once an admin key has been created (see [Key scopes](#key-scopes-key-store-mode)). |
 | `ADMIN_BOOTSTRAP_READ_ONLY_KEY` | unset | Same, with `read_only` scope. |
@@ -655,7 +663,39 @@ Admin endpoints accept, in key-store mode (`ai-gateway serve`): the `adminSecret
 
 Without a key store, `GET` / `POST` / `DELETE /admin/keys` manage the in-memory `auth.keys` list instead (`POST {"key": "sk-..."}`, delete by list index; lost on restart).
 
-The config is read-only at runtime: there is no hot reload and no config write API (removed in 0.2.0; the old write routes answer `410 config_api_removed`). To change config, edit the file and restart (rolling restart behind a load balancer). `SIGHUP` is logged and ignored.
+`GET /admin/config` shows the live config (after runtime changes). The 0.2.0-era whole-config routes (`PUT`/`DELETE /admin/config`, `/admin/config/reload`, `/admin/config/history`, `/admin/config/rollback/:v`) still answer `410 config_api_removed`; runtime resources are changed through the resource API below. Startup settings still need a file edit and a restart. `SIGHUP` is logged and ignored.
+
+#### Runtime-config Admin API (0.3.0)
+
+| Method | Path | Scope | Description |
+| ------ | ---- | ----- | ----------- |
+| GET / POST | `/admin/channels` | read_only / admin | List / create channels (upstream targets) with their keys (hints only) |
+| GET / PATCH / DELETE | `/admin/channels/:id` | read_only / admin | One channel |
+| POST | `/admin/channels/:id/keys` | admin | Add upstream keys (stored encrypted) |
+| PATCH / DELETE | `/admin/channels/:id/keys/:keyId` | admin | Weight / enabled, delete; `POST …/enable`, `…/disable` |
+| POST | `/admin/channels/:id/test`, `/fetch-models` | admin | Probe the upstream (rate-limited, 10 s timeout, 2 MiB cap, no redirects) |
+| GET / POST | `/admin/models` | read_only / admin | Published models with bindings, `available` |
+| GET / PATCH / DELETE | `/admin/models/:id` | read_only / admin | One model |
+| PUT | `/admin/models/:id/bindings` | admin | Replace a model's bindings (channel, upstream model, priority, weight, enabled, params) |
+| GET / PATCH | `/admin/settings` | read_only / admin | Global strategy, aliases, plugins, compatibility, `modelSource` |
+| GET | `/admin/config/versions`, `/admin/config/versions/:v` | read_only | Config history (snapshots without key material) |
+| POST | `/admin/config/versions/:v/rollback` | admin | Restore version `v` as a new version |
+| GET | `/admin/audit` | read_only | Who changed what, when (never secrets) |
+| GET | `/admin/presets` | read_only | Provider presets and known models |
+
+Every write: strict JSON body (unknown fields → 400), `admin` scope, CSRF guard (cross-site `Origin` / `Sec-Fetch-Site` → 403, non-JSON body → 415), `If-Match` with the resource revision (`ETag`; missing → 428, stale → 409), one transaction that writes the change, a config version and an audit row and swaps in the new runtime (invalid result → `422 config_invalid`, nothing changed, requests in flight unaffected). Upstream keys are never returned. Base URLs written here must be **public internet addresses** (loopback, private, link-local/metadata, CGNAT, IPv6 equivalents and names resolving to them are refused, and re-checked before every upstream call against DNS rebinding); local servers such as Ollama can be configured in the config file. Full reference: [docs/admin-api.md](docs/admin-api.md).
+
+```bash
+# Add a channel with two keys, then publish a model on it
+curl -X POST -H "X-Admin-Secret: $S" -H "Content-Type: application/json" http://localhost:3000/admin/channels \
+  -d '{"name":"ds","preset":"deepseek","keys":[{"key":"sk-…1"},{"key":"sk-…2"}],"keyStrategy":"round_robin"}'
+curl -X POST -H "X-Admin-Secret: $S" -H "Content-Type: application/json" http://localhost:3000/admin/models \
+  -d '{"name":"ds-chat","balance":"round_robin","bindings":[{"channel":"ds","upstreamModel":"deepseek-v4-flash"}]}'
+# Change it: read the ETag, send it back as If-Match
+curl -i -H "X-Admin-Secret: $S" http://localhost:3000/admin/channels/<id>        # ETag: "12"
+curl -X PATCH -H "X-Admin-Secret: $S" -H 'If-Match: "12"' -H "Content-Type: application/json" \
+  -d '{"enabled":false}' http://localhost:3000/admin/channels/<id>
+```
 
 **Example:**
 
@@ -813,7 +853,12 @@ targets:
       initialBackoffMs: 100
   - name: deepseek-backup
     provider: deepseek
-    apiKey: "sk-..."
+    apiKeys:                                # several upstream keys (0.3.0; instead of / after apiKey)
+      - "${DEEPSEEK_KEY_1}"
+      - { key: "${DEEPSEEK_KEY_2}", weight: 2, enabled: true }
+    keyStrategy: round_robin                # round_robin (default) | weighted | fill_first
+    keyCooldownSeconds: 30                  # 429 without Retry-After: key paused this long (default 30)
+    # enabled: false                        # switch a target off (bindings to it are skipped)
     models: ["deepseek-chat"]
   - name: groq-backup
     provider: groq
@@ -1334,7 +1379,21 @@ aliases:
   chat: my-chat                      # aliases must point to published models
 ```
 
-A binding with `weight: 0` is drained under `loadbalance`. One binding per target per model. `metadata` is shown on `/v1/models` and enforced (below). In the config store (`runtimeConfig.source: database`) the models and bindings are stored and imported like the targets.
+**Load balancing (0.3.0).** A model's bindings form **priority groups** (`priority`, lower first; default = list order). Requests go to the highest-priority group; the next group is used only when every channel of the group is unavailable or failed. Within a group, `balance` picks the order: `weighted` (default, random by `weight`), `round_robin`, or `least_inflight` (fewest requests in flight per unit of weight). `weight: 0` drains a binding, `enabled: false` switches it off. `strategy: fallback` (default) groups by priority, so a list without priorities is the classic ordered fallback; `strategy: loadbalance` puts every binding in one group.
+
+```yaml
+models:
+  - name: ds-chat
+    balance: round_robin
+    bindings:
+      - { target: ds-a, priority: 0 }
+      - { target: ds-b, priority: 0, weight: 2 }
+      - { target: relay, priority: 1 }        # only when ds-a and ds-b are both down
+```
+
+**Several keys per channel.** `apiKeys` (with `keyStrategy`: `round_robin`, `weighted`, `fill_first`) spreads requests over a channel's upstream keys. An upstream `429` pauses that key (Retry-After, capped at 1 h, else `keyCooldownSeconds`) and retries the request at once with the next key; `401` / `402` disables the key (status `invalid` / `quota` with the error, persisted and audited in the config store) and moves on. The channel fails over to the next channel only when none of its keys is left; if all its keys are cooling down the answer is `429` with the remaining `Retry-After`, if all are disabled `503 no_upstream_key`. Key health lives in memory (no database read per request) and survives config changes.
+
+A model whose bindings are all disabled, drained or on disabled targets stays published: requests and its aliases get `503 model_unavailable`, and `/v1/models` lists it with `"available": false`. One binding per target per model. `metadata` is shown on `/v1/models` and enforced (below). In the config store (`runtimeConfig.source: database`) the models and bindings are stored and imported like the targets.
 
 ### Model metadata is enforced (0.3.0)
 
@@ -1636,6 +1695,8 @@ src/
 │   ├── strategy-factory.ts
 │   ├── single.ts  fallback.ts  loadbalance.ts  conditional.ts
 │   ├── model-catalog.ts     # Published models: bindings, per-model routing, key allow-lists
+│   ├── balancer.ts          # Priority groups; weighted / round_robin / least_inflight within a group
+│   ├── key-pool.ts          # Several upstream keys per channel: selection, 429 cooldown, 401/402 disable
 │   ├── circuit-breaker.ts   # Permit-based state machine + registry
 │   ├── concurrency-limiter.ts # Per-target slots, abortable queue
 │   ├── retry.ts             # Exponential backoff with jitter
@@ -1658,13 +1719,15 @@ src/
 ├── mcp/                     # stdio client (MCP 2025-03-26 subset), registry, executor
 ├── proxy/proxy.ts           # Pass-through proxy for allow-listed /v1/* routes
 ├── secrets/secret-box.ts    # AES-256-GCM + HKDF envelope for upstream keys (GATEWAY_SECRET_KEY)
+├── security/url-guard.ts    # SSRF guard: public-internet-only base URLs, DNS checks, limited fetch
 ├── persistence/
 │   ├── key-store.ts         # API keys (SHA-256), scopes, WAL, bootstrap latch
 │   ├── config-store.ts      # Runtime config store: channels, encrypted keys, models, versions, audit
 │   ├── request-log-store.ts # /admin/logs storage
 │   └── migrations.ts        # Versioned SQLite migrations
 ├── auth/                    # bootstrap.ts (bootstrap-key gate), key-hash.ts
-├── admin/                   # /admin/* API: config (read-only), keys, logs, status, scrubbing
+├── admin/                   # /admin/* API: runtime config (config-api.ts, config-schemas.ts, guards.ts:
+│                            #   CSRF / If-Match / limits), keys, logs, status, scrubbing
 ├── dashboard/               # Console page shells + static/console.{js,css} (embedded)
 ├── observability/           # OTel SDK + tracer bridge, sampling/privacy, request log, redaction
 ├── metrics/metrics.ts       # Prometheus registry (prom-client)

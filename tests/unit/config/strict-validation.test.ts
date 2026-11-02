@@ -186,8 +186,14 @@ describe("shipped example configs still validate", () => {
           weights?: Record<string, number>;
           rules?: { target: string }[];
         };
+        const models = (Array.isArray(snippet["models"]) ? snippet["models"] : []) as Array<{
+          bindings?: Array<{ target?: string }>;
+        }>;
         const referenced = new Set([
           ...(s.targets ?? []),
+          ...(snippet["targets"] === undefined
+            ? models.flatMap((m) => (m.bindings ?? []).map((b) => b.target ?? "")).filter((t) => t !== "")
+            : []),
           ...Object.keys(s.weights ?? {}),
           ...(s.rules ?? []).map((r) => r.target),
         ]);

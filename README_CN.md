@@ -229,7 +229,12 @@ targets:
 
   - name: deepseek-backup
     provider: deepseek
-    apiKey: "sk-..."
+    apiKeys:                                # 多个上游 key（0.3.0；代替 apiKey 或排在它之后）
+      - "${DEEPSEEK_KEY_1}"
+      - { key: "${DEEPSEEK_KEY_2}", weight: 2, enabled: true }
+    keyStrategy: round_robin                # round_robin（默认）| weighted | fill_first
+    keyCooldownSeconds: 30                  # 429 且没有 Retry-After 时，该 key 暂停的秒数（默认 30）
+    # enabled: false                        # 关闭这个 target（绑定到它的会被跳过）
     models: ["deepseek-chat"]
 
 auth:
@@ -322,7 +327,9 @@ observability:
 
 每次变更都是一个 SQLite 事务，同时写入配置版本（完整快照，key 只存密文）和审计记录。表结构迁移前会把现有库复制为 `config.sqlite.pre-migration-<时间>.bak`，迁移失败则拒绝启动。库文件和备份都以仅属主可读写（`0600`）创建。
 
-偏好 GitOps 的部署可设 `runtimeConfig: { source: file }`，保持 0.2.0 行为：只以文件为准、不入库、运行时配置只读。
+运行时资源通过[运行时配置管理 API](#运行时配置管理-api030)在线修改（渠道、key、模型、设置、版本与回滚）。每次修改在切换前都按启动时的规则完整校验（不通过则什么都不改：`422`），并且每次修改前用 `VACUUM INTO` 备份数据库（`config.sqlite.backup-<时间>.bak`，保留最近 5 份；`CONFIG_BACKUP_MIN_INTERVAL_MS` 可拉开间隔）。
+
+偏好 GitOps 的部署可设 `runtimeConfig: { source: file }`，保持 0.2.0 行为：只以文件为准、不入库、运行时配置只读（管理 API 的写操作返回 `403 config_read_only`）。
 
 ### 环境变量覆盖
 
@@ -346,6 +353,7 @@ AI_GATEWAY_CORS_ORIGINS=https://a.example,https://b.example   # 数组：逗号�
 | `GATEWAY_DATA_DIR` | `.data`（相对于工作目录） | SQLite 数据库所在目录（见下文），应放在持久卷上。 |
 | `GATEWAY_SECRET_KEY` | 未设置 | 加密运行时配置库中上游 key 的主密钥（≥ 32 字节随机数，base64 或 hex；`openssl rand -base64 32`）。存取字面量上游 key 时必需；`GATEWAY_ENV=production` 且使用数据库来源时始终必需。见[运行时配置库](#运行时配置库030)。 |
 | `GATEWAY_SECRET_KEY_PREVIOUS` | 未设置 | 更换主密钥后仍可用于解密的旧密钥，多个用逗号分隔。 |
+| `CONFIG_BACKUP_MIN_INTERVAL_MS` | `0` | 管理 API 修改前备份配置库的最小间隔（0 = 每次修改前都备份；保留最近 5 份）。 |
 | `GATEWAY_ENV` | 未设置 | 设为 `production` 时启用启动安全检查：拒绝 `auth.enabled: false`、`ALLOW_UNAUTHENTICATED_PROXY=true`、少于 16 个字符的 `adminSecret`，以及完全没有客户端密钥（无 `auth.keys` 且密钥库为空）时启动。 |
 | `ADMIN_BOOTSTRAP_KEY` | 未设置 | 首次启动用的管理员凭据；一旦存在真正的管理员凭据即被拒绝，创建过 admin 密钥后永久拒绝（见[密钥作用域](#密钥作用域密钥库模式)）。 |
 | `ADMIN_BOOTSTRAP_READ_ONLY_KEY` | 未设置 | 同上，`read_only` 权限。 |
@@ -599,7 +607,39 @@ Prometheus 格式的指标，包括：
 
 没有密钥库时，`GET` / `POST` / `DELETE /admin/keys` 管理的是内存中的 `auth.keys` 列表（`POST {"key": "sk-..."}`，按列表下标删除；重启后丢失）。
 
-运行时配置只读：没有热重载，也没有配置写接口（0.2.0 起移除；旧的写接口返回 `410 config_api_removed`）。改配置 = 改文件 + 重启（负载均衡后面滚动重启）。收到 `SIGHUP` 只打日志，不做任何事。
+`GET /admin/config` 显示当前生效的配置（包含运行时修改）。0.2.0 时代的整份配置接口（`PUT`/`DELETE /admin/config`、`/admin/config/reload`、`/admin/config/history`、`/admin/config/rollback/:v`）仍返回 `410 config_api_removed`；运行时资源通过下面的资源 API 修改。启动配置仍然要改文件并重启。收到 `SIGHUP` 只打日志，不做任何事。
+
+#### 运行时配置管理 API（0.3.0）
+
+| 方法 | 路径 | 作用域 | 说明 |
+| ---- | ---- | ------ | ---- |
+| GET / POST | `/admin/channels` | read_only / admin | 列出 / 新建渠道（上游 target）及其 key（只显示尾号） |
+| GET / PATCH / DELETE | `/admin/channels/:id` | read_only / admin | 单个渠道 |
+| POST | `/admin/channels/:id/keys` | admin | 添加上游 key（加密存储） |
+| PATCH / DELETE | `/admin/channels/:id/keys/:keyId` | admin | 改权重 / 启停、删除；另有 `POST …/enable`、`…/disable` |
+| POST | `/admin/channels/:id/test`、`/fetch-models` | admin | 探测上游（限流、10 秒超时、2 MiB 上限、不跟随重定向） |
+| GET / POST | `/admin/models` | read_only / admin | 已发布模型（含绑定、`available`） |
+| GET / PATCH / DELETE | `/admin/models/:id` | read_only / admin | 单个模型 |
+| PUT | `/admin/models/:id/bindings` | admin | 整体替换绑定（渠道、上游模型名、优先级、权重、启停、参数） |
+| GET / PATCH | `/admin/settings` | read_only / admin | 全局策略、别名、插件、兼容性、`modelSource` |
+| GET | `/admin/config/versions`、`/admin/config/versions/:v` | read_only | 配置历史（快照不含 key 材料） |
+| POST | `/admin/config/versions/:v/rollback` | admin | 把版本 `v` 恢复为一个新版本 |
+| GET | `/admin/audit` | read_only | 谁在何时改了什么（从不含密钥） |
+| GET | `/admin/presets` | read_only | 提供商预设与已知模型 |
+
+所有写操作：JSON 请求体严格校验（未知字段 → 400）、需要 `admin` 作用域、CSRF 防护（跨站 `Origin` / `Sec-Fetch-Site` → 403，非 JSON 请求体 → 415）、必须带 `If-Match`（资源的 revision，即 `ETag`；缺少 → 428，过期 → 409）、在一个事务里写入变更、配置版本和审计记录并切换到新运行时（结果不合法 → `422 config_invalid`，什么都不改，进行中的请求不受影响）。上游 key 永不返回。通过这里写入的 base URL 必须是**公网地址**（回环、内网、链路本地/云元数据、CGNAT、对应的 IPv6 地址以及解析到它们的域名都会被拒绝，并且每次请求上游前都会重新检查以防 DNS 重绑定）；Ollama 等本地服务可以写在配置文件里。完整说明（英文）：[docs/admin-api.md](docs/admin-api.md)。
+
+```bash
+# 添加一个带两个 key 的渠道，再在上面发布一个模型
+curl -X POST -H "X-Admin-Secret: $S" -H "Content-Type: application/json" http://localhost:3000/admin/channels \
+  -d '{"name":"ds","preset":"deepseek","keys":[{"key":"sk-…1"},{"key":"sk-…2"}],"keyStrategy":"round_robin"}'
+curl -X POST -H "X-Admin-Secret: $S" -H "Content-Type: application/json" http://localhost:3000/admin/models \
+  -d '{"name":"ds-chat","balance":"round_robin","bindings":[{"channel":"ds","upstreamModel":"deepseek-v4-flash"}]}'
+# 修改：先读 ETag，再作为 If-Match 带回
+curl -i -H "X-Admin-Secret: $S" http://localhost:3000/admin/channels/<id>        # ETag: "12"
+curl -X PATCH -H "X-Admin-Secret: $S" -H 'If-Match: "12"' -H "Content-Type: application/json" \
+  -d '{"enabled":false}' http://localhost:3000/admin/channels/<id>
+```
 
 **示例：**
 
@@ -1246,7 +1286,21 @@ aliases:
   chat: my-chat                      # 别名必须指向已发布的模型
 ```
 
-`loadbalance` 下 `weight: 0` 的绑定不接流量。每个模型对同一个 target 只能绑定一次。`metadata` 会显示在 `/v1/models` 中，并被强制执行（见下文）。使用配置库（`runtimeConfig.source: database`）时，模型和绑定与 target 一样入库、导入。
+**负载均衡（0.3.0）。** 一个模型的绑定按 `priority` 分成**优先级组**（数值小的优先；默认 = 列表顺序）。请求只发到最高优先级的组；只有该组所有渠道都不可用或都失败时才用下一组。组内顺序由 `balance` 决定：`weighted`（默认，按 `weight` 随机）、`round_robin`（轮询）、`least_inflight`（按权重折算后在途请求最少的优先）。`weight: 0` 表示摘除，`enabled: false` 表示关闭该绑定。`strategy: fallback`（默认）按优先级分组，所以不写 priority 就是传统的顺序降级；`strategy: loadbalance` 把所有绑定放进同一组。
+
+```yaml
+models:
+  - name: ds-chat
+    balance: round_robin
+    bindings:
+      - { target: ds-a, priority: 0 }
+      - { target: ds-b, priority: 0, weight: 2 }
+      - { target: relay, priority: 1 }        # 只有 ds-a 和 ds-b 都不可用时才用
+```
+
+**每个渠道多个 key。** `apiKeys`（配合 `keyStrategy`：`round_robin`、`weighted`、`fill_first`）把请求分摊到渠道的多个上游 key。上游返回 `429` 时该 key 暂停（按 Retry-After，上限 1 小时；没有则用 `keyCooldownSeconds`），同一请求立即换下一个 key 重试；`401` / `402` 会禁用该 key（状态 `invalid` / `quota` 并记录错误，在配置库中持久化并写审计）然后换下一个 key。只有渠道的 key 全部用尽，才算该渠道失败并降级到下一个渠道；若全部 key 都在冷却，返回 `429` 和剩余的 `Retry-After`，若全部被禁用，返回 `503 no_upstream_key`。key 状态在内存中（每个请求零数据库读取），改配置不会清零。
+
+如果一个模型的所有绑定都被关闭、摘除或指向已关闭的 target，它仍然保持发布：请求（包括它的别名）返回 `503 model_unavailable`，`/v1/models` 中以 `"available": false` 列出。每个模型对同一个 target 只能绑定一次。`metadata` 会显示在 `/v1/models` 中，并被强制执行（见下文）。使用配置库（`runtimeConfig.source: database`）时，模型和绑定与 target 一样入库、导入。
 
 ### 模型元数据会被强制执行（0.3.0）
 
@@ -1543,6 +1597,8 @@ src/
 │   ├── strategy-factory.ts
 │   ├── single.ts  fallback.ts  loadbalance.ts  conditional.ts
 │   ├── model-catalog.ts     # 已发布模型：绑定、按模型路由、key 白名单
+│   ├── balancer.ts          # 优先级组；组内 weighted / round_robin / least_inflight
+│   ├── key-pool.ts          # 每个渠道多个上游 key：选择、429 冷却、401/402 禁用
 │   ├── circuit-breaker.ts   # 基于 permit 的状态机 + 注册表
 │   ├── concurrency-limiter.ts # 每目标槽位、可中止的等待队列
 │   ├── retry.ts             # 带抖动的指数退避
@@ -1565,13 +1621,15 @@ src/
 ├── mcp/                     # stdio 客户端（MCP 2025-03-26 子集）、registry、executor
 ├── proxy/proxy.ts           # 白名单 /v1/* 路由的透传代理
 ├── secrets/secret-box.ts    # 上游 key 的 AES-256-GCM + HKDF 加密封装（GATEWAY_SECRET_KEY）
+├── security/url-guard.ts    # SSRF 防护：base URL 只允许公网、DNS 检查、受限 fetch
 ├── persistence/
 │   ├── key-store.ts         # API 密钥（SHA-256）、作用域、WAL、bootstrap 闩锁
 │   ├── config-store.ts      # 运行时配置库：渠道、加密 key、模型、版本、审计
 │   ├── request-log-store.ts # /admin/logs 存储
 │   └── migrations.ts        # 带版本的 SQLite 迁移
 ├── auth/                    # bootstrap.ts（bootstrap 密钥闸门）、key-hash.ts
-├── admin/                   # /admin/* API：配置（只读）、密钥、日志、状态、脱敏
+├── admin/                   # /admin/* API：运行时配置（config-api.ts、config-schemas.ts、guards.ts：
+│                            #   CSRF / If-Match / 限流）、密钥、日志、状态、脱敏
 ├── dashboard/               # 控制台页面外壳 + static/console.{js,css}（打包内嵌）
 ├── observability/           # OTel SDK + tracer 桥接、采样/隐私、请求日志、脱敏
 ├── metrics/metrics.ts       # Prometheus 注册表（prom-client）

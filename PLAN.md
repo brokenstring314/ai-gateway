@@ -63,7 +63,7 @@
 - [x] `POST /v1/chat/completions`（非流式 + 流式 SSE）、`POST /v1/completions`（legacy wire 格式）、`POST /v1/embeddings`、`POST /v1/images/generations`
 - [x] `GET /v1/models`、`GET /v1/capabilities`、`GET /health`、`GET /livez`、`GET /readyz`、`GET /metrics`
 - [x] 可选的白名单透传代理（`passthroughProxy`，默认 `POST /v1/responses`、`/v1/moderations`、`/v1/audio/*`）
-- [x] Admin API：只读配置、API key 管理（作用域 inference / read_only / admin，revoke / rotate）、日志查看与清理、状态概览
+- [x] Admin API：运行时配置（渠道/上游 key/模型/设置/版本回滚/审计/预设，0.3.0 P4，见 docs/admin-api.md）、API key 管理（作用域 inference / read_only / admin，revoke / rotate）、日志查看与清理、状态概览
 - [x] 管理控制台 `/admin/dashboard`（概览、密钥、日志、只读配置）
 
 ### 3.6 中间件
@@ -141,6 +141,8 @@ config.example.yaml / config.example.json / Dockerfile / README.md / README_CN.m
 - [x] ~~MCP `maxCallDepth` 只取第一个条目~~：已修复，取各服务器所设值的最小值（与 Go 原版一致），都未设置时默认 5
 - [x] ~~`src/dashboard/static/dashboard.js`、`style.css` 遗留文件~~：已删除
 - [ ] `abtest` 废弃别名计划在 0.3.0 删除
+- [ ] 本地/局域网模型服务（Ollama、vLLM）的显式开关：0.3.0 P4 起 Admin API 写入的渠道 base_url 只允许公网（2026-11-02 用户决定）；以后加默认关闭的 CIDR/主机名白名单开关，云元数据地址始终拒绝（见 docs/plans/0.3.0-console-live-config.md §10）
+- [ ] 配置版本表（config_versions）目前不清理，每次修改保存一份完整快照；需要保留策略（例如保留最近 N 个 + 按天）
 
 ## 7. 降级策略（防止卡住）
 

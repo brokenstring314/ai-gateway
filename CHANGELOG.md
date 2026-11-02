@@ -4,6 +4,28 @@
 
 ### Added
 
+- Runtime-config Admin API (0.3.0 P4, `docs/admin-api.md`): `/admin/channels` (+ keys, `test`, `fetch-models`),
+  `/admin/models` (+ `PUT …/bindings`), `/admin/settings`, `/admin/config/versions` (+ `rollback`),
+  `/admin/audit`, `/admin/presets`. Writes need the `admin` scope (`read_only` may read), strict JSON bodies,
+  `If-Match` with the resource revision (missing → 428, stale → 409) and pass a CSRF guard (cross-site → 403,
+  non-JSON → 415). Each write is one transaction — resource, config version (key ciphertext only), audit row, a
+  fully validated runtime swapped in via `Gateway.reload` — or nothing (`422 config_invalid` with the reason, old
+  config keeps serving); the database is backed up with `VACUUM INTO` before each change (newest 5 kept,
+  `CONFIG_BACKUP_MIN_INTERVAL_MS`). Upstream keys are only ever shown as hints. `runtimeConfig.source: file` makes
+  every write `403 config_read_only`. `GET /admin/config` now shows the live config.
+- SSRF guard (user decision 2026-11-02): base URLs written through the Admin API must be public internet addresses
+  (loopback, private, link-local / cloud metadata, CGNAT, reserved, IPv6 equivalents incl. IPv4-mapped / NAT64 /
+  6to4, local names, names resolving to any of these, credentials in the URL or query are refused) and are
+  re-checked against DNS before every upstream call (rebinding) without following redirects. Channel probes are
+  rate limited (10/min per caller, 30/min total), time out after 10 s and read at most 2 MiB.
+- Several upstream keys per target (0.3.0 P4): `apiKeys` (strings or `{ key, weight, enabled }`), `keyStrategy`
+  `round_robin` | `weighted` | `fill_first`, `keyCooldownSeconds`. Upstream 429 cools the key down (Retry-After,
+  capped at 1 h) and retries the request with the next key; 401 / 402 disables the key (status `invalid` / `quota`,
+  error recorded, persisted asynchronously, audit `key_auto_disabled`); the channel fails over only when no key is
+  left. All key state is in memory and survives reloads; `Gateway.onKeyEvent()` reports it.
+- Channel load balancing per published model (0.3.0 P4): bindings form priority groups (the next group only when
+  every channel of the group is unavailable or failed) and `models[].balance` picks within a group: `weighted`
+  (default), `round_robin`, `least_inflight`. Targets and bindings take `enabled: false`.
 - Runtime config store (0.3.0 P1): `targets`, `strategy`, `aliases`, `plugins` and `compatibility` now live in
   `<data dir>/config.sqlite` (channels, channel keys, models, bindings, settings, config versions, audit log), imported
   from the config file on the first start. Later starts use the store and warn when the file's runtime sections changed
@@ -31,6 +53,19 @@
   `registerProvider` / `registerPlugin` registrations now survive reloads. Not yet exposed over HTTP.
 
 ### Breaking changes
+
+- P4: a target needs `apiKey` or `apiKeys` (as before, a target without a key is a config error). A single-key
+  target that gets an upstream 429 now pauses that key for the Retry-After time (default 30 s): meanwhile its
+  requests answer `429` with the remaining Retry-After (or fail over to another target) instead of being sent
+  upstream; a 401 / 402 disables the key until an operator re-enables it (`503 no_upstream_key` when it was the
+  last one; with the file source the disable lasts until restart). Under `strategy: fallback`, bindings with the
+  same `priority` now share a group and are balanced by weight (previously: list order), and `weight: 0` drains a
+  binding in every mode. A model whose bindings are all on disabled targets is no longer dropped from the config
+  store's published list: it answers `503 model_unavailable` (its aliases too) instead of `404`.
+- P4: every state-changing `/admin/*` request with a body must send `Content-Type: application/json`, and writes
+  from a foreign `Origin` are refused.
+- P4: embedded callers (`gateway.route()` etc.): when every key of a target is unusable the call throws
+  `NoUsableKeyError` (HTTP: 429 / 503 as above).
 
 - Requests that exceed a published model's limits or ask for a feature it lacks are rejected with 400 (P3, user
   decision 2026-11-01), including limits filled in from known upstream models. `developer` messages are now always
