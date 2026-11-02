@@ -7,9 +7,9 @@
  * the streamed request exactly once, however it ends: normal completion,
  * upstream error, or the client going away (generator return()). The
  * provider always asks the upstream for a usage chunk (stream_options
- * .include_usage); when the client did not ask for one, that usage-only
- * chunk (choices: []) is metered but not forwarded, so the client stream is
- * unchanged. Only an upstream that sends no usage at all is estimated
+ * .include_usage); when the client did not ask for one, usage is metered but
+ * kept off the client stream (a usage-only chunk is dropped, a usage field on
+ * a content chunk removed), so the client stream is unchanged. Only an upstream that sends no usage at all is estimated
  * (core/usage.ts estimateTextTokens, CJK-aware) so a quota is not bypassed.
  *
  * Breaker, limiter, retry and failover before the first chunk:
@@ -136,7 +136,15 @@ export async function* runChatStream(
   const clientWantsUsage = finalReq.streamOptions?.includeUsage === true;
   for await (const chunk of iterateStream(result, ctx?.signal, toPipelineError)) {
     accumulateChunk(acc, chunk);
-    if (!clientWantsUsage && isUsageOnlyChunk(chunk)) continue;
+    if (!clientWantsUsage && chunk.usage !== undefined) {
+      // Metered above; the client did not ask for usage. Some upstreams
+      // (DeepSeek) put it on the last content chunk, others on a usage-only
+      // chunk (choices: []), which is dropped.
+      if (isUsageOnlyChunk(chunk)) continue;
+      const { usage: _usage, ...rest } = chunk;
+      yield rest;
+      continue;
+    }
     yield chunk;
   }
 }

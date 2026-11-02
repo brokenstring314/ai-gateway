@@ -1670,7 +1670,7 @@ like step 5, after it the target is fixed. The stream ends as `done`,
 `truncated`, `upstream_error`, `idle_timeout` or `client_cancel`; finalize runs
 once for every end. The upstream is always asked for a usage chunk
 (`stream_options.include_usage`); a client that did not ask for it does not get
-that chunk. Usage is estimated (CJK-aware) only when the upstream sent none. `data: [DONE]`
+the usage (metered, but kept off its stream). Usage is estimated (CJK-aware) only when the upstream sent none. `data: [DONE]`
 is written only for a stream that completed; any other end sends an SSE error
 event without `[DONE]`. MCP tools are not injected into streams.
 

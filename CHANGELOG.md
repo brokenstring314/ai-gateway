@@ -195,9 +195,9 @@ now fail `ai-gateway validate` and startup with a migration hint:
   does not by default), and estimated ~4 characters per token otherwise: 620 real tokens of Chinese output were
   counted as 101 against the key's quota, TPM and usage stats. Now every streaming chat / completions request asks
   the upstream for usage on providers that support `stream_options` (not Mistral, AI21, Ollama, Replicate,
-  Cloudflare, Hugging Face), and the usage-only chunk (`choices: []`) is kept off a client stream that did not ask
-  for it, so what clients see is unchanged. Behaviour change: such a client no longer gets a usage chunk that an
-  upstream sent unasked. The estimate is now only a fallback (upstream sent no usage) and is CJK-aware (one token
+  Cloudflare, Hugging Face), and usage is kept off a client stream that did not ask for it (a usage-only chunk
+  with `choices: []` is dropped, a `usage` field on a content chunk — DeepSeek's style — removed), so what clients
+  see is unchanged. Behaviour change: such a client no longer gets usage that an upstream sent unasked. The estimate is now only a fallback (upstream sent no usage) and is CJK-aware (one token
   per CJK character, other text UTF-8 bytes / 4, plus tools and tool-call arguments); the model policy's
   context-window check uses the same estimator (`core/usage.ts estimateTextTokens / estimatePromptTokens`).
 - **Any client could disable the operator's upstream key with a 402** (review 2026-11-02 C7). Every upstream `402`

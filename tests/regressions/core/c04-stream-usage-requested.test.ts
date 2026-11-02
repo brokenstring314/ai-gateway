@@ -51,6 +51,26 @@ describe("C4 stream usage comes from the upstream", () => {
     expect(out.every((c) => c.choices.length > 0)).toBe(true);
   });
 
+  it("usage on the last content chunk (DeepSeek style) is metered but not shown to a client that did not ask", async () => {
+    const f = fakeFetch((_u, _i, body) => {
+      const last = { ...chunk("", "stop"), ...(body?.stream_options?.include_usage === true ? { usage: REAL } : {}) };
+      return new Response(sse([chunk("你好世界".repeat(100)), last]), {
+        headers: { "content-type": "text/event-stream" },
+      });
+    });
+    restore = f.restore;
+    const { gw } = makeGateway({ strategy: { mode: "single" }, targets: [target("a")] });
+    const ctx = { metadata: {}, client: meteredClient("k1") };
+    const out = await drain(
+      gw.routeStream(ctx as never, { model: "m", messages: [{ role: "user", content: "写一首诗" }], stream: true }),
+    );
+    await Bun.sleep(5);
+    expect(gw.keyMeter().used("k1")).toBe(620);
+    expect(out).toHaveLength(2);
+    expect(out.some((c) => c.usage !== undefined)).toBe(false);
+    expect(out[1]?.choices[0]?.finishReason).toBe("stop");
+  });
+
   it("forwards the usage chunk when the client asked for it", async () => {
     const f = openAiLikeUpstream();
     restore = f.restore;

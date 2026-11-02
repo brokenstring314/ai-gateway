@@ -1565,7 +1565,7 @@ gateway.close();
 首个 chunk 之前的失败按第 5 步 failover，之后目标固定。流的结束类型为 `done`、
 `truncated`、`upstream_error`、`idle_timeout` 或 `client_cancel`；无论哪种结束，
 finalize 都只运行一次。网关总是向上游要 usage 分块（`stream_options.include_usage`），
-客户端自己没要时不把这个分块转给它；只有上游确实没给 usage 时才估算（区分中日韩字符）。只有正常完成的流才写
+客户端自己没要时只计量、不把 usage 转给它；只有上游确实没给 usage 时才估算（区分中日韩字符）。只有正常完成的流才写
 `data: [DONE]`，其他结束方式发送不带 `[DONE]` 的 SSE 错误事件。流式请求不注入 MCP 工具。
 
 透传（`passthroughProxy.enabled`）：白名单检查 → before 插件（`core/surfaces/passthrough.ts`）

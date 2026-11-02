@@ -256,8 +256,8 @@ Key view (added in 0.3.0 P5):
 
 - **Tokens** = prompt + completion tokens of a finished request as the upstream reports them (cache-hit and
   reasoning tokens are part of those). For streams the gateway always asks the upstream for a usage chunk
-  (`stream_options.include_usage`, on every provider that supports it) and keeps that chunk off a client stream
-  that did not ask for it. Only when the upstream sends no usage (a provider without `stream_options`, a stream the
+  (`stream_options.include_usage`, on every provider that supports it) and keeps usage off a client stream that
+  did not ask for it. Only when the upstream sends no usage (a provider without `stream_options`, a stream the
   client abandoned) are tokens estimated: CJK characters count one token each, other text UTF-8 bytes / 4. MCP tool rounds are summed. Refused requests count 0.
 - **Quota:** checked once, before the request starts: used ≥ quota → `403 quota_exhausted` (type
   `insufficient_quota`, no `Retry-After`: the quota never refills by itself). An admitted request always runs to
