@@ -131,6 +131,8 @@ export const ModelPatchSchema = strictObject({
   metadata: ModelMetadataSchema.optional(),
   strategy: z.enum(["fallback", "loadbalance"]).optional(),
   balance: z.enum(BALANCE_MODES).optional(),
+  /** Replaces every binding in the same transaction as the other fields (console model drawer: one atomic save). */
+  bindings: z.array(BindingSchema).max(200).optional(),
 });
 
 export const BindingsPutSchema = strictObject({

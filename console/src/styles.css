@@ -254,6 +254,16 @@ textarea {
   flex-direction: column;
   gap: 4px;
 }
+fieldset.field {
+  border: 0;
+  margin: 0;
+  padding: 0;
+  min-width: 0;
+}
+fieldset.field > legend {
+  padding: 0;
+  margin-bottom: 4px;
+}
 .field.invalid input,
 .field.invalid select,
 .field.invalid textarea {

@@ -252,13 +252,13 @@ export function ModelDrawer(props: { id: string; canWrite: boolean; channels: Ch
         const r = await api<Model>("/models", { method: "POST", body: { ...fields, bindings: rowsToBindings(rows) } });
         savedToast(r);
       } else if (m) {
-        const r1 = await api<Model>(`/models/${m.id}`, { method: "PATCH", revision: m.revision, body: fields });
-        const r2 = await api<Model>(`/models/${m.id}/bindings`, {
-          method: "PUT",
-          revision: r1.data.revision,
-          body: { bindings: rowsToBindings(rows) },
+        // One request: fields and bindings change together or not at all (review 2026-11-02 U5).
+        const r = await api<Model>(`/models/${m.id}`, {
+          method: "PATCH",
+          revision: m.revision,
+          body: { ...fields, bindings: rowsToBindings(rows) },
         });
-        savedToast(r2);
+        savedToast(r);
       }
       setErrors({});
       props.onClose();

@@ -156,7 +156,14 @@ const D = {
   "m.inherit": ["默认", "default"],
   // keys
   "k.create": ["创建密钥", "Create key"],
-  "k.allowedModels": ["可用模型（不选=全部）", "Allowed models (none = all)"],
+  "k.allowedModels": ["可用模型", "Allowed models"],
+  "k.allModels": ["全部模型", "All models"],
+  "k.someModels": ["仅限勾选的模型", "Only the checked models"],
+  "k.noModels": ["无（不能调用任何模型）", "none (no model allowed)"],
+  "k.noModelsWarn": [
+    "没有勾选任何模型：这个密钥不能调用任何模型。",
+    "No model checked: this key cannot call any model.",
+  ],
   "k.quota": ["token 额度", "Token quota"],
   "k.rpm": ["RPM", "RPM"],
   "k.tpm": ["TPM", "TPM"],

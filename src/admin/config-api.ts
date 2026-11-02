@@ -1079,8 +1079,12 @@ export function registerRuntimeConfigApi(app: Hono<never>, opts: RuntimeConfigAp
             v,
             now,
           );
-          // A rename changes the upstream name of bindings that used the published name.
-          if (body.name !== undefined && body.name !== current.name) {
+          // `bindings` replaces them all, in the same transaction (one version, all or nothing).
+          if (body.bindings !== undefined) {
+            s.deleteBindings(id);
+            writeBindings(s, id, body.name ?? current.name, body.bindings);
+          } else if (body.name !== undefined && body.name !== current.name) {
+            // A rename changes the upstream name of bindings that used the published name.
             s.deleteBindings(id);
             writeBindings(
               s,

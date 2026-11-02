@@ -75,7 +75,13 @@ export function KeysPage(props: PageProps) {
                   </td>
                   <td>{k.scopes.join(", ")}</td>
                   <td class="small">
-                    {k.allowedModels === null ? t("unlimited") : k.allowedModels.join(", ") || t("none")}
+                    {k.allowedModels === null ? (
+                      t("k.allModels")
+                    ) : k.allowedModels.length === 0 ? (
+                      <Badge kind="bad">{t("k.noModels")}</Badge>
+                    ) : (
+                      k.allowedModels.join(", ")
+                    )}
                   </td>
                   <td class="small">
                     {t("k.quota")}: {k.quotaTokens === null ? t("unlimited") : fmtNum(k.quotaTokens)}
@@ -190,6 +196,8 @@ export function KeyForm(props: { existing?: ClientKey; onClose: () => void; onCr
   const models = useModelNames();
   const [name, setName] = useState(ex?.name ?? "");
   const [scope, setScope] = useState(ex?.scopes[0] ?? "inference");
+  // null = every model; [] = none (review 2026-11-02 U2: [] used to be saved back as null, widening the key).
+  const [restricted, setRestricted] = useState(ex !== undefined && ex.allowedModels !== null);
   const [allowed, setAllowed] = useState<string[]>(ex?.allowedModels ?? []);
   const [quota, setQuota] = useState(
     ex?.quotaTokens === null || ex?.quotaTokens === undefined ? "" : String(ex.quotaTokens),
@@ -210,7 +218,7 @@ export function KeyForm(props: { existing?: ClientKey; onClose: () => void; onCr
           setBusy(true);
           const body = {
             name,
-            allowedModels: allowed.length > 0 ? allowed : null,
+            allowedModels: restricted ? allowed : null,
             quotaTokens: numOrNull(quota),
             rpm: numOrNull(rpm),
             tpm: numOrNull(tpm),
@@ -246,24 +254,63 @@ export function KeyForm(props: { existing?: ClientKey; onClose: () => void; onCr
             </select>
           </Field>
         ) : null}
-        <Field label={t("k.allowedModels")} error={errors["allowedModels"]}>
-          <div class="checks">
-            {(models.data ?? []).map((m) => (
-              <label key={m} class="check">
+        {/* A fieldset, not a <label>: a click on its title must not toggle the first radio / checkbox. */}
+        <fieldset class={`field${errors["allowedModels"] ? " invalid" : ""}`}>
+          <legend class="label">{t("k.allowedModels")}</legend>
+          <div class="stack">
+            <div class="checks" role="radiogroup">
+              <label class="check">
                 <input
-                  type="checkbox"
-                  checked={allowed.includes(m)}
-                  onChange={(e) =>
-                    setAllowed(
-                      (e.currentTarget as HTMLInputElement).checked ? [...allowed, m] : allowed.filter((x) => x !== m),
-                    )
-                  }
+                  type="radio"
+                  name="allowed-mode"
+                  value="all"
+                  checked={!restricted}
+                  onChange={() => setRestricted(false)}
                 />{" "}
-                {m}
+                {t("k.allModels")}
               </label>
-            ))}
+              <label class="check">
+                <input
+                  type="radio"
+                  name="allowed-mode"
+                  value="some"
+                  checked={restricted}
+                  onChange={() => setRestricted(true)}
+                />{" "}
+                {t("k.someModels")}
+              </label>
+            </div>
+            <div class="checks">
+              {/* Published models plus any model the key already allows (kept even if no longer published). */}
+              {[...new Set([...(models.data ?? []), ...allowed])].map((m) => (
+                <label key={m} class="check">
+                  <input
+                    type="checkbox"
+                    checked={restricted && allowed.includes(m)}
+                    onChange={(e) => {
+                      const on = (e.currentTarget as HTMLInputElement).checked;
+                      // Checking a model while "all models" is selected switches to the restricted list.
+                      const base = restricted ? allowed : [];
+                      setRestricted(true);
+                      setAllowed(on ? [...base.filter((x) => x !== m), m] : base.filter((x) => x !== m));
+                    }}
+                  />{" "}
+                  {m}
+                </label>
+              ))}
+            </div>
+            {restricted && allowed.length === 0 ? (
+              <p class="field-error" role="alert">
+                {t("k.noModelsWarn")}
+              </p>
+            ) : null}
           </div>
-        </Field>
+          {errors["allowedModels"] ? (
+            <span class="field-error" role="alert">
+              {errors["allowedModels"]}
+            </span>
+          ) : null}
+        </fieldset>
         <div class="grid2">
           <Field label={t("k.quota")} error={errors["quotaTokens"]} hint={t("unlimited")}>
             <input

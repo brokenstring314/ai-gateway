@@ -111,7 +111,7 @@ in the config file, which is trusted. An explicit opt-in for local/LAN services 
 | GET | `/admin/models` | `{ modelSource, data: [model], published: [{ name, enabled, available, channels }] }` |
 | GET | `/admin/models/:id` | one model + `ETag` |
 | POST | `/admin/models` | create → 201 |
-| PATCH | `/admin/models/:id` | `name`, `displayName`, `description`, `enabled`, `metadata`, `strategy`, `balance` |
+| PATCH | `/admin/models/:id` | `name`, `displayName`, `description`, `enabled`, `metadata`, `strategy`, `balance`, and optionally `bindings` (replaces all bindings): fields and bindings are applied in one transaction — one config version, all or nothing, one `If-Match` (the console's model drawer saves this way) |
 | PUT | `/admin/models/:id/bindings` | `{ "bindings": [binding] }` replaces all bindings |
 | DELETE | `/admin/models/:id` | `422` while an alias points to it |
 
@@ -224,7 +224,7 @@ The gateway has one owner. There are no prices, costs, money quotas, payments or
 | ------ | ---- | ----- | ------------ |
 | GET | `/admin/keys`, `/admin/keys/:id` | read_only | key views (below); `:id` sends `ETag` = the key's `revision` |
 | POST | `/admin/keys` | admin | `{ name, scopes?, expiresAt?, allowedModels?, quotaTokens?, rpm?, tpm? }` → 201, the secret once |
-| PATCH | `/admin/keys/:id` | admin | any of `name`, `scopes`, `allowedModels`, `expiresAt`, `quotaTokens`, `rpm`, `tpm` (`null` clears); `If-Match` required |
+| PATCH | `/admin/keys/:id` | admin | any of `name`, `scopes`, `allowedModels`, `expiresAt`, `quotaTokens`, `rpm`, `tpm` (`null` clears); `If-Match` required. `allowedModels`: omitted = unchanged, `null` = every model, `[]` = no model at all (the key can call nothing), a list = those models |
 | POST | `/admin/keys/:id/reset-usage` | admin | used tokens → 0, `usageResetAt` = now; `If-Match` optional (checked when sent) |
 | PUT, DELETE, `…/revoke`, `…/rotate` | | admin | unchanged (PUT: name and scopes only, no If-Match) |
 

@@ -617,7 +617,7 @@ Prometheus 格式的指标，包括：
 | PATCH / DELETE | `/admin/channels/:id/keys/:keyId` | admin | 改权重 / 启停、删除；另有 `POST …/enable`、`…/disable` |
 | POST | `/admin/channels/:id/test`、`/fetch-models` | admin | 探测上游（限流、10 秒超时、2 MiB 上限、不跟随重定向） |
 | GET / POST | `/admin/models` | read_only / admin | 已发布模型（含绑定、`available`） |
-| GET / PATCH / DELETE | `/admin/models/:id` | read_only / admin | 单个模型 |
+| GET / PATCH / DELETE | `/admin/models/:id` | read_only / admin | 单个模型（`PATCH` 也可带 `bindings`：字段和绑定在同一事务里一起生效或一起失败） |
 | PUT | `/admin/models/:id/bindings` | admin | 整体替换绑定（渠道、上游模型名、优先级、权重、启停、参数） |
 | GET / PATCH | `/admin/settings` | read_only / admin | 全局策略、别名、插件、兼容性、`modelSource` |
 | GET | `/admin/config/versions`、`/admin/config/versions/:v` | read_only | 配置历史（快照不含 key 材料） |
@@ -1373,7 +1373,7 @@ models:
 
 未填写的元数据取所有绑定上游都支持的部分（目前收录 DeepSeek 的 `deepseek-flash`、`deepseek-v4-pro`，数据来自 DeepSeek 自己的模型列表）：取最小的上限和共同支持的输入类型。已发布模型的承诺不能超过已知上游：`contextWindow` / `maxOutputTokens` 更大，或声明了上游没有的输入类型、结构化输出级别，都会配置报错。未知上游不做检查。旧版 `/v1/completions` 也做输出上限和上下文检查。
 
-**每个 key 的模型白名单。** 密钥库里的 key 可以限定只能用部分已发布模型：`ai-gateway keys create --models my-chat,gpt-4o`，或在 `POST /admin/keys` / `PUT /admin/keys/:id` 中传 `"allowedModels": ["my-chat"]`（`null` = 全部模型）。别名本身或它指向的模型在白名单里即可使用。其他任何模型（无论是否发布）都返回 `403 model_not_allowed`（「This API key is not allowed to use the model …」），受限 key 无法借此探测白名单以外的模型。配置里的静态 `auth.keys` 不受限制。
+**每个 key 的模型白名单。** 密钥库里的 key 可以限定只能用部分已发布模型：`ai-gateway keys create --models my-chat,gpt-4o`，或在 `POST /admin/keys` / `PUT /admin/keys/:id` 中传 `"allowedModels": ["my-chat"]`（`null` = 全部模型，`[]` = 不能用任何模型；`PATCH` 时不传则保持不变）。别名本身或它指向的模型在白名单里即可使用。其他任何模型（无论是否发布）都返回 `403 model_not_allowed`（「This API key is not allowed to use the model …」），受限 key 无法借此探测白名单以外的模型。配置里的静态 `auth.keys` 不受限制。
 
 **`GET /v1/models`** 只列出调用者的 key 可用的、已启用的模型和别名；`display_name`、`description`、`metadata`、`alias_of` 是扩展字段，OpenAI SDK 会忽略。
 

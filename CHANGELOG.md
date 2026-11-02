@@ -209,6 +209,17 @@ now fail `ai-gateway validate` and startup with a migration hint:
   still uses it — and is not a breaker failure; it fails over to the next channel, and reaches the client as `402`
   when none is left. The key is disabled (`quota`) only after 3 consecutive account-level `402`s within an hour
   with no success in between; a `402` whose message names the request never counts. `401` still disables at once.
+- **Console: saving a key allowed NO models widened it to ALL models** (review 2026-11-02 U2). The key form sent
+  `allowedModels: null` whenever no model was checked, so a key created with `allowedModels: []` became
+  unrestricted when any other field was edited. The form now has an explicit choice — 全部模型 / All models (`null`)
+  or 仅限勾选的模型 / Only the checked models (a list, `[]` = none, with a warning) — and round-trips `[]`; models the
+  key allows that are no longer published stay listed and kept. The keys table shows “无（不能调用任何模型）” for
+  `[]`. The server already distinguished omitted / `null` / `[]` (now documented and tested).
+- **Console: a model save could be half-applied** (review 2026-11-02 U5). The model drawer saved with `PATCH
+  /admin/models/:id` and then `PUT /admin/models/:id/bindings`; when the bindings were rejected the field change was
+  already live and a retry answered `409`. `PATCH /admin/models/:id` now also accepts `bindings` and applies fields
+  and bindings in one transaction (one config version, all or nothing), and the drawer saves with that single
+  request. `PUT …/bindings` is unchanged.
 - A base URL refused by the SSRF guard (`422 unsafe_base_url`) now carries `fields: [{ path: "baseURL" }]`, so the
   console shows the refusal on the Base URL field instead of only in a toast (found by the P7 browser e2e).
 - **Chat content parts `input_audio`, `file` and assistant `refusal` are accepted** and forwarded verbatim (they were rejected with 400 although valid OpenAI input). Other unknown part types are still rejected, so text cannot bypass word-filter or the PII/secret guard.

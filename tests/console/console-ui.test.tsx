@@ -192,6 +192,92 @@ describe("keys page", () => {
   });
 });
 
+describe("review 2026-11-02 U2 / U5", () => {
+  const baseKey = {
+    id: "k9",
+    name: "none",
+    scopes: ["inference"],
+    expiresAt: null,
+    quotaTokens: null,
+    rpm: null,
+    tpm: null,
+    usedTokens: 0,
+    remainingTokens: null,
+    quotaExhausted: false,
+    usageResetAt: null,
+    revision: 2,
+    revokedAt: null,
+  };
+
+  it("U2: a key allowed NO models keeps [] when another field is saved; 全部模型 sends null", async () => {
+    dom.routes.set("GET /admin/models", () => Response.json({ published: [{ name: "ds-chat" }] }));
+    dom.routes.set("PATCH /admin/keys/k9", () => Response.json({ ...baseKey, allowedModels: [] }));
+    const el = mount(<mod.keys.KeyForm existing={{ ...baseKey, allowedModels: [] }} onClose={() => {}} />);
+    await settle();
+    expect(el.textContent).toContain("不能调用任何模型");
+    const radios = el.querySelectorAll<HTMLInputElement>("input[type=radio]");
+    expect(radios[1]!.checked).toBe(true); // 仅限勾选的模型
+    type(el.querySelectorAll<HTMLInputElement>("input[type=number]")[0]!, "1000");
+    await settle();
+    el.querySelector("form")!.dispatchEvent(new Event("submit", { bubbles: true, cancelable: true }));
+    await settle(40);
+    expect(dom.calls.find((c) => c.method === "PATCH")!.body).toMatchObject({ allowedModels: [], quotaTokens: 1000 });
+
+    dom.calls.length = 0;
+    radios[0]!.click(); // 全部模型
+    await settle();
+    el.querySelector("form")!.dispatchEvent(new Event("submit", { bubbles: true, cancelable: true }));
+    await settle(40);
+    expect(dom.calls.find((c) => c.method === "PATCH")!.body).toMatchObject({ allowedModels: null });
+  });
+
+  it("U2: a key allowed every model keeps null", async () => {
+    dom.routes.set("GET /admin/models", () => Response.json({ published: [{ name: "ds-chat" }] }));
+    dom.routes.set("PATCH /admin/keys/k9", () => Response.json({ ...baseKey, allowedModels: null }));
+    const el = mount(<mod.keys.KeyForm existing={{ ...baseKey, allowedModels: null }} onClose={() => {}} />);
+    await settle();
+    expect(el.textContent).not.toContain("不能调用任何模型");
+    el.querySelector("form")!.dispatchEvent(new Event("submit", { bubbles: true, cancelable: true }));
+    await settle(40);
+    expect(dom.calls.find((c) => c.method === "PATCH")!.body).toMatchObject({ allowedModels: null });
+  });
+
+  it("U5: the model drawer saves fields and bindings in ONE request (PATCH with bindings, no PUT)", async () => {
+    const model = {
+      id: "mdl1",
+      name: "m1",
+      enabled: true,
+      strategy: "fallback",
+      balance: "weighted",
+      metadata: {},
+      bindings: [{ channelId: "ch1", upstreamModel: "up-1", priority: 0, weight: 1, enabled: true }],
+      revision: 5,
+    };
+    dom.routes.set("GET /admin/models/mdl1", () => Response.json(model));
+    dom.routes.set("PATCH /admin/models/mdl1", () => Response.json({ ...model, revision: 6, configVersion: 9 }));
+    let closed = false;
+    const el = mount(
+      <mod.models.ModelDrawer
+        id="mdl1"
+        canWrite
+        channels={[{ id: "ch1", name: "c1", models: ["up-1"] } as never]}
+        onClose={() => (closed = true)}
+      />,
+    );
+    await settle(40);
+    el.querySelector("form")!.dispatchEvent(new Event("submit", { bubbles: true, cancelable: true }));
+    await settle(40);
+    const writes = dom.calls.filter((c) => c.method !== "GET");
+    expect(writes.map((c) => `${c.method} ${c.path}`)).toEqual(["PATCH /admin/models/mdl1"]);
+    expect(writes[0]!.headers["if-match"]).toBe('"5"');
+    expect(writes[0]!.body).toMatchObject({
+      name: "m1",
+      bindings: [{ channelId: "ch1", upstreamModel: "up-1", priority: 0, weight: 1, enabled: true }],
+    });
+    expect(closed).toBe(true);
+  });
+});
+
 function ToastsHost() {
   const { Toasts } = require("../../console/src/ui") as typeof import("../../console/src/ui");
   return <Toasts />;

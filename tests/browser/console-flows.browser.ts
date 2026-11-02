@@ -143,9 +143,9 @@ test("explicit models + second channel: model drawer edit, reorder bindings by b
   await expect(rows.nth(0).locator("select option:checked")).toHaveText("beta");
   const before = await headVersion();
   await drawer.getByRole("button", { name: "保存" }).click();
-  // Two writes (metadata PATCH, bindings PUT); the toast names the version that is live now.
-  await toast(page, `已生效 · 版本 #${before + 2}`);
-  expect(await headVersion()).toBe(before + 2);
+  // One atomic write (PATCH with fields and bindings); the toast names the version that is live now.
+  await toast(page, `已生效 · 版本 #${before + 1}`);
+  expect(await headVersion()).toBe(before + 1);
   expect(await content(await chat(gw, key, "fake-chat"))).toBe("beta:fake-chat");
   const model = await gw.admin<{ data: Array<{ name: string; displayName: string }> }>("GET", "/models");
   expect(model.body.data.find((m) => m.name === "fake-chat")?.displayName).toBe("Fake Chat");
@@ -157,7 +157,7 @@ test("explicit models + second channel: model drawer edit, reorder bindings by b
   await rows.nth(1).locator("td.handle").dragTo(rows.nth(0).locator("td.handle"));
   await expect(rows.nth(0).locator("select option:checked")).toHaveText("alpha");
   await drawer.getByRole("button", { name: "保存" }).click();
-  await toast(page, `已生效 · 版本 #${before + 4}`);
+  await toast(page, `已生效 · 版本 #${before + 2}`);
   expect(await content(await chat(gw, key, "fake-chat"))).toBe("alpha:fake-chat");
   await watch.assertClean();
   await context.close();
