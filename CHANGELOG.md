@@ -4,6 +4,34 @@
 
 ### Added
 
+- Admin console rewrite (0.3.0 P6, plan §5, §9.3, §9.4): a Preact + Vite single-page app at `/admin/dashboard`,
+  built at build time and embedded into the server (`src/dashboard/assets.generated.ts`), so binaries and the Docker
+  image serve it with no files on disk and no new runtime dependency (preact, vite, @preact/preset-vite and happy-dom
+  are devDependencies). Pages: 概览 (trends, channel health), 渠道 (status, latency, key states ok / cooling /
+  disabled, account balance, add wizard preset → keys → test → fetch models → publish, key management, key strategy,
+  cooldown), 模型 (table + drawer: metadata, drag-to-reorder binding priority groups, weight, balance mode,
+  strategy), 密钥 (allowed models, token quota, RPM / TPM, expiry, plaintext once with copy, usage, raise quota, reset
+  usage), 用量 (by key / model / channel, date range, time zone, charts), 日志, Playground (real routing, streaming),
+  设置 (aliases, global rate limit, plugins, model source, sessions), 版本与审计 (diff, rollback, audit). Chinese /
+  English UI (browser default, switch saved in `localStorage`). Every save shows “已生效 · 版本 #N”, validation errors
+  are placed on their fields (config API `400`s now list `fields[]`), `409` shows “已被修改，请刷新”, every write sends
+  `If-Match`. `bun run console:build` / `console:dev` / `console:typecheck`; CI fails when the embedded build is
+  stale, the Dockerfile rebuilds it, the release workflow builds it before compiling.
+- Console sessions (plan §9.4): `POST /admin/session/login` exchanges an `admin` / `read_only` key (or the
+  `adminSecret`) for an in-memory server-side session — `HttpOnly; SameSite=Strict; Path=/admin` cookie, `Secure` on
+  https, 12 h lifetime + 60 min idle timeout — with a double-submit CSRF token required on every cookie-authenticated
+  write (on top of the P4 Origin / `Sec-Fetch-Site` / JSON-only guard). Login failures lock a client IP out (5 → 15
+  min) with a global cap; `GET /admin/session`, `GET /admin/sessions`, `DELETE /admin/sessions/:id`, `POST
+  /admin/session/logout`; sign-ins, sign-outs, revocations and failures are audited (never the key). Sessions follow
+  their key (revoked / expired / scope removed → ended). New config block `console:` (`sessionTtlMinutes`,
+  `idleTimeoutMinutes`, `maxLoginFailures`, `lockoutMinutes`, `secureCookie`). Bearer / `X-Admin-Secret` access is
+  unchanged; `/v1/*` never reads the cookies and the inference path gains no database read.
+- `GET /admin/channels/:id/balance` (user decision): upstream account balance for DeepSeek (`/user/balance`) and
+  OpenRouter (`/credits`), fetched on demand with the channel key behind the SSRF guard, timeouts and a rate limit;
+  never stored, no cost computed (the gateway still has no prices anywhere). Other presets: `supported: false`.
+- `POST /admin/playground/chat/completions` (admin): the console Playground's chat completion through the real
+  routing, usage recorded as `console-playground`.
+
 - Per-key limits and usage statistics (0.3.0 P5, user decisions 2026-11-02; `docs/admin-api.md#key-limits-and-usage`).
   The gateway has one owner and no money anywhere: client keys get a **token quota** (`quotaTokens`, all-time
   prompt + completion tokens until reset; `null` = unlimited), their own **RPM** and **TPM** (unset → the
@@ -198,6 +226,9 @@ now fail `ai-gateway validate` and startup with a migration hint:
 
 ### Removed
 
+- The 0.2 vanilla-JS console (`src/dashboard/static/console.{js,css}`, `/admin/static/*`, `/admin/dashboard/login`,
+  `/admin/dashboard/config`) and its `sessionStorage` admin-key sign-in; `/admin/dashboard` now serves the new console
+  and `/admin` redirects there.
 - `src/dashboard/static/dashboard.js` and `style.css`, unserved leftovers of
   the pre-0.2.0 placeholder dashboard.
 

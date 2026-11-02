@@ -67,6 +67,7 @@
 - [x] `POST /v1/chat/completions`（非流式 + 流式 SSE）、`POST /v1/completions`（legacy wire 格式）、`POST /v1/embeddings`、`POST /v1/images/generations`
 - [x] `GET /v1/models`、`GET /v1/capabilities`、`GET /health`、`GET /livez`、`GET /readyz`、`GET /metrics`
 - [x] 可选的白名单透传代理（`passthroughProxy`，默认 `POST /v1/responses`、`/v1/moderations`、`/v1/audio/*`）
+- [x] 管理控制台（0.3.0 P6）：Preact + Vite 构建期依赖、内嵌二进制，概览/渠道/模型/密钥/用量/日志/Playground/设置/版本与审计，中英双语；会话 Cookie 登录 + CSRF + 锁定，浏览器不存管理员密钥
 - [x] Admin API：运行时配置（渠道/上游 key/模型/设置/版本回滚/审计/预设，0.3.0 P4，见 docs/admin-api.md）、API key 管理（作用域 inference / read_only / admin，revoke / rotate）、日志查看与清理、状态概览
 - [x] 管理控制台 `/admin/dashboard`（概览、密钥、日志、只读配置）
 

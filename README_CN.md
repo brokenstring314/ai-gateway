@@ -599,6 +599,9 @@ Prometheus 格式的指标，包括：
 | GET    | `/admin/logs/stats`       | read_only | 按 surface/target/model 计数、错误数、token（同样的过滤） |
 | DELETE | `/admin/logs?before=<ISO>`| admin     | 删除 `before` 之前的持久化日志（可选 `stage` / `model` / `provider`） |
 | GET    | `/admin/status`           | read_only | 控制台概览：调用方 `scopes`、各 target 的 `circuitBreakers`、`upstreamAvailable`、`mcpServers`、本进程请求摘要（数量、4xx/5xx、错误率、延迟 mean/p50/p95） |
+| POST   | `/admin/session/login`    | —（公开，有限流） | 控制台登录：`{ "key" }` → HttpOnly 会话 Cookie + CSRF token（见[管理控制台](#管理控制台)） |
+| GET / DELETE | `/admin/sessions`、`/admin/sessions/:id` | read_only / admin | 列出 / 吊销控制台会话；`POST /admin/session/logout` 退出自己的会话 |
+| GET    | `/admin/channels/:id/balance` | read_only | 上游账户余额（DeepSeek、OpenRouter），仅供参考，不保存 |
 
 没有密钥库时，`GET` / `POST` / `DELETE /admin/keys` 管理的是内存中的 `auth.keys` 列表（`POST {"key": "sk-..."}`，按列表下标删除；重启后丢失）。
 
@@ -714,20 +717,47 @@ curl -X POST -H "X-Admin-Secret: $S" http://localhost:3000/admin/keys/<id>/reset
 
 ### 管理控制台
 
-内置一个小型 Web 控制台，地址 **`/admin/dashboard`**（无构建步骤、无框架、不加载外部资源）：
+内置 Web 控制台，地址 **`/admin/dashboard`**（0.3.0）：用 Preact + Vite 构建的单页应用，构建时嵌入服务端
+（`src/dashboard/assets.generated.ts`），所以 `bun build --compile` 二进制和 Docker 镜像不需要磁盘上的文件，服务端也没有新增运行时依赖。
+界面支持中文 / English（右上角切换；默认跟随浏览器语言，选择记在 `localStorage`）。
 
-| 页面 | 内容 | 数据来源 |
-| ---- | ---- | -------- |
-| 概览（`/admin/dashboard`） | 就绪状态、各 target 熔断器状态、`upstreamAvailable`、MCP 服务器状态、请求数 / 错误率 / 延迟、按 surface、target、model 的请求数；每 15 秒刷新 | `/readyz`、`/admin/status`、`/admin/logs/stats` |
-| API 密钥（`/admin/dashboard/keys`） | 密钥列表（scope、状态、过期时间、使用量）。admin 可创建密钥（scope `inference` / `read_only` / `admin`，可选过期时间；新密钥只显示一次）、轮换、吊销。`read_only` 只能查看列表 | `/admin/keys` |
-| 请求日志（`/admin/dashboard/logs`） | 分页（每页 50 条），可按 surface、target、model、状态（ok/error）和时间过滤 | `/admin/logs` |
-| 配置（`/admin/dashboard/config`） | 当前运行配置，已脱敏，只读 | `/admin/config` |
+| 页面 | 能做什么 | Admin API |
+| ---- | -------- | --------- |
+| 概览 | 近 14 天每日请求 / token / 错误、错误率、上游可用性、渠道健康（熔断器、key 状态） | `/admin/status`、`/admin/usage`、`/admin/channels` |
+| 渠道 | 列表：状态、测试延迟、key 状态（正常 / 冷却中 / 已停用）、**上游账户余额**（DeepSeek、OpenRouter 支持，其他显示“—”）；新增向导：选预设 → 填 key → 测试 → 拉模型 → 勾选发布；编辑、增删 / 启停 key、权重、多 key 策略、429 冷却 | `/admin/channels…`、`/admin/channels/:id/balance` |
+| 模型 | 表格 + 编辑抽屉：元数据（上下文、最大输出、输入类型、结构化输出、工具、联网、系统 / developer 角色、推理）、绑定渠道拖拽排序优先级组、权重、组内均衡、路由策略 | `/admin/models…` |
+| 密钥 | 创建时选可用模型、token 额度、RPM / TPM、过期时间（明文只显示一次，可复制）；用量与额度、调整限额、用量清零、吊销 | `/admin/keys…` |
+| 用量 | 按密钥 / 模型 / 渠道看 token、请求、错误；日期范围、时区；图表和合计 | `/admin/usage` |
+| 日志 | 请求日志，过滤、分页 | `/admin/logs` |
+| Playground | 通过真实路由（绑定、元数据校验、故障转移）调用任意已发布模型，可流式；用量记为 `console-playground` | `/admin/playground/chat/completions` |
+| 设置 | 别名、全局每 key 限流、插件（JSON）、模型来源；控制台会话（列出 / 吊销） | `/admin/settings`、`/admin/sessions` |
+| 版本与审计 | 配置版本、版本间差异、回滚；审计日志 | `/admin/config/versions…`、`/admin/audit` |
 
-在 `/admin/dashboard/login` **登录**：输入密钥库中带 `admin` 或 `read_only` scope 的密钥（或 `adminSecret`）。密钥只保存在当前标签页的 `sessionStorage` 中，以 `Authorization: Bearer` 发送，不使用 cookie；关闭标签页或点"Sign out"即清除。仅有 inference scope 的密钥会被拒绝（403）。
+每次保存显示 **“已生效 · 版本 #N”**；校验错误显示在对应字段旁；写入时版本已过期（`409`）提示“已被修改，请刷新”。所有写操作都带 `If-Match`。
 
-HTML 页面和 `/admin/static/console.{js,css}` 不需要认证，因为它们不含任何数据（浏览器导航无法携带 Bearer 头）；页面上的所有数据都来自上面需要认证的管理 API。页面带严格 CSP（`default-src 'none'; script-src 'self'; style-src 'self'; connect-src 'self'; frame-ancestors 'none'`，无内联脚本），脚本只把 API 数据作为文本插入，从不作为 HTML 解析。与其他管理 API 一样，`/admin/*` 只应暴露在可信网络中。
+**登录（会话，计划 §9.4）**：输入 `admin` 或 `read_only` 密钥（或 `adminSecret`），控制台只用它换一次服务端会话
+（`POST /admin/session/login`），**浏览器不保存密钥**：会话放在 `HttpOnly; SameSite=Strict; Path=/admin` Cookie 中（https 或代理发送
+`X-Forwarded-Proto: https` 时加 `Secure`），有效期 12 小时、空闲 60 分钟超时；所有用 Cookie 认证的写请求必须带双提交 CSRF token
+（`X-CSRF-Token`，与第二个 Cookie 和会话中保存的值比对）。同一客户端 IP 连续登录失败 5 次锁定 15 分钟（`429` + `Retry-After`；
+在反向代理后面请设置 `TRUSTED_PROXIES`，以便取到真实客户端 IP）。会话只存在进程内存中（重启后需重新登录），与 `/v1/*` 无关。
+用密钥库 key 登录的会话在该 key 被吊销、过期或失去权限时立即失效。可调参数：
 
-概览页的请求数字有两个来源："Logged requests" 和按 surface 的表格来自请求日志库（重启后仍在）；"Upstream-served" 和延迟来自本进程启动以来的 Prometheus 注册表（延迟分位数是直方图桶的上界）。历史数据请看 `/metrics`。
+```yaml
+console:
+  sessionTtlMinutes: 720     # 会话最长有效期
+  idleTimeoutMinutes: 60     # 空闲超时
+  maxLoginFailures: 5        # 每个客户端 IP，超过即锁定
+  lockoutMinutes: 15
+  secureCookie: auto         # auto | always | never
+```
+
+用 Bearer / `X-Admin-Secret` 调 Admin API 的方式不变。页面和带哈希的静态资源不含数据，无需认证，均带严格 CSP（`default-src 'none';
+script-src 'self'; style-src 'self'; connect-src 'self'; frame-ancestors 'none'`，无内联脚本、无 eval、无第三方来源）以及
+`X-Frame-Options: DENY`、`Referrer-Policy: no-referrer`、`Cross-Origin-Opener-Policy: same-origin`、`Permissions-Policy`，https 下加 HSTS。
+`/admin` 跳转到控制台；0.2 的 `/admin/static/*` 已删除。与其他管理 API 一样，`/admin/*` 只应暴露在可信网络中。
+
+**构建控制台**（开发者）：`bun run console:build`（Vite → `console/dist` → 生成内嵌文件，该文件提交进仓库，CI 检查是否过期）、
+`bun run console:dev`（Vite 开发服务器，把 `/admin` 代理到 :3000 的网关）、`bun run console:typecheck`。
 
 ### 响应头
 
@@ -1453,7 +1483,7 @@ gateway.close();
 │                 SSE writer, OpenAI-shaped errors                              │
 │  proxy/         opt-in allow-listed pass-through for other /v1/* routes       │
 │  admin/         /admin/* API (admin auth: adminSecret, admin / read_only keys)│
-│  dashboard/     /admin/dashboard console (static shell + console.js)          │
+│  dashboard/     /admin/dashboard console (embedded Preact app, console/)       │
 └───────────────────────────────────────────────┬──────────────────────────────┘
                                                 │ gateway.ts facade
                                                 │ execute(surface) / executeStream(surface)
@@ -1644,7 +1674,7 @@ src/
 ├── auth/                    # bootstrap.ts（bootstrap 密钥闸门）、key-hash.ts
 ├── admin/                   # /admin/* API：运行时配置（config-api.ts、config-schemas.ts、guards.ts：
 │                            #   CSRF / If-Match / 限流）、密钥（含限额、reset-usage）、用量、日志、状态
-├── dashboard/               # 控制台页面外壳 + static/console.{js,css}（打包内嵌）
+├── dashboard/               # 提供控制台；assets.generated.ts 为构建后的 console/（内嵌）
 ├── observability/           # OTel SDK + tracer 桥接、采样/隐私、请求日志、脱敏
 ├── metrics/metrics.ts       # Prometheus 注册表（prom-client）
 └── types/assets.d.ts
@@ -1701,7 +1731,7 @@ bun run test:watch
 | `ferrogw serve`                     | `ai-gateway serve -c config.yaml` |
 | 29 个提供商（含 Anthropic/Gemini/Bedrock） | 20+ 个 OpenAI 兼容提供商                |
 | 非 OpenAI 线路协议翻译                     | 不支持（设计决策）                         |
-| Dashboard UI                        | 精简管理控制台（`/admin/dashboard`） |
+| Dashboard UI                        | 管理控制台（`/admin/dashboard`，Preact，中英双语） |
 | `NonOpenAIWireProvider` 代理拒绝        | 带 `baseURL` 的通用回退                 |
 | `sync.Pool` 上下文池                    | 标准 JS 模式                          |
 | `httputil.ReverseProxy` 透传代理        | 需显式开启的白名单代理（`passthroughProxy`） |

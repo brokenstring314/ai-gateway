@@ -658,6 +658,9 @@ Admin endpoints accept, in key-store mode (`ai-gateway serve`): the `adminSecret
 | GET    | `/admin/logs/stats`       | read_only  | Counts by surface/target/model, errors, tokens (same filters) |
 | DELETE | `/admin/logs?before=<ISO>`| admin      | Purge persisted log entries older than `before` (optional `stage` / `model` / `provider`) |
 | GET    | `/admin/status`           | read_only  | Console overview: caller `scopes`, `circuitBreakers` per target, `upstreamAvailable`, `mcpServers`, in-process request summary (count, 4xx/5xx, error rate, latency mean/p50/p95) |
+| POST   | `/admin/session/login`    | — (public, rate limited) | Console sign-in: `{ "key" }` → HttpOnly session cookie + CSRF token ([Admin console](#admin-console)) |
+| GET / DELETE | `/admin/sessions`, `/admin/sessions/:id` | read_only / admin | List / revoke console sessions; `POST /admin/session/logout` ends your own |
+| GET    | `/admin/channels/:id/balance` | read_only | Upstream account balance (DeepSeek, OpenRouter), informational, never stored |
 
 Without a key store, `GET` / `POST` / `DELETE /admin/keys` manage the in-memory `auth.keys` list instead (`POST {"key": "sk-..."}`, delete by list index; lost on restart).
 
@@ -773,20 +776,54 @@ curl -X POST -H "X-Admin-Secret: $S" http://localhost:3000/admin/keys/<id>/reset
 
 ### Admin console
 
-A small built-in web console at **`/admin/dashboard`** (no build step, no framework, no external assets):
+A built-in web console at **`/admin/dashboard`** (0.3.0): a Preact single-page app built with Vite and embedded into
+the server at build time (`src/dashboard/assets.generated.ts`), so the `bun build --compile` binary and the Docker
+image serve it without files on disk and the server has no new runtime dependency. The UI is in Chinese and English
+(switcher in the header; default from the browser language, remembered in `localStorage`).
 
-| Page | Shows | Data from |
-| ---- | ----- | --------- |
-| Overview (`/admin/dashboard`) | Readiness, per-target circuit breakers, `upstreamAvailable`, MCP server states, request counts / error rate / latency, requests by surface, target and model; refreshes every 15 s | `/readyz`, `/admin/status`, `/admin/logs/stats` |
-| API keys (`/admin/dashboard/keys`) | Key list with scopes, status, expiry, usage. Admins can create keys (scopes `inference` / `read_only` / `admin`, optional expiry; the new key is shown once), rotate and revoke. `read_only` sees the list only | `/admin/keys` |
-| Request logs (`/admin/dashboard/logs`) | Paginated log (50 per page), filter by surface, target, model, status (ok/error) and time | `/admin/logs` |
-| Config (`/admin/dashboard/config`) | The running config, secrets scrubbed, read-only | `/admin/config` |
+| Page | What you can do | Admin API |
+| ---- | --------------- | --------- |
+| 概览 Overview | Requests / tokens / errors per day (14 days), error rate, upstream availability, channel health (breaker, key states) | `/admin/status`, `/admin/usage`, `/admin/channels` |
+| 渠道 Channels | List with status, test latency, key states (ok / cooling / disabled), **account balance** where the provider exposes it (DeepSeek, OpenRouter; others "—"); add wizard: preset → keys → test → fetch models → select and publish; edit, add / enable / disable / weight / delete keys, key strategy, 429 cooldown | `/admin/channels…`, `/admin/channels/:id/balance` |
+| 模型 Models | Table + edit drawer: metadata (context, max output, input types, structured output, tools, web search, system / developer role, reasoning), bindings with drag-to-reorder priority groups, weights, balance mode, strategy | `/admin/models…` |
+| 密钥 Keys | Create with allowed models, token quota, RPM / TPM, expiry (the secret is shown once, with copy); usage vs quota, change limits, reset usage, revoke | `/admin/keys…` |
+| 用量 Usage | Tokens / requests / errors by key, model or channel; date range and time zone; charts and totals | `/admin/usage` |
+| 日志 Logs | Request log, filters, paging | `/admin/logs` |
+| Playground | Chat with any published model through the real routing (bindings, metadata checks, failover), streaming or not; recorded as `console-playground` | `/admin/playground/chat/completions` |
+| 设置 Settings | Aliases, global per-key rate limit, plugins (JSON), model source; console sessions (list / revoke) | `/admin/settings`, `/admin/sessions` |
+| 版本与审计 Versions & audit | Config versions, diff between versions, rollback; audit log | `/admin/config/versions…`, `/admin/audit` |
 
-**Sign in** at `/admin/dashboard/login` with an `admin` or `read_only` key from the key store (or the `adminSecret`). The key stays in that tab's `sessionStorage` and is sent as `Authorization: Bearer`; no cookies are used. Closing the tab or "Sign out" forgets it. Inference-only keys are refused (403).
+Every save shows **“已生效 · 版本 #N”** (live as config version N); validation errors are shown on their fields; a
+stale write (`409`) shows “已被修改，请刷新” (changed by someone else, refresh). All writes send `If-Match`.
 
-The HTML pages and `/admin/static/console.{js,css}` are served without auth because they contain no data (a browser navigation cannot carry a Bearer header); every number on them comes from the authenticated admin API above. Pages carry a strict CSP (`default-src 'none'; script-src 'self'; style-src 'self'; connect-src 'self'; frame-ancestors 'none'`, no inline script), and the script only inserts API data as text, never as HTML. Expose `/admin/*` only on networks you trust, as with the rest of the admin API.
+**Sign-in (sessions, plan §9.4).** Enter an `admin` or `read_only` key (or the `adminSecret`). The console exchanges
+it once for a server-side session (`POST /admin/session/login`) and never stores the key in the browser: the session
+lives in an `HttpOnly; SameSite=Strict; Path=/admin` cookie (`Secure` on https or behind a proxy sending
+`X-Forwarded-Proto: https`), lasts 12 h with a 60-minute idle timeout, and every cookie-authenticated write needs the
+double-submit CSRF token (`X-CSRF-Token`, compared with a second cookie and the session). Five failed sign-ins from one
+client IP lock it out for 15 minutes (`429` + `Retry-After`; set `TRUSTED_PROXIES` behind a reverse proxy so the real
+client IP is used). Sessions are kept in memory only (a restart signs everyone out) and never touch `/v1/*`. A
+session made with a store key ends when that key is revoked, expires or loses its scope. Tune with:
 
-The request numbers on Overview come from two places: "Logged requests" and the per-surface tables from the request-log store (survives restarts); "Upstream-served" and latency from this process's Prometheus registry since start (latency percentiles are histogram bucket bounds). Use `/metrics` for history.
+```yaml
+console:
+  sessionTtlMinutes: 720     # absolute lifetime
+  idleTimeoutMinutes: 60
+  maxLoginFailures: 5        # per client IP, then lockout
+  lockoutMinutes: 15
+  secureCookie: auto         # auto | always | never
+```
+
+Bearer / `X-Admin-Secret` access to the Admin API is unchanged. The page and its hashed assets carry no data and are
+served without auth with a strict CSP (`default-src 'none'; script-src 'self'; style-src 'self'; connect-src 'self';
+frame-ancestors 'none'`, no inline script, no eval, no third-party origin) plus `X-Frame-Options: DENY`,
+`Referrer-Policy: no-referrer`, `Cross-Origin-Opener-Policy: same-origin`, `Permissions-Policy` and HSTS on https.
+`/admin` redirects to the console; the 0.2 `/admin/static/*` assets are gone. Expose `/admin/*` only on networks you
+trust.
+
+**Building the console** (contributors): `bun run console:build` (Vite → `console/dist` → embedded file, which is
+committed; CI fails when it is stale), `bun run console:dev` (Vite dev server proxying `/admin` to a gateway on
+:3000), `bun run console:typecheck`.
 
 ### Response Headers
 
@@ -1548,7 +1585,7 @@ gateway.close();
 │                 SSE writer, OpenAI-shaped errors                              │
 │  proxy/         opt-in allow-listed pass-through for other /v1/* routes       │
 │  admin/         /admin/* API (admin auth: adminSecret, admin / read_only keys)│
-│  dashboard/     /admin/dashboard console (static shell + console.js)          │
+│  dashboard/     /admin/dashboard console (embedded Preact app, console/)       │
 └───────────────────────────────────────────────┬──────────────────────────────┘
                                                 │ gateway.ts facade
                                                 │ execute(surface) / executeStream(surface)
@@ -1743,7 +1780,7 @@ src/
 ├── auth/                    # bootstrap.ts (bootstrap-key gate), key-hash.ts
 ├── admin/                   # /admin/* API: runtime config (config-api.ts, config-schemas.ts, guards.ts:
 │                            #   CSRF / If-Match / limits), keys (+ limits, reset-usage), usage, logs, status
-├── dashboard/               # Console page shells + static/console.{js,css} (embedded)
+├── dashboard/               # Serves the console; assets.generated.ts = built console/ (embedded)
 ├── observability/           # OTel SDK + tracer bridge, sampling/privacy, request log, redaction
 ├── metrics/metrics.ts       # Prometheus registry (prom-client)
 └── types/assets.d.ts
@@ -1800,7 +1837,7 @@ bun run test:watch
 | `ferrogw serve`                               | `ai-gateway serve -c config.yaml`      |
 | 29 providers (incl. Anthropic/Gemini/Bedrock) | 20+ OpenAI-compatible providers        |
 | Non-OpenAI-wire translation                   | Not supported (by design)              |
-| Dashboard UI                                  | Minimal admin console (`/admin/dashboard`) |
+| Dashboard UI                                  | Admin console (`/admin/dashboard`, Preact, zh/en) |
 | `NonOpenAIWireProvider` proxy rejection       | Generic fallback with `baseURL`        |
 | `sync.Pool` context pooling                   | Standard JS patterns                   |
 | `httputil.ReverseProxy` pass-through          | Opt-in allow-listed proxy (`passthroughProxy`) |

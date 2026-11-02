@@ -7,13 +7,15 @@ restart. Client keys with token quota / RPM / TPM and usage statistics: [Key lim
 ## Rules for every endpoint
 
 - **Auth.** Same credentials as the rest of the admin API: `adminSecret` (`X-Admin-Secret` or Bearer), a key-store
-  key with `admin` or `read_only` scope, or a bootstrap key while allowed. `read_only` may call every `GET`; every
+  key with `admin` or `read_only` scope, or a bootstrap key while allowed — or a console session cookie
+  ([Console sessions](#console-sessions)). `read_only` may call every `GET`; every
   write (`POST` / `PATCH` / `PUT` / `DELETE`) needs `admin`. The audit log records who acted as `key:<id>`,
   `admin-secret` or `bootstrap-key` — never the credential.
 - **CSRF.** Credentials travel only in headers, which a browser never adds by itself. In addition every write is
   refused when it comes from another site (`Sec-Fetch-Site: cross-site`, or an `Origin` that is neither this
   server nor in `cors.origins`: `403 csrf_rejected`) or carries a non-JSON body (`415 unsupported_media_type`).
-  The console's cookie session (P6) adds a double-submit token on top.
+  Requests authenticated by the console's session cookie additionally need the double-submit CSRF token
+  (`X-CSRF-Token`, see [Console sessions](#console-sessions)).
 - **Strict bodies.** Unknown fields, wrong types and out-of-range values are `400 invalid_request` with the field.
 - **Optimistic concurrency.** Every resource has a `revision` (also its `ETag`). Writes to an existing resource need
   `If-Match: "<revision>"` (`W/"7"` and `7` are accepted): missing → `428 precondition_required`; stale →
@@ -48,6 +50,16 @@ restart. Client keys with token quota / RPM / TPM and usage statistics: [Key lim
 | DELETE | `/admin/channels/:id/keys/:keyId` | |
 | POST | `/admin/channels/:id/test` | `{ "model"?, "keyId"? }`: without `model` calls `GET /models`, with it a 1-token chat; `{ ok, status, latencyMs, error? }` |
 | POST | `/admin/channels/:id/fetch-models` | `{ "keyId"? }` → `{ models: [ids] }` from the upstream `GET /models` |
+| GET | `/admin/channels/:id/balance` | upstream account balance (read_only; see below) |
+
+**Balance (informational).** `GET /admin/channels/:id/balance` asks the provider for the account balance with the
+channel's first enabled key, so the owner knows when to top up. Supported presets: `deepseek`
+(`GET https://api.deepseek.com/user/balance` → `{ available, balances: [{ currency, total }] }` from `is_available` /
+`balance_infos[].total_balance`) and `openrouter` (`GET …/api/v1/credits` → remaining `total_credits − total_usage`
+in USD). Other presets answer `{ "supported": false }` without an upstream call (the console shows “—”). Same SSRF
+guard, 10 s timeout and no redirects as the probes, 64 KiB response cap, 30 lookups per minute per caller and 60
+overall; upstream errors come back as `{ ok: false, error }` with the key scrubbed. Nothing is stored, logged as a
+price or used for any cost computation — the gateway has none.
 
 Key operations use the **channel's** If-Match and bump its revision. Test and fetch-models need `admin`, are limited
 to 10 calls per minute per caller and 30 overall (`429` + `Retry-After`), time out after 10 s, read at most 2 MiB
@@ -124,6 +136,44 @@ while models are derived from the channels' `models` lists they answer `409 mode
 
 A model whose bindings are all disabled, drained (weight 0) or on disabled channels stays published: requests
 (and its aliases) get `503 model_unavailable`, `/v1/models` lists it with `"available": false`.
+
+## Console sessions
+
+The admin console (`/admin/dashboard`) never keeps the admin key in the browser. It exchanges it once for a
+server-side session:
+
+| Method | Path | Notes |
+| ------ | ---- | ----- |
+| POST | `/admin/session/login` | public. `{ "key": "<admin or read_only key, or adminSecret>" }` → `{ actor, scopes, sessionId, csrfToken, expiresAt, idleTimeoutSeconds }` and two cookies; `401 invalid_credentials`, `403 insufficient_scope` (inference key), `429 login_locked` + `Retry-After` |
+| POST | `/admin/session/logout` | ends the cookie's session (needs `X-CSRF-Token` when the session is live) → 204, cookies cleared |
+| GET | `/admin/session` | who is calling: `{ via: "session" \| "header", actor, scopes, csrfToken?, expiresAt? }` |
+| GET | `/admin/sessions` | live sessions `{ id, actor, scopes, createdAt, lastSeenAt, expiresAt, idleExpiresAt, ip, userAgent, current }` |
+| DELETE | `/admin/sessions/:id` | revoke (admin scope, or your own session) → 204 / 404 |
+
+- **Cookies.** `aigw_session` (opaque random id; `HttpOnly; SameSite=Strict; Path=/admin`) and `aigw_csrf` (random
+  token readable by the page; `SameSite=Strict; Path=/admin`). Both get `Secure` when the request is https or carries
+  `X-Forwarded-Proto: https` (`console.secureCookie: auto | always | never`).
+- **CSRF.** Every non-GET request authenticated by the cookie must send `X-CSRF-Token` equal to both the `aigw_csrf`
+  cookie and the token stored in the session (constant-time compare), else `403 csrf_token_invalid`. The Origin /
+  `Sec-Fetch-Site` / JSON-only guard above applies as well.
+- **Lifetime.** 12 h absolute, 60 min idle (`console.sessionTtlMinutes`, `console.idleTimeoutMinutes`); expired or
+  unknown cookies get `401 session_expired` and are cleared. Sessions live in process memory only (a restart signs
+  everyone out; at most 64, least recently used evicted) — no database read anywhere, and `/v1/*` never looks at
+  cookies.
+- **Credential follows.** A session from a key-store key is re-checked on every admin request: revoked, expired or
+  without `admin` / `read_only` → ended. Bootstrap-key sessions end once bootstrap keys are retired. The audit log
+  records `console_login`, `console_logout`, `console_session_revoked` and `console_login_failed` (client IP, never the
+  key), with the session's actor (`key:<id>`, `admin-secret`, `bootstrap-key`) on every write.
+- **Lockout.** `console.maxLoginFailures` (5) failures from one client IP lock it out for `console.lockoutMinutes`
+  (15); at most 60 failures per minute overall. Behind a reverse proxy set `TRUSTED_PROXIES`, or every client shares
+  the proxy's address. Header (Bearer / `X-Admin-Secret`) access is not affected and always wins over a cookie.
+
+### Playground
+
+`POST /admin/playground/chat/completions` (admin scope; with a session it needs the CSRF token) takes an OpenAI chat
+completions body and runs it through the real gateway routing — published-model check, bindings, metadata policy,
+failover, streaming — exactly like `/v1/chat/completions`, but authorized by the admin credential instead of a
+client key. Usage is recorded under the key id `console-playground` (no limits).
 
 ## Settings
 
