@@ -8,14 +8,23 @@ import type { RequestLogStore } from "../persistence/request-log-store.js";
 export interface RequestLogEntry {
   timestamp: string;
   requestId: string;
+  /** Model as reported by the upstream response (else the requested name). */
   model: string;
+  /** Published model the request asked for, aliases resolved (usage rollups group by this). */
+  publishedModel?: string;
   provider: string;
   strategy: string;
   durationMs: number;
+  /** Id of the client key (key-store id, or `cfg_…` for a config auth key); never the secret. */
+  keyId?: string;
   tokens?: {
     prompt: number;
     completion: number;
     total: number;
+    /** Prompt tokens served from the upstream's cache (cached_tokens / prompt_cache_hit_tokens). */
+    cacheHit?: number;
+    /** Reasoning tokens inside the completion (completion_tokens_details.reasoning_tokens). */
+    reasoning?: number;
   };
   error?: string;
   /** Token counts were estimated (stream without a usage chunk). */
@@ -125,6 +134,11 @@ export function requestLogStoreSink(store: RequestLogStore): (entry: RequestLogE
         totalTokens: entry.tokens?.total ?? 0,
         errorMessage: entry.error ?? "",
         createdAt: new Date(entry.timestamp),
+        ...(entry.keyId !== undefined ? { keyId: entry.keyId } : {}),
+        cacheHitTokens: entry.tokens?.cacheHit ?? 0,
+        reasoningTokens: entry.tokens?.reasoning ?? 0,
+        durationMs: entry.durationMs,
+        ...(entry.status !== undefined ? { status: entry.status } : {}),
       });
     } catch (err) {
       console.error(`[request-log] store write failed: ${err instanceof Error ? err.message : String(err)}`);

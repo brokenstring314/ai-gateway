@@ -125,7 +125,7 @@ export function applyPassthroughMaxTokens(
  * Run the before-request plugins for a pass-through proxy request whose
  * body shape is unknown. Text is taken from top-level `messages`, `input`
  * (string, string[] or Responses-style items) or `prompt`; bodies that are
- * not JSON still go through key-scoped plugins (rate-limit, budget check)
+ * not JSON still go through key-scoped plugins (rate-limit)
  * with no messages. Throws PluginRejectionError to block the request.
  * The body's output token limit is the plugin view's `maxTokens`; when a
  * plugin caps it (max-token) the rewritten body text is returned and must be
@@ -155,7 +155,7 @@ export async function runPassthroughBefore(
   };
   const begun = await pipeline.begin(passthroughSurface, request, ctx);
   // Forwarded by the proxy: nothing more to account here, but release
-  // whatever the before plugins reserved (budget).
+  // whatever the before plugins registered for settlement.
   settlePluginContext(begun.run.pluginCtx);
   const view = begun.run.pluginCtx.request;
   return applyPassthroughMaxTokens(obj, tokenField, view.maxTokens ?? view.maxCompletionTokens);

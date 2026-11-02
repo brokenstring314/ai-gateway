@@ -4,7 +4,8 @@
  * any more (e.g. every admin key was revoked: ADMIN_BOOTSTRAP_KEY stays
  * refused once the bootstrap latch is set, see auth/bootstrap.ts).
  *
- *   ai-gateway keys create [--admin] [--read-only] [--name N] [--expires ISO] [--models a,b] [--json] -c <config>
+ *   ai-gateway keys create [--admin] [--read-only] [--name N] [--expires ISO] [--models a,b]
+ *                          [--quota-tokens N] [--rpm N] [--tpm N] [--json] -c <config>
  *   ai-gateway keys list   [--json] -c <config>
  *   ai-gateway keys revoke <id> -c <config>
  *
@@ -51,6 +52,11 @@ export interface ParsedKeysArgs {
   expires?: string;
   /** --models a,b: restrict the new key to these published models. */
   models?: string[];
+  /** --quota-tokens N: token quota (prompt + completion, until reset). */
+  quotaTokens?: number;
+  /** --rpm N / --tpm N: the key's own requests / tokens per minute. */
+  rpm?: number;
+  tpm?: number;
   json: boolean;
   id?: string;
   help: boolean;
@@ -94,6 +100,22 @@ export function parseKeysArgs(args: readonly string[]): ParsedKeysArgs {
             .filter((m) => m !== "");
         break;
       }
+      case "--quota-tokens":
+      case "--rpm":
+      case "--tpm": {
+        const v = value(++i, arg);
+        if (v === undefined) break;
+        const n = Number(v);
+        const min = arg === "--quota-tokens" ? 0 : 1;
+        if (!/^\d+$/.test(v) || !Number.isSafeInteger(n) || n < min) {
+          parsed.error ??= `${arg} needs an integer >= ${min}`;
+          break;
+        }
+        if (arg === "--quota-tokens") parsed.quotaTokens = n;
+        else if (arg === "--rpm") parsed.rpm = n;
+        else parsed.tpm = n;
+        break;
+      }
       case "--admin":
         parsed.admin = true;
         break;
@@ -121,7 +143,8 @@ export function parseKeysArgs(args: readonly string[]): ParsedKeysArgs {
 
 export function keysUsage(): string {
   return `Usage:
-  ai-gateway keys create [--admin] [--read-only] [--name <name>] [--expires <ISO date>] [--models <a,b>] [--json] -c <config>
+  ai-gateway keys create [--admin] [--read-only] [--name <name>] [--expires <ISO date>] [--models <a,b>]
+                         [--quota-tokens <n>] [--rpm <n>] [--tpm <n>] [--json] -c <config>
   ai-gateway keys list   [--json] -c <config>
   ai-gateway keys revoke <id> -c <config>
 
@@ -137,6 +160,10 @@ Options:
   --name <name>         Key name (default: cli-admin / cli-read-only / cli-key)
   --expires <ISO date>  Expiry, e.g. 2027-01-01T00:00:00Z (must be in the future)
   --models <a,b>        Restrict the key to these published models (default: every model)
+  --quota-tokens <n>    Token quota: prompt + completion tokens until an operator resets the usage
+                        (default: unlimited). When it is used up, new requests get 403 quota_exhausted
+  --rpm <n>             The key's own requests per minute (default: the rate-limit plugin's value)
+  --tpm <n>             The key's own tokens per minute (default: the rate-limit plugin's maxTokensPerMinute)
   --json                Machine-readable output on stdout
 
 The new key's secret is printed once, on stdout, and never stored or logged.`;
@@ -173,6 +200,13 @@ export async function keysCommand(args: readonly string[], io: KeysIO = defaultI
   }
   if (p.sub === "revoke" && p.id === undefined) {
     io.err("Error: keys revoke needs a key id (see `ai-gateway keys list`)");
+    return 1;
+  }
+
+  if ((p.quotaTokens !== undefined || p.rpm !== undefined || p.tpm !== undefined) && p.sub !== "create") {
+    io.err(
+      "Error: --quota-tokens / --rpm / --tpm only apply to keys create (change limits with PATCH /admin/keys/:id)",
+    );
     return 1;
   }
 
@@ -241,6 +275,11 @@ export async function keysCommand(args: readonly string[], io: KeysIO = defaultI
                 lastUsedAt: iso(k.lastUsedAt),
                 usageCount: k.usageCount,
                 allowedModels: k.allowedModels,
+                quotaTokens: k.quotaTokens,
+                rpm: k.rpm,
+                tpm: k.tpm,
+                // As last persisted by the server (it writes its live counter about once a second).
+                usedTokens: k.usedTokens,
               })),
               bootstrapLatchedAt: iso(latchedAt),
             },
@@ -249,7 +288,11 @@ export async function keysCommand(args: readonly string[], io: KeysIO = defaultI
           ),
         );
       } else {
-        io.out(["ID", "KEY", "NAME", "SCOPES", "MODELS", "STATUS", "CREATED", "EXPIRES"].join("\t"));
+        io.out(
+          ["ID", "KEY", "NAME", "SCOPES", "MODELS", "STATUS", "QUOTA", "USED", "RPM", "TPM", "CREATED", "EXPIRES"].join(
+            "\t",
+          ),
+        );
         for (const k of keys) {
           io.out(
             [
@@ -259,6 +302,10 @@ export async function keysCommand(args: readonly string[], io: KeysIO = defaultI
               k.scopes.join(","),
               k.allowedModels ? k.allowedModels.join(",") || "(none)" : "*",
               status(k, now),
+              k.quotaTokens === null ? "-" : String(k.quotaTokens),
+              String(k.usedTokens),
+              k.rpm === null ? "-" : String(k.rpm),
+              k.tpm === null ? "-" : String(k.tpm),
               k.createdAt.toISOString(),
               iso(k.expiresAt) ?? "-",
             ].join("\t"),
@@ -293,7 +340,12 @@ export async function keysCommand(args: readonly string[], io: KeysIO = defaultI
     if (p.readOnly) scopes.push(SCOPE_READ_ONLY);
     if (scopes.length === 0) scopes.push(SCOPE_INFERENCE);
     const name = p.name ?? (p.admin ? "cli-admin" : p.readOnly ? "cli-read-only" : "cli-key");
-    const created = store.create(name, scopes, expiresAt, { allowedModels: p.models ?? null });
+    const created = store.create(name, scopes, expiresAt, {
+      allowedModels: p.models ?? null,
+      ...(p.quotaTokens !== undefined ? { quotaTokens: p.quotaTokens } : {}),
+      ...(p.rpm !== undefined ? { rpm: p.rpm } : {}),
+      ...(p.tpm !== undefined ? { tpm: p.tpm } : {}),
+    });
     if (p.json) {
       io.out(
         JSON.stringify({
@@ -304,6 +356,9 @@ export async function keysCommand(args: readonly string[], io: KeysIO = defaultI
           scopes: created.scopes,
           expiresAt: iso(created.expiresAt),
           allowedModels: created.allowedModels,
+          quotaTokens: created.quotaTokens,
+          rpm: created.rpm,
+          tpm: created.tpm,
         }),
       );
     } else {
@@ -312,6 +367,9 @@ export async function keysCommand(args: readonly string[], io: KeysIO = defaultI
     io.err(
       `Created key ${created.id} (${created.name}, scopes: ${created.scopes.join(",")}` +
         `${created.allowedModels ? `, models: ${created.allowedModels.join(",")}` : ""}` +
+        `${created.quotaTokens !== null ? `, quota: ${created.quotaTokens} tokens` : ""}` +
+        `${created.rpm !== null ? `, rpm: ${created.rpm}` : ""}` +
+        `${created.tpm !== null ? `, tpm: ${created.tpm}` : ""}` +
         `${created.expiresAt ? `, expires ${created.expiresAt.toISOString()}` : ""}) in ${dbPath}. ` +
         "The secret was printed once on stdout; store it now, it cannot be shown again.",
     );

@@ -1,10 +1,25 @@
 import type { IPlugin, PluginContext, PluginResult } from "../types.js";
 
 export interface RateLimitConfig {
-  readonly maxRequestsPerMinute: number;
+  /** Requests per minute per key; unset = no per-minute request limit. */
+  readonly maxRequestsPerMinute?: number;
   readonly maxRequestsPerDay?: number;
+  /**
+   * Tokens per minute per key (0.3.0). Enforced by the gateway's key meter
+   * (usage/key-meter.ts), which counts tokens when a request completes; this
+   * plugin only carries the value as the global default for keys without
+   * their own TPM.
+   */
+  readonly maxTokensPerMinute?: number;
   readonly key?: string;
 }
+
+/**
+ * Plugin-context metadata flag set by the pipeline when the caller's API key
+ * has its own requests-per-minute limit (enforced by the key meter): the
+ * plugin's per-minute limit then does not apply to that key.
+ */
+export const KEY_RPM_METADATA = "_keyRpm";
 
 const MINUTE_MS = 60_000;
 const DAY_MS = 86_400_000;
@@ -57,10 +72,11 @@ export class RateLimitPlugin implements IPlugin {
     roll(state.minute, now, MINUTE_MS);
     if (state.day !== null) roll(state.day, now, DAY_MS);
 
-    if (state.minute.count >= this.config.maxRequestsPerMinute) {
+    const perMinute = ctx.metadata[KEY_RPM_METADATA] === true ? undefined : this.config.maxRequestsPerMinute;
+    if (perMinute !== undefined && state.minute.count >= perMinute) {
       return {
         action: "reject",
-        reason: `Rate limit exceeded: ${String(this.config.maxRequestsPerMinute)} requests per minute`,
+        reason: `Rate limit exceeded: ${String(perMinute)} requests per minute`,
         status: 429,
         retryAfterSeconds: Math.max(1, Math.ceil((state.minute.start + MINUTE_MS - now) / 1000)),
       };

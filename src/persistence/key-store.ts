@@ -34,6 +34,63 @@ export interface APIKey {
   lastUsedAt: Date | null;
   /** Published model names this key may use (aliases count by either name); null = every model. */
   allowedModels: string[] | null;
+  /** Token quota (prompt + completion tokens, all time until reset); null = unlimited. */
+  quotaTokens: number | null;
+  /** Requests per minute for this key; null = the global rate-limit plugin value (if any). */
+  rpm: number | null;
+  /** Tokens per minute for this key; null = the global rate-limit plugin value (if any). */
+  tpm: number | null;
+  /**
+   * Tokens counted against the quota, as last persisted. The running server
+   * keeps the live value in memory (usage/key-meter.ts) and writes it back
+   * asynchronously, so this can lag by a second or so.
+   */
+  usedTokens: number;
+  /** When the usage was last reset by an operator; null = never. */
+  usageResetAt: Date | null;
+  /** Bumped by every change to the key's settings (If-Match / ETag on PATCH /admin/keys/:id). */
+  revision: number;
+}
+
+/** Per-key limits (0.3.0 P5); null = no own limit. */
+export interface KeyLimits {
+  readonly quotaTokens: number | null;
+  readonly rpm: number | null;
+  readonly tpm: number | null;
+}
+
+/** Fields PATCH /admin/keys/:id may change; undefined = unchanged. */
+export interface KeyPatch {
+  name?: string;
+  scopes?: string[];
+  allowedModels?: readonly string[] | null;
+  expiresAt?: Date | null;
+  quotaTokens?: number | null;
+  rpm?: number | null;
+  tpm?: number | null;
+}
+
+/** Thrown by patch() when the key's revision is not the expected one. */
+export class KeyRevisionMismatchError extends Error {
+  constructor(readonly currentRevision: number) {
+    super(`key revision mismatch (current: ${currentRevision})`);
+    this.name = "KeyRevisionMismatchError";
+  }
+}
+
+/** Throw unless `v` is null/undefined or an integer in [min, max]. */
+export function assertLimit(field: string, v: unknown, min: number): asserts v is number | null | undefined {
+  if (v === null || v === undefined) return;
+  if (typeof v !== "number" || !Number.isSafeInteger(v) || v < min) {
+    throw new InvalidKeyLimitError(field, min);
+  }
+}
+
+export class InvalidKeyLimitError extends Error {
+  constructor(field: string, min: number) {
+    super(`'${field}' must be null or an integer >= ${min}`);
+    this.name = "InvalidKeyLimitError";
+  }
 }
 
 /**
@@ -147,7 +204,7 @@ export function assertValidScopes(scopes: readonly unknown[]): asserts scopes is
 }
 
 const KEY_ROW_SELECT =
-  "SELECT id, key_display, name, scopes, created_at, revoked_at, expires_at, rotated_at, active, usage_count, last_used_at, allowed_models FROM api_keys";
+  "SELECT id, key_display, name, scopes, created_at, revoked_at, expires_at, rotated_at, active, usage_count, last_used_at, allowed_models, quota_tokens, rpm, tpm, used_tokens, usage_reset_at, revision FROM api_keys";
 
 // ---------------------------------------------------------------------------
 // Migration steps
@@ -238,6 +295,26 @@ CREATE TABLE IF NOT EXISTS api_keys (
         }
       },
     },
+    {
+      // 0.3.0 P5: per-key token quota, RPM / TPM, the tokens used so far
+      // (persisted asynchronously by the server) and a revision for If-Match.
+      version: 6,
+      name: "api_keys_limits_and_usage",
+      fn: (db) => {
+        const cols = new Set(
+          (db.query("PRAGMA table_info(api_keys)").all() as Array<{ name: string }>).map((c) => c.name),
+        );
+        const add = (name: string, ddl: string) => {
+          if (!cols.has(name)) db.exec(`ALTER TABLE api_keys ADD COLUMN ${ddl}`);
+        };
+        add("quota_tokens", "quota_tokens INTEGER NULL");
+        add("rpm", "rpm INTEGER NULL");
+        add("tpm", "tpm INTEGER NULL");
+        add("used_tokens", "used_tokens INTEGER NOT NULL DEFAULT 0");
+        add("usage_reset_at", "usage_reset_at DATETIME NULL");
+        add("revision", "revision INTEGER NOT NULL DEFAULT 1");
+      },
+    },
   ];
 }
 
@@ -267,6 +344,12 @@ interface KeyRow {
   usage_count: number;
   last_used_at: string | null;
   allowed_models: string | null;
+  quota_tokens: number | null;
+  rpm: number | null;
+  tpm: number | null;
+  used_tokens: number;
+  usage_reset_at: string | null;
+  revision: number;
 }
 
 function parseRow(row: KeyRow): APIKey {
@@ -290,6 +373,12 @@ function parseRow(row: KeyRow): APIKey {
     usageCount: row.usage_count,
     lastUsedAt: row.last_used_at !== null ? new Date(row.last_used_at) : null,
     allowedModels: parseAllowedModels(row.allowed_models),
+    quotaTokens: row.quota_tokens,
+    rpm: row.rpm,
+    tpm: row.tpm,
+    usedTokens: row.used_tokens,
+    usageResetAt: row.usage_reset_at !== null ? new Date(row.usage_reset_at) : null,
+    revision: row.revision,
   };
 }
 
@@ -340,14 +429,18 @@ export class KeyStore {
   private initStatements(): void {
     this.stmtGetByID = this.db.prepare<KeyRow, [string]>(`${KEY_ROW_SELECT} WHERE id = ?`);
     this.stmtGetByHash = this.db.prepare<KeyRow, [string]>(`${KEY_ROW_SELECT} WHERE key_hash = ?`);
-    this.stmtRevoke = this.db.prepare("UPDATE api_keys SET revoked_at = ?, active = ? WHERE id = ?");
-    this.stmtUpdate = this.db.prepare("UPDATE api_keys SET name = ?, scopes = ? WHERE id = ?");
-    this.stmtSetExpiry = this.db.prepare("UPDATE api_keys SET expires_at = ? WHERE id = ?");
+    this.stmtRevoke = this.db.prepare(
+      "UPDATE api_keys SET revoked_at = ?, active = ?, revision = revision + 1 WHERE id = ?",
+    );
+    this.stmtUpdate = this.db.prepare("UPDATE api_keys SET name = ?, scopes = ?, revision = revision + 1 WHERE id = ?");
+    this.stmtSetExpiry = this.db.prepare("UPDATE api_keys SET expires_at = ?, revision = revision + 1 WHERE id = ?");
     this.stmtDelete = this.db.prepare("DELETE FROM api_keys WHERE id = ?");
     this.stmtUsage = this.db.prepare(
       "UPDATE api_keys SET usage_count = usage_count + 1, last_used_at = ? WHERE id = ?",
     );
-    this.stmtRotate = this.db.prepare("UPDATE api_keys SET key_hash = ?, key_display = ?, rotated_at = ? WHERE id = ?");
+    this.stmtRotate = this.db.prepare(
+      "UPDATE api_keys SET key_hash = ?, key_display = ?, rotated_at = ?, revision = revision + 1 WHERE id = ?",
+    );
     this.stmtGetLatch = this.db.prepare<{ value: string }, [string]>("SELECT value FROM api_key_meta WHERE key = ?");
     this.stmtSetLatch = this.db.prepare("INSERT OR IGNORE INTO api_key_meta(key, value) VALUES(?, ?)");
   }
@@ -409,10 +502,16 @@ export class KeyStore {
     name: string,
     scopes: string[],
     expiresAt?: Date,
-    opts?: KeyWriteOptions & { allowedModels?: readonly string[] | null },
+    opts?: KeyWriteOptions & { allowedModels?: readonly string[] | null } & Partial<KeyLimits>,
   ): APIKey {
     assertValidScopes(scopes);
     const allowedModels = normalizeAllowedModels(opts?.allowedModels);
+    assertLimit("quotaTokens", opts?.quotaTokens, 0);
+    assertLimit("rpm", opts?.rpm, 1);
+    assertLimit("tpm", opts?.tpm, 1);
+    const quotaTokens = opts?.quotaTokens ?? null;
+    const rpm = opts?.rpm ?? null;
+    const tpm = opts?.tpm ?? null;
     const finalScopes = scopes.length > 0 ? [...new Set(scopes)] : [...DEFAULT_SCOPES];
     const key = generateAPIKey();
     const id = generateID();
@@ -421,8 +520,8 @@ export class KeyStore {
     this.latchedWrite(finalScopes.includes(SCOPE_ADMIN), opts, () =>
       this.db
         .prepare(
-          `INSERT INTO api_keys(id, key_hash, key_display, name, scopes, created_at, revoked_at, expires_at, rotated_at, active, usage_count, last_used_at, allowed_models)
-         VALUES(?, ?, ?, ?, ?, ?, NULL, ?, NULL, ?, ?, NULL, ?)`,
+          `INSERT INTO api_keys(id, key_hash, key_display, name, scopes, created_at, revoked_at, expires_at, rotated_at, active, usage_count, last_used_at, allowed_models, quota_tokens, rpm, tpm, used_tokens, revision)
+         VALUES(?, ?, ?, ?, ?, ?, NULL, ?, NULL, ?, ?, NULL, ?, ?, ?, ?, 0, 1)`,
         )
         .run(
           id,
@@ -435,6 +534,9 @@ export class KeyStore {
           1,
           0,
           allowedModels === null ? null : JSON.stringify(allowedModels),
+          quotaTokens,
+          rpm,
+          tpm,
         ),
     );
 
@@ -452,6 +554,12 @@ export class KeyStore {
       usageCount: 0,
       lastUsedAt: null,
       allowedModels,
+      quotaTokens,
+      rpm,
+      tpm,
+      usedTokens: 0,
+      usageResetAt: null,
+      revision: 1,
     };
   }
 
@@ -580,9 +688,9 @@ export class KeyStore {
     const current = this.get(id);
     if (current === null) throw new KeyNotFoundError(id);
     this.db
-      .prepare("UPDATE api_keys SET allowed_models = ? WHERE id = ?")
+      .prepare("UPDATE api_keys SET allowed_models = ?, revision = revision + 1 WHERE id = ?")
       .run(allowedModels === null ? null : JSON.stringify(allowedModels), id);
-    return { ...current, allowedModels };
+    return { ...current, allowedModels, revision: current.revision + 1 };
   }
 
   update(id: string, name: string, scopes: string[], opts?: KeyWriteOptions): APIKey {
@@ -603,7 +711,88 @@ export class KeyStore {
       ...current,
       name: newName,
       scopes: newScopes,
+      revision: current.revision + 1,
     };
+  }
+
+  /**
+   * Change any of a key's settings in one transaction (PATCH
+   * /admin/keys/:id). With `expectedRevision` the write happens only if the
+   * key is still at that revision (KeyRevisionMismatchError otherwise).
+   * Validates scopes, allowed models and limits before writing anything.
+   * Bumps the revision once. Throws KeyNotFoundError.
+   */
+  patch(id: string, patch: KeyPatch, expectedRevision?: number, opts?: KeyWriteOptions): APIKey {
+    if (patch.scopes !== undefined) assertValidScopes(patch.scopes);
+    const allowedModels = patch.allowedModels === undefined ? undefined : normalizeAllowedModels(patch.allowedModels);
+    assertLimit("quotaTokens", patch.quotaTokens, 0);
+    assertLimit("rpm", patch.rpm, 1);
+    assertLimit("tpm", patch.tpm, 1);
+    const sets: string[] = [];
+    const args: Array<string | number | null> = [];
+    const set = (col: string, v: string | number | null) => {
+      sets.push(`${col} = ?`);
+      args.push(v);
+    };
+    if (patch.name !== undefined) set("name", patch.name);
+    const scopes = patch.scopes !== undefined && patch.scopes.length > 0 ? [...new Set(patch.scopes)] : undefined;
+    if (scopes !== undefined) set("scopes", JSON.stringify(scopes));
+    if (allowedModels !== undefined)
+      set("allowed_models", allowedModels === null ? null : JSON.stringify(allowedModels));
+    if (patch.expiresAt !== undefined)
+      set("expires_at", patch.expiresAt === null ? null : patch.expiresAt.toISOString());
+    if (patch.quotaTokens !== undefined) set("quota_tokens", patch.quotaTokens);
+    if (patch.rpm !== undefined) set("rpm", patch.rpm);
+    if (patch.tpm !== undefined) set("tpm", patch.tpm);
+    return this.latchedWrite(scopes?.includes(SCOPE_ADMIN) === true, opts, () => {
+      const current = this.get(id);
+      if (current === null) throw new KeyNotFoundError(id);
+      if (expectedRevision !== undefined && current.revision !== expectedRevision) {
+        throw new KeyRevisionMismatchError(current.revision);
+      }
+      this.db
+        .prepare(`UPDATE api_keys SET ${[...sets, "revision = revision + 1"].join(", ")} WHERE id = ?`)
+        .run(...args, id);
+      const updated = this.get(id);
+      if (updated === null) throw new KeyNotFoundError(id);
+      return updated;
+    });
+  }
+
+  /**
+   * Set a key's used tokens back to 0 and record when (POST
+   * /admin/keys/:id/reset-usage). The running server resets its in-memory
+   * counter at the same time. Throws KeyNotFoundError.
+   */
+  resetUsage(id: string, at: Date = new Date()): APIKey {
+    const result = this.db
+      .prepare("UPDATE api_keys SET used_tokens = 0, usage_reset_at = ?, revision = revision + 1 WHERE id = ?")
+      .run(at.toISOString(), id);
+    if (result.changes === 0) throw new KeyNotFoundError(id);
+    const updated = this.get(id);
+    if (updated === null) throw new KeyNotFoundError(id);
+    return updated;
+  }
+
+  /**
+   * Persist live used-token counters (absolute values) in one transaction.
+   * Called asynchronously by the usage recorder, never on the request path.
+   * Keys that no longer exist are skipped.
+   */
+  saveUsedTokens(entries: Iterable<readonly [id: string, used: number]>): void {
+    const stmt = this.db.prepare("UPDATE api_keys SET used_tokens = ? WHERE id = ?");
+    this.db.transaction(() => {
+      for (const [id, used] of entries) stmt.run(Math.max(0, Math.floor(used)), id);
+    })();
+  }
+
+  /** Persisted used tokens of every key with any usage (restored into the key meter at startup). */
+  usedTokensByKey(): Map<string, number> {
+    const rows = this.db.query("SELECT id, used_tokens FROM api_keys WHERE used_tokens > 0").all() as Array<{
+      id: string;
+      used_tokens: number;
+    }>;
+    return new Map(rows.map((r) => [r.id, r.used_tokens]));
   }
 
   // -------------------------------------------------------------------------

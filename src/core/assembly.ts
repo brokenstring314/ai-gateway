@@ -14,6 +14,8 @@ import {
   normalizePluginName,
   type PluginRegistration,
 } from "../plugins/builtins/from-config.js";
+import { RateLimitPluginConfigSchema } from "../plugins/builtins/config-schemas.js";
+import type { KeyMeter } from "../usage/key-meter.js";
 import { PluginManager } from "../plugins/manager.js";
 import { ProviderRegistry } from "../providers/registry.js";
 import { CircuitBreaker, CircuitBreakerRegistry } from "../routing/circuit-breaker.js";
@@ -76,6 +78,18 @@ export interface AssemblyHooks {
   readonly load?: TargetLoad;
   /** SSRF guard for publicNetworkOnly targets (default: the shared one). */
   readonly guard?: PublicHostGuard;
+  /** Per-key quota / RPM / TPM counters, kept across reloads (owned by the Gateway). */
+  readonly keyMeter?: KeyMeter;
+}
+
+/** The rate-limit plugin's maxTokensPerMinute (the TPM of keys without their own), if configured. */
+export function globalTokensPerMinute(config: Pick<GatewayConfig, "plugins">): number | undefined {
+  for (const entry of config.plugins ?? []) {
+    if (entry.enabled === false || normalizePluginName(entry.name) !== "rate-limit") continue;
+    const parsed = RateLimitPluginConfigSchema.safeParse(entry.config ?? {});
+    if (parsed.success && parsed.data.maxTokensPerMinute !== undefined) return parsed.data.maxTokensPerMinute;
+  }
+  return undefined;
 }
 
 /**
@@ -90,16 +104,14 @@ export function assembleGateway(config: GatewayConfig, hooks: AssemblyHooks, pre
   const registry = new ProviderRegistry();
   const plugins = new PluginManager();
   const carriedPlugins = new Map<string, readonly PluginRegistration[]>();
-  // Budget reservation rates depend on the targets' prices, so they are part of its key.
-  const rates = config.targets.map((t) => [t.costPer1kInputTokens ?? 0, t.costPer1kOutputTokens ?? 0]);
   const seen = new Map<string, number>();
   for (const entry of config.plugins ?? []) {
-    const base = stableKey({ entry, rates: normalizePluginName(entry.name) === "budget" ? rates : null });
+    const base = stableKey({ entry });
     // Two identical entries stay two instances: the n-th occurrence gets its own key.
     const n = (seen.get(base) ?? 0) + 1;
     seen.set(base, n);
     const key = `${base}#${n}`;
-    const regs = previous?.carry.plugins.get(key) ?? buildPluginsFromConfig([entry], config.targets);
+    const regs = previous?.carry.plugins.get(key) ?? buildPluginsFromConfig([entry]);
     carriedPlugins.set(key, regs);
     for (const { stage, plugin } of regs) plugins.register(stage, plugin);
   }
@@ -173,6 +185,7 @@ export function assembleGateway(config: GatewayConfig, hooks: AssemblyHooks, pre
   });
 
   const targets = new Map(config.targets.map((t) => [t.name, t]));
+  const globalTpm = globalTokensPerMinute(config);
   const catalog = new ModelCatalog(config, strategy, registry, load);
   const pipeline = new Pipeline({
     plugins,
@@ -188,6 +201,8 @@ export function assembleGateway(config: GatewayConfig, hooks: AssemblyHooks, pre
       return mcp ? mcpLoop(mcp) : null;
     },
     logSinks: hooks.logSinks,
+    ...(hooks.keyMeter ? { keyMeter: hooks.keyMeter } : {}),
+    ...(globalTpm !== undefined ? { globalTpm } : {}),
   });
 
   return {

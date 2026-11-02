@@ -14,6 +14,9 @@ import type { ConfigStore } from "../persistence/config-store.js";
 import type { GatewayConfig } from "../config/types.js";
 import { KeyStore, keyStorePath, openKeyStoreDatabase, resolveDataDir } from "../persistence/key-store.js";
 import { RequestLogStore, openRequestLogDatabase } from "../persistence/request-log-store.js";
+import { KeyMeter } from "../usage/key-meter.js";
+import { UsageRecorder } from "../usage/recorder.js";
+import { openUsageDatabase, UsageStore, usageStorePath } from "../usage/usage-store.js";
 import {
   parseAllowUnauthenticatedProxy,
   validateProductionSafety,
@@ -72,14 +75,21 @@ export async function bootstrap(configPath: string, overrides: ServeOverrides = 
   // WAL + busy timeout: `ai-gateway keys ...` may write while the server runs.
   const keyDb = openKeyStoreDatabase(keyStorePath(dataDir));
   const logDb = openRequestLogDatabase(join(dataDir, "request-logs.sqlite"));
+  const usageDb = openUsageDatabase(usageStorePath(dataDir));
 
   let keyStore: KeyStore;
   let logStore: RequestLogStore;
+  let usageStore: UsageStore;
   try {
-    [keyStore, logStore] = await Promise.all([KeyStore.create(keyDb), RequestLogStore.create(logDb)]);
+    [keyStore, logStore, usageStore] = await Promise.all([
+      KeyStore.create(keyDb),
+      RequestLogStore.create(logDb),
+      UsageStore.create(usageDb),
+    ]);
   } catch (err) {
     keyDb.close();
     logDb.close();
+    usageDb.close();
     runtime.store?.close();
     throw err;
   }
@@ -108,7 +118,17 @@ export async function bootstrap(configPath: string, overrides: ServeOverrides = 
   // Fresh process-wide request logger (console JSON); the log store is
   // attached as a sink by createApp (logStore), so /admin/logs has data.
   initRequestLogger();
-  const gateway = new Gateway(config);
+  // Per-key quota / RPM / TPM counters: restored from the key store, kept for the
+  // process's life (reloads included), persisted asynchronously by the recorder.
+  const keyMeter = new KeyMeter();
+  keyMeter.restore(keyStore.usedTokensByKey());
+  const gateway = new Gateway(config, { keyMeter });
+  const usageRecorder = new UsageRecorder({
+    store: usageStore,
+    meter: keyMeter,
+    keyStore,
+    intervalMs: parseEnvNumber(process.env["USAGE_FLUSH_INTERVAL_MS"]) ?? 1000,
+  });
   await gateway.initMcp();
   const shutdown = new ShutdownManager({
     shutdownGraceMs: parseEnvNumber(process.env["SHUTDOWN_GRACE_MS"]) ?? 10_000,
@@ -152,6 +172,8 @@ export async function bootstrap(configPath: string, overrides: ServeOverrides = 
   const app = createApp(gateway, config, configPath, keyStore, {
     metrics,
     logStore,
+    usageStore,
+    usageRecorder,
     ...(runtime.store ? { configStore: runtime.store } : {}),
     configApi: {
       backups: { keep: 5, minIntervalMs: parseEnvNumber(process.env["CONFIG_BACKUP_MIN_INTERVAL_MS"]) ?? 0 },
@@ -224,7 +246,10 @@ export async function bootstrap(configPath: string, overrides: ServeOverrides = 
   }
   shutdown.register({ name: "gateway", close: () => gateway.close() });
   shutdown.register({ name: "request-logger", close: () => getRequestLogger().close() });
+  // Last usage flush (rollups + used tokens) before the stores close.
+  shutdown.register({ name: "usage-recorder", close: () => usageRecorder.close() });
   shutdown.register({ name: "api-key-store", close: () => keyStore.close() });
+  shutdown.register({ name: "usage-store", close: () => usageStore.close() });
   shutdown.register({ name: "request-log-store", close: () => logStore.close() });
   const configStore = runtime.store;
   if (configStore) shutdown.register({ name: "config-store", close: () => configStore.close() });

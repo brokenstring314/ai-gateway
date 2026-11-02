@@ -9,8 +9,9 @@
  *   6 mcpLoop    chat with gateway-owned tool_calls: every round through 5,
  *                usage summed
  *   7 finalize   exactly once per request: after/onError plugins → settled
- *                callbacks (budget release) → request log (console + sinks)
- *                → metrics (tokens, cost, plugin blocked) → span end
+ *                callbacks → key meter (tokens toward quota / TPM) → request
+ *                log (console + sinks, e.g. usage rollups) → metrics
+ *                (tokens, plugin blocked) → span end
  *
  * Streaming (executeStream → core/chat-stream.ts) reuses begin() /
  * finalize(): a stream run calls finalize(run, outcome) once when it ends.
@@ -35,7 +36,9 @@ import { strategyRunOptions, type TargetExecutor } from "./executor.js";
 import type { McpLoop } from "./mcp-loop.js";
 import { runChatStream, type ChatShapedSurface } from "./chat-stream.js";
 import type { FinalizeOutcome, RequestRun, Result, Surface } from "./types.js";
-import { addUsage, costOf } from "./usage.js";
+import { addUsage } from "./usage.js";
+import type { KeyMeter } from "../usage/key-meter.js";
+import { KEY_RPM_METADATA } from "../plugins/builtins/rate-limit.js";
 
 /** Provider label for requests that never reached an upstream target. */
 export const NO_UPSTREAM_PROVIDER = "none";
@@ -58,6 +61,10 @@ export interface PipelineDeps {
   readonly targetConfig: (name: string) => TargetConfig | undefined;
   readonly mcp: () => McpLoop | null;
   readonly logSinks: () => Iterable<RequestLogSink>;
+  /** Per-key quota / RPM / TPM counters, shared by every snapshot (usage/key-meter.ts). */
+  readonly keyMeter?: KeyMeter;
+  /** TPM for keys without their own: the rate-limit plugin's maxTokensPerMinute. */
+  readonly globalTpm?: number;
 }
 
 /** begin(): either a run to send upstream, or the request is already answered by a plugin. */
@@ -133,6 +140,8 @@ export class Pipeline {
     // whether it streams, for plugins that scope themselves (pii-secret-guard).
     pluginCtx.metadata["_surfaceName"] = surface.name;
     if (surface.logLabel.endsWith("_stream")) pluginCtx.metadata["_streaming"] = true;
+    // A key with its own RPM is limited by the key meter, not the rate-limit plugin.
+    if ((ctx?.client?.limits?.rpm ?? null) !== null) pluginCtx.metadata[KEY_RPM_METADATA] = true;
     const span = getTracer().startSpan(SPAN_NAMES[surface.logLabel] ?? `gateway.${surface.logLabel}`, {
       "request.model": requestedModel,
     });
@@ -149,6 +158,13 @@ export class Pipeline {
 
     try {
       this.checkModelAccess(surface, requestedModel, ctx);
+      // Key limits (0.3.0 P5): in-memory counters only. An admitted request
+      // always runs to the end; its tokens are counted in finalize.
+      this.deps.keyMeter?.admit(ctx?.client, {
+        ...(this.deps.globalTpm !== undefined ? { globalTpm: this.deps.globalTpm } : {}),
+        // Routes whose usage is not in tokens: a key with a token quota cannot be metered there.
+        unmetered: surface.name === "passthrough" || surface.name === "images",
+      });
     } catch (err) {
       await this.finalize(run, { kind: "error", error: err });
       throw err;
@@ -347,7 +363,7 @@ export class Pipeline {
         usage = outcome.usage ?? surface.usage(outcome.value);
         usageEstimated = outcome.usageEstimated === true;
         surface.exposeResult?.(pc, outcome.value);
-        this.exposeCost(pc, target, usage);
+        pc.metadata["_target"] = target;
         const view = surface.toPluginResponse(outcome.value, target);
         pc.response = view && usage && view.usage !== usage ? { ...view, usage } : view;
         await this.deps.plugins.runAfter(pc);
@@ -358,11 +374,11 @@ export class Pipeline {
         target = outcome.target ?? targetOf(outcome.error) ?? "unknown";
         pc.error = outcome.error instanceof Error ? outcome.error : new Error(String(outcome.error));
         if (outcome.partial) {
-          // Failed mid-stream: tokens were consumed, so after plugins (budget) run too.
+          // Failed mid-stream: tokens were consumed, so after plugins run too.
           usage = outcome.partial.usage;
           usageEstimated = outcome.partial.usageEstimated === true;
           model = outcome.partial.response.model || model;
-          this.exposeCost(pc, target, usage);
+          pc.metadata["_target"] = target;
           pc.response = outcome.partial.response;
           await this.deps.plugins.runOnError(pc);
           await this.deps.plugins.runAfter(pc);
@@ -389,8 +405,17 @@ export class Pipeline {
       durationMs,
       surface: surface.logLabel,
     };
-    if (usage)
+    if (ctx?.client?.id) entry.keyId = ctx.client.id;
+    entry.publishedModel = surface.model(run.request);
+    if (usage) {
       entry.tokens = { prompt: usage.promptTokens, completion: usage.completionTokens, total: usage.totalTokens };
+      const cacheHit = cacheHitTokens(usage);
+      if (cacheHit > 0) entry.tokens.cacheHit = cacheHit;
+      const reasoning = usage.completionTokensDetails?.["reasoning_tokens"];
+      if (typeof reasoning === "number" && reasoning > 0) entry.tokens.reasoning = reasoning;
+      // Count the tokens toward the key's quota and TPM window (never refuses: the request ran).
+      this.deps.keyMeter?.record(ctx?.client, quotaTokensOf(usage));
+    }
     if (usageEstimated) entry.usageEstimated = true;
     // Guardrail detections: plugin, direction, action and entity TYPES only (never values).
     const guardrail = pc.metadata[GUARDRAIL_METADATA_KEY];
@@ -437,13 +462,6 @@ export class Pipeline {
     }
   }
 
-  /** Cost of this request at the serving target's rates, for after plugins (budget) and metrics. */
-  private exposeCost(pc: InternalPluginContext, target: string, usage: Usage | undefined): void {
-    pc.metadata["_target"] = target;
-    const rates = this.deps.targetConfig(target);
-    if (rates && usage) pc.metadata["_costUsd"] = costOf(rates, usage);
-  }
-
   private record(
     outcome: FinalizeOutcome<unknown>,
     surfaceLabel: string,
@@ -464,9 +482,25 @@ export class Pipeline {
     }
     if (!usage) return;
     metrics.recordTokens(target, model, usage.promptTokens, usage.completionTokens);
-    const cost = costOf(this.deps.targetConfig(target), usage);
-    if (cost > 0) metrics.recordCost(target, model, cost);
   }
+}
+
+/** Prompt tokens served from the upstream's cache (OpenAI cached_tokens, DeepSeek prompt_cache_hit_tokens). */
+export function cacheHitTokens(usage: Usage): number {
+  const cached = usage.promptTokensDetails?.["cached_tokens"];
+  if (typeof cached === "number" && cached > 0) return cached;
+  const hit = usage.extra?.["prompt_cache_hit_tokens"];
+  return typeof hit === "number" && Number.isFinite(hit) && hit > 0 ? hit : 0;
+}
+
+/** Tokens a request counts toward a key's quota / TPM: total, or prompt + completion when larger. */
+export function quotaTokensOf(usage: Usage): number {
+  const sum = nonNegativeNumber(usage.promptTokens) + nonNegativeNumber(usage.completionTokens);
+  return Math.max(nonNegativeNumber(usage.totalTokens), sum);
+}
+
+function nonNegativeNumber(n: unknown): number {
+  return typeof n === "number" && Number.isFinite(n) && n > 0 ? n : 0;
 }
 
 function unavailableModel(model: string) {

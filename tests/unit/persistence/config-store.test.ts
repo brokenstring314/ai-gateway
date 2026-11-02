@@ -28,7 +28,6 @@ function fileConfig(extra: Record<string, unknown> = {}) {
         models: ["m1", "m2"],
         retry: { attempts: 2 },
         circuitBreaker: { failureThreshold: 3 },
-        costPer1kInputTokens: 0.1,
       },
       { name: "b", provider: "deepseek", apiKey: SECRET_B, concurrency: { maxConcurrency: 4 } },
       { name: "c", provider: "openai", apiKey: "${UPSTREAM_C_KEY}", baseURL: "https://c.example/v1", weight: 2 },

@@ -1,3 +1,4 @@
+import type { MeteredKey } from "../usage/key-meter.js";
 /**
  * Provider interfaces — the core contracts for all LLM provider implementations.
  * Mirrors the Go project's providers/core/contracts.go but OpenAI-compatible only.
@@ -59,6 +60,12 @@ export interface RequestContext {
    * allowed models). Unset: no restriction (config keys, embedded callers).
    */
   allowedModels?: readonly string[];
+  /**
+   * The client key the request is metered as (0.3.0 P5): its id (key-store
+   * id, `cfg_…` for a config auth key) and its own limits (token quota,
+   * RPM, TPM). Unset for unauthenticated / embedded callers.
+   */
+  client?: MeteredKey;
 }
 
 export interface ModelInfo {
@@ -183,7 +190,7 @@ export interface Usage {
   totalTokens: number;
   promptTokensDetails?: Record<string, number>;
   completionTokensDetails?: Record<string, number>;
-  /** Allow-listed usage wire fields (cost, prompt_cache_hit_tokens …), snake_case. */
+  /** Allow-listed usage wire fields (prompt_cache_hit_tokens …), snake_case. */
   extra?: Record<string, unknown>;
 }
 

@@ -40,6 +40,7 @@ import { TargetLoad } from "./routing/balancer.js";
 import type { PublicHostGuard } from "./security/url-guard.js";
 import { type KeyEvent, type KeyPool, KeyStateRegistry } from "./routing/key-pool.js";
 import type { ConcurrencyLimiterRegistry } from "./routing/concurrency-limiter.js";
+import { KeyMeter } from "./usage/key-meter.js";
 
 /**
  * One immutable generation of the gateway's runtime: the config and every
@@ -78,6 +79,8 @@ export class Gateway {
   private readonly keyStates = new KeyStateRegistry();
   /** Requests in flight per target (least_inflight balancing), kept across reloads. */
   private readonly targetLoad = new TargetLoad();
+  /** Per-key token quota / RPM / TPM counters, kept across reloads (usage/key-meter.ts). */
+  private readonly meter: KeyMeter;
 
   /**
    * `options.publicHostGuard`: request-time SSRF guard for channels with
@@ -86,8 +89,9 @@ export class Gateway {
    */
   constructor(
     config: GatewayConfig,
-    private readonly options: { readonly publicHostGuard?: PublicHostGuard } = {},
+    private readonly options: { readonly publicHostGuard?: PublicHostGuard; readonly keyMeter?: KeyMeter } = {},
   ) {
+    this.meter = options.keyMeter ?? new KeyMeter();
     this.snapshot = { version: 1, config, parts: this.assemble(config), createdAt: new Date() };
     this.mcpRegistry = new McpRegistry();
     this.mcpExecutor = createMcpExecutor(config, this.mcpRegistry);
@@ -102,6 +106,7 @@ export class Gateway {
         logSinks: () => this.logSinks,
         keyState: this.keyStates,
         load: this.targetLoad,
+        keyMeter: this.meter,
         ...(this.options.publicHostGuard ? { guard: this.options.publicHostGuard } : {}),
       },
       previous,
@@ -164,6 +169,11 @@ export class Gateway {
   keyRuntimeState(channel: string): ReadonlyArray<{ id: string; cooldownUntil?: string; disabled?: unknown }> {
     const provider = this.snapshot.parts.registry.get(channel) as { keyPool?: KeyPool } | undefined;
     return provider?.keyPool?.snapshot() ?? [];
+  }
+
+  /** Per-key quota / RPM / TPM counters (the same object for the gateway's whole life). */
+  keyMeter(): KeyMeter {
+    return this.meter;
   }
 
   /** The current runtime generation (version, config, parts). */

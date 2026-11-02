@@ -14,7 +14,6 @@
  *   - ai_gateway_circuit_breaker_state          gauge     {provider, state}
  *   - ai_gateway_mcp_server_up                  gauge     {server}
  *   - ai_gateway_rate_limit_rejections_total    counter   {provider}
- *   - ai_gateway_request_cost_usd               counter   {provider, model}
  *
  * Label values are sanitized before recording (control characters, quotes
  * and backslashes replaced, values trimmed and length-bounded) and the
@@ -115,7 +114,6 @@ export class Metrics {
   private readonly circuitBreakerState: Gauge<string>;
   private readonly mcpServerUp: Gauge<string>;
   private readonly rateLimitRejections: Counter<string>;
-  private readonly requestCostUsd: Counter<string>;
   private readonly pluginBlocked: Counter<string>;
   private readonly guardrailDetections: Counter<string>;
 
@@ -179,13 +177,6 @@ export class Metrics {
       name: `${prefix}_rate_limit_rejections_total`,
       help: "Total number of requests rejected by the rate limiter",
       labelNames: ["provider"],
-      registers: [this.registry],
-    });
-
-    this.requestCostUsd = new Counter({
-      name: `${prefix}_request_cost_usd`,
-      help: "Cumulative cost of requests in US dollars",
-      labelNames: ["provider", "model"],
       registers: [this.registry],
     });
 
@@ -283,11 +274,6 @@ export class Metrics {
       action: sanitizeLabel(action),
       direction: sanitizeLabel(direction),
     });
-  }
-
-  /** Record the cost (in US dollars) of a completed request. */
-  recordCost(provider: string, model: string, costUsd: number): void {
-    this.requestCostUsd.inc({ provider: sanitizeLabel(provider), model: sanitizeLabel(model) }, nonNegative(costUsd));
   }
 
   /**

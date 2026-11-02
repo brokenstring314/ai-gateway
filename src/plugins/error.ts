@@ -7,7 +7,7 @@ export class PluginRejectionError extends Error {
     public readonly reason: string,
     /** Name of the plugin that rejected (or short-circuited) the request, when known. */
     public readonly plugin?: string,
-    /** HTTP status to answer with: 403 by default, 429 for rate-limit / budget. */
+    /** HTTP status to answer with: 403 by default, 429 for rate-limit. */
     public readonly status: number = DEFAULT_PLUGIN_REJECTION_STATUS,
     /** Seconds the client should wait before retrying (Retry-After), when known. */
     public readonly retryAfterSeconds?: number,

@@ -47,8 +47,6 @@ export interface TargetConfig {
   baseURL?: string;
   models?: string[];
   weight?: number;
-  costPer1kInputTokens?: number;
-  costPer1kOutputTokens?: number;
   retry?: RetryConfig;
   circuitBreaker?: CircuitBreakerConfig;
   concurrency?: ConcurrencyConfig;
@@ -232,7 +230,7 @@ export interface GatewayConfig {
   /**
    * Pass-through proxy for /v1/* routes without a dedicated handler
    * (e.g. /v1/responses). Off by default: proxied requests skip circuit
-   * breakers, fallback, after-request plugins and budget accrual. When on,
+   * breakers, fallback, after-request plugins and token accounting. When on,
    * before-request plugins still run.
    */
   passthroughProxy?: {

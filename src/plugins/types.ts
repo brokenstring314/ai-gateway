@@ -21,7 +21,7 @@ export interface PluginContext {
   /**
    * Run `fn` once when the request is finished, however it ended (served,
    * failed, rejected by a later plugin, short-circuited, client gone) —
-   * after the after/on-error plugins. Used to release reservations (budget).
+   * after the after/on-error plugins. Used to release per-request reservations.
    */
   onSettled?(fn: () => void): void;
 }
@@ -31,7 +31,7 @@ export type PluginResult =
   | { action: "short_circuit"; response: ChatCompletionResponse }
   /**
    * Block the request. `status` is the HTTP status answered (default 403;
-   * the rate-limit and budget plugins use 429); `retryAfterSeconds` becomes
+   * the rate-limit plugin uses 429); `retryAfterSeconds` becomes
    * the Retry-After header; `code` / `type` override the OpenAI-shaped
    * error's default `plugin_rejected` / `plugin_rejection` (guardrails use
    * e.g. `pii_detected` / `invalid_request_error`).

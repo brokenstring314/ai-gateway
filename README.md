@@ -215,8 +215,6 @@ targets:
     baseURL: "https://api.openai.com/v1"   # Optional, has per-provider defaults
     models: ["gpt-4o", "gpt-4o-mini"]
     weight: 3                               # For loadbalance strategy (0 = drained)
-    costPer1kInputTokens: 0.005             # Pricing (budget plugin / metrics)
-    costPer1kOutputTokens: 0.015
     retry:                                  # Per-target retry (no block = 1 attempt, no retry)
       attempts: 3                           # Max attempts (default when the block is present: 3)
       initialBackoffMs: 100                 # Base backoff in ms (default: 100)
@@ -281,12 +279,6 @@ plugins:                        # run in this order; see Plugins for every optio
     config:
       maxAge: 300
       maxEntries: 1000
-  - name: budget
-    stage: before_request
-    config:
-      dailyBudget: 100
-      costPer1kInput: 0.01
-      costPer1kOutput: 0.03
 
 compatibility:
   onUnsupportedParam: warn      # warn | drop | reject
@@ -446,8 +438,10 @@ Full OpenAI Chat Completions API compatibility, including:
   Response and stream chunks: `system_fingerprint`, `service_tier`,
   `citations`, `search_results`; `choices[].logprobs`; message / delta
   `reasoning_content`, `reasoning`, `refusal`, `annotations`, `audio`; usage
-  `prompt_tokens_details`, `completion_tokens_details`, `cost`. Other unknown
-  keys are dropped.
+  `prompt_tokens_details`, `completion_tokens_details`,
+  `prompt_cache_hit_tokens`, `prompt_cache_miss_tokens`. Other unknown keys
+  are dropped (since 0.3.0 that includes an upstream's `cost` /
+  `cost_details`: the gateway carries no money fields).
 
 **Request:**
 
@@ -607,15 +601,16 @@ slashes are never forwarded.
 
 When enabled, the request is forwarded verbatim to the target chosen by the
 `X-Provider` header or the body's top-level `model`, after the
-**before-request plugins** run on it (rate-limit, budget check, word-filter on
+**before-request plugins** run on it (rate-limit, key RPM, word-filter on
 `messages` / `input` / `prompt` / `instructions`; max-token on
 `max_output_tokens` / `max_tokens` / `max_completion_tokens`, injecting
 `max_output_tokens` on `/v1/responses` when the client omitted it). Because
 the body shape is unknown, a plugin that would rewrite content (word-filter
 `redact`) or short-circuit causes a 403 instead; a capped token limit is
 written into the forwarded body. Proxied requests do **not** get circuit
-breakers, fallback, after-request plugins or budget accrual, which is why the
-proxy is off by default.
+breakers, fallback, after-request plugins or token accounting, which is why the
+proxy is off by default. Keys with a token quota are refused on proxied routes
+(403 `quota_not_metered`): their tokens could not be counted.
 
 ### Health Probes
 
@@ -649,10 +644,13 @@ Admin endpoints accept, in key-store mode (`ai-gateway serve`): the `adminSecret
 | ------ | ------------------------- | ---------- | -------------------------------------- |
 | GET    | `/admin/config`           | read_only  | Current config (secrets redacted: API keys, admin secret, client keys, URL credentials, OTLP headers, MCP env/args, secret-looking plugin config; exact `${VAR}` templates are shown as-is) |
 | GET    | `/admin/keys`             | read_only  | List API keys (never plaintext)        |
-| GET    | `/admin/keys/usage`       | read_only  | Usage counters: `totalKeys`, `totalUsageCount`, per-key `usageCount` |
-| GET    | `/admin/keys/:id`         | read_only  | One key                                |
-| POST   | `/admin/keys`             | admin      | Create a key (`{"name", "scopes"?, "expiresAt"?}`); the key is returned once |
+| GET    | `/admin/keys/usage`       | read_only  | Usage counters: `totalKeys`, `totalUsageCount`, per-key `usageCount`, `usedTokens`, `quotaTokens` |
+| GET    | `/admin/keys/:id`         | read_only  | One key, with its limits and used tokens; `ETag` = its revision |
+| POST   | `/admin/keys`             | admin      | Create a key (`{"name", "scopes"?, "expiresAt"?, "allowedModels"?, "quotaTokens"?, "rpm"?, "tpm"?}`); the key is returned once |
 | PUT    | `/admin/keys/:id`         | admin      | Update name and scopes (`{"name", "scopes"}`) |
+| PATCH  | `/admin/keys/:id`         | admin      | Change name, scopes, allowed models, expiry, `quotaTokens`, `rpm`, `tpm` (`If-Match` required) |
+| POST   | `/admin/keys/:id/reset-usage` | admin  | Used tokens back to 0 (`If-Match` optional) |
+| GET    | `/admin/usage`            | read_only  | Tokens / requests / errors / latency by `key`, `model` or `channel` over a date range |
 | POST   | `/admin/keys/:id/revoke`  | admin      | Revoke a key                           |
 | POST   | `/admin/keys/:id/rotate`  | admin      | Replace a key's secret (new key returned once) |
 | DELETE | `/admin/keys/:id`         | admin      | Delete a key                           |
@@ -744,7 +742,34 @@ ai-gateway keys list -c config.yaml            # ids, names, scopes, status, lat
 ai-gateway keys revoke <id> -c config.yaml
 ```
 
-Options: `--expires 2027-01-01T00:00:00Z`, `--read-only` (instead of `--admin`; neither = `inference`). The command validates the config but never prints it or any secret except the new key; it refuses to create a store where none exists, so a wrong data directory fails loudly. In Docker: `docker exec <container> bun src/index.ts keys create --admin -c /config/config.yaml` (the image sets `GATEWAY_DATA_DIR=/data`).
+Options: `--expires 2027-01-01T00:00:00Z`, `--read-only` (instead of `--admin`; neither = `inference`), `--models a,b`, `--quota-tokens N`, `--rpm N`, `--tpm N` (see below). The command validates the config but never prints it or any secret except the new key; it refuses to create a store where none exists, so a wrong data directory fails loudly. In Docker: `docker exec <container> bun src/index.ts keys create --admin -c /config/config.yaml` (the image sets `GATEWAY_DATA_DIR=/data`).
+
+#### Key limits and usage (0.3.0)
+
+The gateway is a single-owner gateway, not a paid API service: there are no prices, costs, money quotas, payments or user accounts. When you hand a key to someone else you can limit it in **tokens** and **requests**:
+
+| Field | Meaning | `null` / unset |
+| ----- | ------- | -------------- |
+| `quotaTokens` | Total tokens (prompt + completion, as reported by the upstream; estimated for a stream without a usage chunk) the key may use until you reset it | unlimited |
+| `rpm` | The key's own requests per minute | the `rate-limit` plugin's `maxRequestsPerMinute` (if any) |
+| `tpm` | The key's own tokens per minute (counted when a request completes) | the `rate-limit` plugin's `maxTokensPerMinute` (if any) |
+| `allowedModels`, `expiresAt` | Published models it may use; expiry | every model; never |
+
+Set them on create (`POST /admin/keys`, `ai-gateway keys create --quota-tokens N --rpm N --tpm N`) or later with `PATCH /admin/keys/:id` (`If-Match: "<revision>"` from `GET /admin/keys/:id`; `null` clears a limit). Keys in `auth.keys` of the config file are the owner's and have no own limits (the plugin values apply to them).
+
+**Quota semantics.** A request is refused before it starts once the key's used tokens reach the quota: **403 `quota_exhausted`** (type `insufficient_quota`; 403 rather than 429 because waiting does not help — the quota never refills by itself). A request that was admitted **always finishes**, a stream is never cut for quota; its tokens are counted when it ends, so the last request (and requests already in flight) may take the key past its quota. Raise the quota (`PATCH`) or `POST /admin/keys/:id/reset-usage` to re-open it. Image generation and pass-through routes cannot be counted in tokens, so keys with a quota get **403 `quota_not_metered`** there. RPM / TPM refusals are **429 `rate_limit_exceeded`** with `Retry-After`.
+
+**Performance.** Quota, RPM and TPM are checked against in-memory counters: no database read or write on the request path. Used tokens are written to the key store about once a second (and on shutdown), restored at startup, and kept across live config changes (reloads never reset a counter). A crash can lose up to a second of counted usage.
+
+**Usage statistics.** Every finished request (including refused ones, as errors) is added to hourly rollups in `<data dir>/usage.sqlite` (batched writes, WAL): requests, errors, input / output / cache-hit / reasoning tokens, latency, per key × model × channel. `GET /admin/usage?groupBy=key|model|channel&from=YYYY-MM-DD&to=YYYY-MM-DD[&tz=Asia/Shanghai][&daily=true]` (any `read_only` credential) sums them; days are calendar days in `tz` (default UTC; buckets are whole UTC hours, so zones with a :30 offset are accurate to the hour), at most 366 days per query, default the last 7 days. Each key response also carries `usedTokens`, `remainingTokens`, `quotaExhausted` and `usageResetAt`. See [docs/admin-api.md](docs/admin-api.md#key-limits-and-usage).
+
+```bash
+# Give a friend 2M tokens, 20 requests/min, only ds-chat
+curl -X POST -H "X-Admin-Secret: $S" -H "Content-Type: application/json" http://localhost:3000/admin/keys \
+  -d '{"name":"friend","allowedModels":["ds-chat"],"quotaTokens":2000000,"rpm":20}'
+curl -H "X-Admin-Secret: $S" "http://localhost:3000/admin/usage?groupBy=key&tz=Asia/Shanghai"
+curl -X POST -H "X-Admin-Secret: $S" http://localhost:3000/admin/keys/<id>/reset-usage
+```
 
 ### Admin console
 
@@ -789,7 +814,10 @@ URLs never appear in the body; the failing target is in the
 | Model not served by any target | 404 | `model_not_found` |
 | Plugin rejection (word-filter, …) | 403 | `plugin_rejected` |
 | `pii-secret-guard` block (request / response) | 400 / 422 | `secret_detected` / `pii_detected` |
-| `rate-limit` / `budget` plugin rejection | 429 + `Retry-After` (rate-limit) | `plugin_rejected` |
+| `rate-limit` plugin rejection | 429 + `Retry-After` | `plugin_rejected` |
+| Key token quota used up | 403 | `quota_exhausted` |
+| Key with a quota on images / pass-through | 403 | `quota_not_metered` |
+| Key's own RPM / TPM (or the plugin's TPM) | 429 + `Retry-After` | `rate_limit_exceeded` |
 | Upstream 4xx (400, 404, 413, 422, …) | same status | upstream `code`; upstream `message`/`type`/`param` kept |
 | Upstream 429 | 429 + upstream `Retry-After` | upstream `code` (default `rate_limit_exceeded`) |
 | Upstream 401/403 (after failover) | 502 | `upstream_auth_failed` |
@@ -918,7 +946,7 @@ These modes now fail `ai-gateway validate` and startup with a migration hint:
 | Removed                                         | Use instead                                                                 |
 | ----------------------------------------------- | --------------------------------------------------------------------------- |
 | `least_latency`                                 | `fallback` with targets in order of preference                              |
-| `cost_optimized` (+ `unpricedStrategy`)         | `fallback` with targets ordered from cheapest to most expensive             |
+| `cost_optimized` (+ `unpricedStrategy`)         | `fallback` with targets in order of preference                              |
 | `content_based` (+ `keywords`, `contentConditions`) | `conditional` with `field: prompt` rules (`contains` or `pattern`)      |
 | `abtest` (+ `abVariants`)                       | `loadbalance` with `weights`. `abtest` still works as a deprecated alias of `loadbalance` (warning at startup) and will be removed in 0.3.0 |
 | `strategy.conditions` (Go `key/value/target_key`) | `strategy.rules: [{ field, pattern, target }]`                            |
@@ -1016,12 +1044,13 @@ plugins:
   - name: rate-limit
     stage: before_request
     config:
-      maxRequestsPerMinute: 60  # Required (aliases: keyRpm, rpm)
+      maxRequestsPerMinute: 60  # Per key (aliases: keyRpm, rpm); a key's own rpm replaces it
       maxRequestsPerDay: 5000   # Optional (alias: rpd); no day window is tracked when unset
+      maxTokensPerMinute: 100000 # Optional (alias: tpm); per key, a key's own tpm replaces it
       key: shared               # Optional bucket name for requests without an API key (default: "default")
 ```
 
-Windows start at a key's first request and reset after 60 s / 24 h, so a burst straddling a window boundary can admit up to twice the limit. Limits are per process (not shared between replicas). Rejections answer 429 `plugin_rejected` with `Retry-After` (seconds until the window resets). The `budget` plugin also answers 429.
+Windows start at a key's first request and reset after 60 s / 24 h, so a burst straddling a window boundary can admit up to twice the limit. Limits are per process (not shared between replicas). Rejections answer 429 `plugin_rejected` with `Retry-After` (seconds until the window resets). At least one of the three limits is required. Keys with their own `rpm` / `tpm` (see [Key limits and usage](#key-limits-and-usage-030)) are limited by those instead; `maxTokensPerMinute` is enforced by the same in-memory key meter (tokens counted when a request completes, 429 `rate_limit_exceeded`).
 
 #### Response Cache
 
@@ -1106,31 +1135,9 @@ plugins:
       maxTokens: 4096           # Required. Caps max_tokens / max_completion_tokens; injected as max_tokens when the request sets neither
 ```
 
-#### Budget
+#### Budget (removed in 0.3.0)
 
-Per-API-key daily USD budget enforcement.
-
-```yaml
-plugins:
-  - name: budget
-    stage: before_request
-    config:
-      dailyBudget: 100          # Daily spend limit in USD
-      costPer1kInput: 0.01     # Cost per 1K input tokens
-      costPer1kOutput: 0.03    # Cost per 1K output tokens
-      reserveOutputTokens: 1024 # optional: output tokens reserved when a request sets no max_tokens
-```
-
-Each request reserves its estimated cost (prompt ≈ 4 chars/token plus its
-`max_tokens`, or `reserveOutputTokens`) before it is sent and is charged its
-actual cost afterwards; the reservation is released however the request ends.
-While other requests of the same key are in flight, a request is admitted only
-if its estimate fits next to their reservations, so concurrency cannot
-overshoot the budget. Without `costPer1kInput` / `costPer1kOutput` the
-serving target's `costPer1kInputTokens` / `costPer1kOutputTokens` are used;
-a budget with no rates anywhere is a config error (it would never enforce).
-A stream without a usage chunk is charged an estimate (≈ 4 chars/token of the
-streamed content, tool-call text and `reasoning_content` / `reasoning`).
+The gateway does not price requests any more. A `budget` entry in `plugins` (enabled or not) fails validation with a hint; limit client keys by tokens instead ([Key limits and usage](#key-limits-and-usage-030)).
 
 #### Logger (removed in 0.2.0)
 
@@ -1140,8 +1147,8 @@ in `plugins` is ignored with a startup warning; remove it.
 
 ### Plugin Config and Error Policy
 
-- Entries run in the order listed. `stage` is required by the schema, but each built-in registers itself on the stages it needs: `cache` and `budget` on both `before_request` and `after_request`, `pii-secret-guard` per its `direction`, the others on `before_request`. `type` is optional and informational. `enabled: false` skips an entry; names may use `_` instead of `-`. An unknown plugin name is ignored with a warning.
-- **Every built-in plugin's `config` is strictly validated** by `ai-gateway validate` and at startup: unknown keys (with a did-you-mean hint), wrong types, missing required settings (`rate-limit` `maxRequestsPerMinute`, `max-token` `maxTokens`, `budget` `dailyBudget`), a `word-filter` `mode` other than `reject` / `redact`, and setting two aliases of the same option (`maxAge` and `ttlSeconds`) are errors. Only the keys shown in each plugin's example above (and the listed aliases) are accepted; counts (`maxRequestsPerMinute`, `maxRequestsPerDay`, `maxEntries`, `maxTokens`, `reserveOutputTokens`) must be integers.
+- Entries run in the order listed. `stage` is required by the schema, but each built-in registers itself on the stages it needs: `cache` on both `before_request` and `after_request`, `pii-secret-guard` per its `direction`, the others on `before_request`. `type` is optional and informational. `enabled: false` skips an entry; names may use `_` instead of `-`. An unknown plugin name is ignored with a warning.
+- **Every built-in plugin's `config` is strictly validated** by `ai-gateway validate` and at startup: unknown keys (with a did-you-mean hint), wrong types, missing required settings (`rate-limit` needs one of `maxRequestsPerMinute` / `maxRequestsPerDay` / `maxTokensPerMinute`, `max-token` `maxTokens`), a `word-filter` `mode` other than `reject` / `redact`, and setting two aliases of the same option (`maxAge` and `ttlSeconds`) are errors. Only the keys shown in each plugin's example above (and the listed aliases) are accepted; counts (`maxRequestsPerMinute`, `maxRequestsPerDay`, `maxTokensPerMinute`, `maxEntries`, `maxTokens`) must be integers.
 - **Errors are fail-closed for every plugin:** a plugin that throws fails the request (500 `Internal server error`, logged with the request). There is no fail-open mode.
 
 ---
@@ -1226,7 +1233,6 @@ Without an `observability.metrics` block, `/metrics` stays on the main port.
 | `ai_gateway_request_duration_seconds` | histogram | `method`, `status`, `provider` |
 | `ai_gateway_tokens_input_total`  | counter   | `provider`, `model` |
 | `ai_gateway_tokens_output_total` | counter   | `provider`, `model` |
-| `ai_gateway_request_cost_usd`    | counter   | `provider`, `model` (targets with `costPer1k*Tokens`) |
 | `ai_gateway_provider_errors_total` | counter | `provider`, `error_type` (every failed upstream attempt, including ones that failed over) |
 | `ai_gateway_circuit_breaker_state` | gauge   | `provider`, `state` (1 = current state) |
 | `ai_gateway_mcp_server_up`       | gauge     | `server` |
@@ -1247,12 +1253,14 @@ Every request is logged exactly once as structured JSON to stdout (and to the re
   "strategy": "single",
   "durationMs": 1500,
   "surface": "chat",
-  "tokens": {"prompt": 15, "completion": 8, "total": 23},
+  "publishedModel": "gpt-4o",
+  "keyId": "3f2a…",
+  "tokens": {"prompt": 15, "completion": 8, "total": 23, "cacheHit": 4, "reasoning": 2},
   "status": 200
 }
 ```
 
-Optional fields: `error`, `usageEstimated` (stream without a usage chunk), `plugin` / `outcome` (request ended by a plugin), `guardrail` (detections, entity types only). `surface` is `chat`, `chat_stream`, `completions`, `completions_stream`, `embedding`, `image` or `passthrough`.
+`keyId` is the client key's id (key-store id, or `cfg_<n>` for the n-th `auth.keys` entry, counted from 0), never the key; `publishedModel` is the model the client asked for (aliases resolved). Optional fields: `error`, `usageEstimated` (stream without a usage chunk), `plugin` / `outcome` (request ended by a plugin), `guardrail` (detections, entity types only). `surface` is `chat`, `chat_stream`, `completions`, `completions_stream`, `embedding`, `image` or `passthrough`.
 
 ---
 
@@ -1563,8 +1571,8 @@ gateway.close();
 │  builtins: rate-    │  │  targets: single, fallback,│  │  one adapter for all │
 │  limit, cache,      │  │  loadbalance, conditional  │  │  22 presets          │
 │  word-filter, max-  │  │  circuit-breaker (permits),│  │  (core/provider-     │
-│  token, budget,     │  │  concurrency-limiter queue,│  │  presets.ts),        │
-│  pii-secret-guard   │  │  retry (exp. jitter)       │  │  wire-extras,        │
+│  token, pii-secret- │  │  concurrency-limiter queue,│  │  presets.ts),        │
+│  guard              │  │  retry (exp. jitter)       │  │  wire-extras,        │
 └─────────────────────┘  └────────────────────────────┘  │  sse-parser,         │
                                                          │  capabilities        │
                                                          └──────────┬───────────┘
@@ -1594,8 +1602,10 @@ Client
   ├─ gateway.execute(chatSurface)  →  core/pipeline.ts
   │   │
   │   ├─ 1 alias resolution (aliases)
+  │   ├─ 1b model access (published model, key allowed_models), key limits
+  │   │     (usage/key-meter.ts: quota 403, RPM / TPM 429; in memory only)
   │   ├─ 2 before plugins, in config order: rate-limit, word-filter,
-  │   │     max-token, pii-secret-guard, cache lookup, budget reserve ...
+  │   │     max-token, pii-secret-guard, cache lookup ...
   │   │     reject → finalize → error;  short-circuit (cache hit) → finalize → 200
   │   ├─ 3 plugin view written back; MCP tools injected (chat, non-stream)
   │   ├─ 4 strategy.selectTargets() → ordered candidate targets
@@ -1609,8 +1619,9 @@ Client
   │   ├─ 6 MCP loop: gateway-owned tool_calls → call tools → step 5 again
   │   │     (until no tool_calls or maxCallDepth; usage summed)
   │   └─ 7 finalize, exactly once: after / on_error plugins (cache store,
-  │         budget charge, response guard) → settle callbacks (budget
-  │         release) → request log (stdout + SQLite) → metrics → span end
+  │         response guard) → settle callbacks → key meter (tokens toward
+  │         quota / TPM) → request log (stdout + SQLite, usage rollups,
+  │         batched) → metrics → span end
   │
   └─ handlers: internal response → OpenAI wire JSON (+ X-Gateway-* headers)
 ```
@@ -1626,7 +1637,7 @@ event without `[DONE]`. MCP tools are not injected into streams.
 
 Pass-through (`passthroughProxy.enabled`): allow-list check → before plugins
 (`core/surfaces/passthrough.ts`) → `proxy/proxy.ts` forwards verbatim; no
-breaker, failover, after plugins or budget accrual.
+breaker, failover, after plugins or token accounting.
 
 ### Project Structure
 
@@ -1686,7 +1697,7 @@ src/
 │   ├── assembly.ts          # Config → registry, plugins, strategy, breakers, limiters, pipeline
 │   ├── strategy-config.ts   # config.strategy → mode + per-mode config
 │   ├── provider-presets.ts  # The 22 provider presets (base URLs, aliases, extras)
-│   ├── usage.ts             # Usage sums, stream estimate, costOf
+│   ├── usage.ts             # Usage sums, stream estimate
 │   ├── types.ts             # Surface, RequestRun, FinalizeOutcome, StreamEnd
 │   └── surfaces/            # chat, completions, embeddings, images, passthrough
 │
@@ -1712,12 +1723,16 @@ src/
 │
 ├── plugins/
 │   ├── manager.ts  context.ts  error.ts  types.ts
-│   └── builtins/            # 6 built-ins + from-config.ts + config-schemas.ts (strict plugin configs)
-│       ├── rate-limit.ts  cache.ts  word-filter.ts  max-token.ts  budget.ts
+│   └── builtins/            # 5 built-ins + from-config.ts + config-schemas.ts (strict plugin configs)
+│       ├── rate-limit.ts  cache.ts  word-filter.ts  max-token.ts
 │       └── pii-secret-guard/   # config, detectors, validators, plugin
 │
 ├── mcp/                     # stdio client (MCP 2025-03-26 subset), registry, executor
 ├── proxy/proxy.ts           # Pass-through proxy for allow-listed /v1/* routes
+├── usage/
+│   ├── key-meter.ts         # Per-key token quota, RPM, TPM (in memory, kept across reloads)
+│   ├── usage-store.ts       # Hourly usage rollups (usage.sqlite)
+│   └── recorder.ts          # Batched, asynchronous writes of rollups and used tokens
 ├── secrets/secret-box.ts    # AES-256-GCM + HKDF envelope for upstream keys (GATEWAY_SECRET_KEY)
 ├── security/url-guard.ts    # SSRF guard: public-internet-only base URLs, DNS checks, limited fetch
 ├── persistence/
@@ -1727,7 +1742,7 @@ src/
 │   └── migrations.ts        # Versioned SQLite migrations
 ├── auth/                    # bootstrap.ts (bootstrap-key gate), key-hash.ts
 ├── admin/                   # /admin/* API: runtime config (config-api.ts, config-schemas.ts, guards.ts:
-│                            #   CSRF / If-Match / limits), keys, logs, status, scrubbing
+│                            #   CSRF / If-Match / limits), keys (+ limits, reset-usage), usage, logs, status
 ├── dashboard/               # Console page shells + static/console.{js,css} (embedded)
 ├── observability/           # OTel SDK + tracer bridge, sampling/privacy, request log, redaction
 ├── metrics/metrics.ts       # Prometheus registry (prom-client)

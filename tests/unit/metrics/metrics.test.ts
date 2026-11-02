@@ -124,7 +124,6 @@ describe("Metrics", () => {
       [`${PREFIX}_circuit_breaker_state`, "gauge"],
       [`${PREFIX}_mcp_server_up`, "gauge"],
       [`${PREFIX}_rate_limit_rejections_total`, "counter"],
-      [`${PREFIX}_request_cost_usd`, "counter"],
     ];
     for (const [name, type] of expected) {
       expect(text).toContain(`# HELP ${name} `);
@@ -298,25 +297,10 @@ describe("Metrics", () => {
     ).toBe(1);
   });
 
-  it("recordCost accumulates request_cost_usd per provider/model", async () => {
-    const metrics = new Metrics();
-    metrics.recordCost("openai", "gpt-4o", 0.0015);
-    metrics.recordCost("openai", "gpt-4o", 0.0005);
-    metrics.recordCost("anthropic", "claude-3", 0.002);
-
-    const samples = parseMetrics(await metrics.format());
-    expect(
-      findSample(samples, `${PREFIX}_request_cost_usd`, {
-        provider: "openai",
-        model: "gpt-4o",
-      })?.value,
-    ).toBeCloseTo(0.002, 10);
-    expect(
-      findSample(samples, `${PREFIX}_request_cost_usd`, {
-        provider: "anthropic",
-        model: "claude-3",
-      })?.value,
-    ).toBe(0.002);
+  it("has no cost metric (0.3.0: the gateway does not price requests)", async () => {
+    const text = await new Metrics().format();
+    expect(text).not.toContain("cost");
+    expect(text).not.toContain("usd");
   });
 
   it("reset clears recorded values but keeps metric definitions", async () => {
@@ -328,7 +312,6 @@ describe("Metrics", () => {
     metrics.recordTokens("openai", "gpt-4o", 5, 5);
     metrics.recordProviderError("openai", "timeout");
     metrics.recordRateLimitRejection("openai");
-    metrics.recordCost("openai", "gpt-4o", 0.01);
     metrics.reset();
 
     const text = await metrics.format();
@@ -363,7 +346,6 @@ describe("Metrics", () => {
       provider: "openai",
     });
     metrics.setMcpServerUp("filesystem", true);
-    metrics.recordCost("openai", "gpt-4o", 0.01);
     metrics.recordProviderError("openai", "timeout");
     metrics.setCircuitBreakerState("openai", "OPEN");
 
@@ -414,7 +396,6 @@ describe("Metrics", () => {
     const metrics = new Metrics();
     metrics.observeDuration(-1, reqLabels);
     metrics.recordTokens("openai", "gpt-4o", -5, Number.NaN);
-    metrics.recordCost("openai", "gpt-4o", -1);
 
     const samples = parseMetrics(await metrics.format());
     const name = `${PREFIX}_request_duration_seconds`;
@@ -434,12 +415,6 @@ describe("Metrics", () => {
     ).toBe(0);
     expect(
       findSample(samples, `${PREFIX}_tokens_input_total`, {
-        provider: "openai",
-        model: "gpt-4o",
-      })?.value,
-    ).toBe(0);
-    expect(
-      findSample(samples, `${PREFIX}_request_cost_usd`, {
         provider: "openai",
         model: "gpt-4o",
       })?.value,

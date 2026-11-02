@@ -26,8 +26,6 @@ targets:
     provider: deepseek
     apiKey: "sk-..."
     models: ["deepseek-chat"]
-    costPer1kInputTokens: 0.0001
-    costPer1kOutputTokens: 0.0002
 
 # Runtime config source (0.3.0). Default "database": on first start the
 # targets/strategy/aliases/plugins/compatibility above are imported into
@@ -56,8 +54,9 @@ plugins:
   - name: rate-limit
     stage: before_request
     config:
-      maxRequestsPerMinute: 60   # per API key (aliases: keyRpm, rpm)
+      maxRequestsPerMinute: 60   # per API key (aliases: keyRpm, rpm); a key's own rpm replaces it
       # maxRequestsPerDay: 5000
+      # maxTokensPerMinute: 200000 # per API key (alias: tpm); a key's own tpm replaces it
 
   - name: cache
     stage: before_request

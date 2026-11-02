@@ -18,6 +18,8 @@ import { KeyStore } from "../../src/persistence/key-store.js";
 import { SecretBox } from "../../src/secrets/secret-box.js";
 import { PublicHostGuard } from "../../src/security/url-guard.js";
 import { persistKeyHealth } from "../../src/server/bootstrap.js";
+import { UsageRecorder } from "../../src/usage/recorder.js";
+import { UsageStore } from "../../src/usage/usage-store.js";
 
 export type Reply = number | { status: number; headers?: Record<string, string>; body?: unknown; text?: string };
 
@@ -110,6 +112,10 @@ export interface Harness {
   readonly app: ReturnType<typeof createApp>;
   readonly gateway: Gateway;
   readonly store: ConfigStore;
+  readonly keyStore: KeyStore;
+  /** Usage rollups (in memory) and their recorder (no timer: GET /admin/usage flushes). */
+  readonly usageStore: UsageStore;
+  readonly recorder: UsageRecorder;
   readonly keys: { admin: string; readOnly: string; inference: string };
   /** host → addresses; unset hosts resolve to PUBLIC_IP. */
   readonly dns: Map<string, string[]>;
@@ -163,7 +169,11 @@ export async function adminHarness(
     inference: keyStore.create("inf", ["inference"]).key,
   };
   if (store) persistKeyHealth(gateway, store);
+  const usageStore = await UsageStore.create(new Database(":memory:"));
+  const recorder = new UsageRecorder({ store: usageStore, meter: gateway.keyMeter(), keyStore, intervalMs: 0 });
   const app = createApp(gateway, config, undefined, keyStore, {
+    usageStore,
+    usageRecorder: recorder,
     ...(store ? { configStore: store } : {}),
     configApi: { resolver, probe: opts.probe ?? {} },
   });
@@ -182,6 +192,9 @@ export async function adminHarness(
     app,
     gateway,
     store: store as ConfigStore,
+    keyStore,
+    usageStore,
+    recorder,
     keys,
     dns,
     admin,

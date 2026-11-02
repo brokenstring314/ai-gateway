@@ -135,8 +135,6 @@ export const TargetConfigSchema = strictObject(
       .optional(),
     models: z.array(z.string()).optional(),
     weight: z.number().nonnegative().optional(),
-    costPer1kInputTokens: z.number().nonnegative().optional(),
-    costPer1kOutputTokens: z.number().nonnegative().optional(),
     retry: RetryConfigSchema.optional(),
     circuitBreaker: CircuitBreakerConfigSchema.optional(),
     concurrency: ConcurrencyConfigSchema.optional(),

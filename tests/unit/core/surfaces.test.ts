@@ -125,7 +125,10 @@ describe("wire pass-through allow-list (T3-9 fields, T3-11)", () => {
         completion_tokens: 2,
         total_tokens: 3,
         prompt_tokens_details: { cached_tokens: 1 },
+        prompt_cache_hit_tokens: 1,
+        // Upstream prices are not passed on since 0.3.0 (the gateway has no money fields).
         cost: 0.1,
+        cost_details: { upstream_inference_cost: 0.1 },
         junk: 1,
       }),
     ).toEqual({
@@ -133,7 +136,7 @@ describe("wire pass-through allow-list (T3-9 fields, T3-11)", () => {
       completionTokens: 2,
       totalTokens: 3,
       promptTokensDetails: { cached_tokens: 1 },
-      extra: { cost: 0.1 },
+      extra: { prompt_cache_hit_tokens: 1 },
     });
   });
   it("request + message extras are re-attached after schema validation", () => {

@@ -65,6 +65,12 @@ describe("admin API on a real server", () => {
       let stop = false;
       const failures: string[] = [];
       let served = 0;
+      // 0.3.0 P5: one worker uses a store key with limits that the churn keeps changing.
+      const limited = await ok(
+        await adminFetch(gw, "POST", "/keys", { name: "churn-limited", quotaTokens: 1_000_000_000, rpm: 1_000_000 }),
+        "create limited key",
+      );
+      let sentWithKey = 0;
       const worker = async (n: number) => {
         let i = 0;
         while (!stop) {
@@ -72,11 +78,13 @@ describe("admin API on a real server", () => {
           const model = (i + n) % 2 === 0 ? "gpt-4o" : "fast";
           i++;
           try {
-            const r = await postJson(gw, "/v1/chat/completions", {
-              model,
-              stream,
-              messages: [{ role: "user", content: "hi" }],
-            });
+            if (n === 3) sentWithKey++;
+            const r = await postJson(
+              gw,
+              "/v1/chat/completions",
+              { model, stream, messages: [{ role: "user", content: "hi" }] },
+              n === 3 ? { auth: limited.key } : {},
+            );
             const text = await r.text();
             if (r.status !== 200) failures.push(`${r.status} ${text.slice(0, 200)}`);
             else if (stream && !text.includes("data: [DONE]"))
@@ -100,6 +108,7 @@ describe("admin API on a real server", () => {
       const etag = async (path: string) => (await adminFetch(gw, "GET", path)).headers.get("etag")!;
       let extraModel: string | undefined;
       let keySeq = 0;
+      let configMutations = 0;
       const MUTATIONS = 1000;
       for (let m = 0; m < MUTATIONS; m++) {
         const kind = pick([
@@ -112,6 +121,7 @@ describe("admin API on a real server", () => {
           "extra_model",
           "compat",
           "rollback",
+          "key_limits",
         ] as const);
         let r: Response;
         switch (kind) {
@@ -210,6 +220,21 @@ describe("admin API on a real server", () => {
               await etag("/settings"),
             );
             break;
+          case "key_limits": {
+            const cur = await adminFetch(gw, "GET", `/keys/${limited.id}`);
+            r = await adminFetch(
+              gw,
+              "PATCH",
+              `/keys/${limited.id}`,
+              {
+                quotaTokens: pick([1_000_000_000, 2_000_000_000]),
+                rpm: pick([null, 1_000_000]),
+                tpm: pick([null, 1_000_000_000]),
+              },
+              cur.headers.get("etag")!,
+            );
+            break;
+          }
           case "rollback": {
             const versions = await ok(await adminFetch(gw, "GET", "/config/versions?limit=3"), "versions");
             const target = versions.data[1]?.version ?? versions.head;
@@ -224,13 +249,23 @@ describe("admin API on a real server", () => {
           }
         }
         if (r.status >= 300) throw new Error(`mutation ${m} (${kind}) failed: ${r.status} ${await r.text()}`);
+        // Key settings live in the key store, not in config versions.
+        if (kind !== "key_limits") configMutations++;
       }
       stop = true;
       await Promise.all(workers);
       expect(failures).toEqual([]);
       expect(served).toBeGreaterThan(200);
+      // Every request of the limited key was counted (usage rollups) and metered (used tokens).
+      const usage = await ok(await adminFetch(gw, "GET", "/usage?groupBy=key"), "usage");
+      const row = usage.data.find((d: { key: string | null }) => d.key === limited.id);
+      expect(row.requests).toBe(sentWithKey);
+      expect(row.errors).toBe(0);
+      const keyView = await ok(await adminFetch(gw, "GET", `/keys/${limited.id}`), "key");
+      expect(keyView.usedTokens).toBe(row.totalTokens);
+      expect(usage.totals.requests).toBe(served);
       const head = (await ok(await adminFetch(gw, "GET", "/config/versions?limit=1"), "versions")).head;
-      expect(head).toBeGreaterThanOrEqual(MUTATIONS);
+      expect(head).toBeGreaterThanOrEqual(configMutations);
       // Pre-change backups: the newest few are kept.
       const backups = readdirSync(dataDir).filter((f) => f.includes(".backup-"));
       expect(backups.length).toBeGreaterThan(0);

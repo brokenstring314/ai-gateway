@@ -28,6 +28,8 @@ import {
   revokeKeyHandler,
   rotateKeyHandler,
   keyUsageHandler,
+  patchKeyHandler,
+  resetKeyUsageHandler,
   getKeysHandler,
   addKeyHandler,
 } from "./key-handlers.js";
@@ -36,6 +38,9 @@ import type { ConfigStore } from "../persistence/config-store.js";
 import { registerRuntimeConfigApi, type RuntimeConfigApiOptions } from "./config-api.js";
 import { csrfGuard } from "./guards.js";
 import { type LogHandlerState, getLogsHandler, getLogsStatsHandler, deleteLogsHandler } from "./log-handlers.js";
+import { usageHandler } from "./usage-handlers.js";
+import type { UsageStore } from "../usage/usage-store.js";
+import type { UsageRecorder } from "../usage/recorder.js";
 
 export interface AdminAppOptions {
   keyStore?: KeyStore;
@@ -44,6 +49,9 @@ export interface AdminAppOptions {
   /** Runtime-config API tuning (tests: DNS resolver, probe limits, backups). */
   configApi?: Omit<RuntimeConfigApiOptions, "gateway" | "store" | "allowedOrigins">;
   logStore?: RequestLogStore;
+  /** Usage rollups behind GET /admin/usage (server mode) and the recorder feeding them. */
+  usageStore?: UsageStore;
+  usageRecorder?: UsageRecorder;
   adminSecret?: string;
   bootstrapKey?: string;
   bootstrapReadOnlyKey?: string;
@@ -139,13 +147,25 @@ export function createAdminApp(
 
   // Key management
   if (keyStore) {
-    const keyState: KeyHandlerState = { keyStore };
+    const configStore = options?.configStore;
+    const keyState: KeyHandlerState = {
+      keyStore,
+      meter: gateway.keyMeter(),
+      ...(configStore
+        ? {
+            audit: (actor: string, action: string, id: string, detail: Record<string, unknown>) =>
+              configStore.auditOnly(actor, action, "api_key", id, detail),
+          }
+        : {}),
+    };
     // Listing never returns plaintext; read_only may read it like every other GET.
     app.get("/keys", listKeysHandler(keyState));
     app.get("/keys/usage", keyUsageHandler(keyState));
     app.get("/keys/:id", getKeyHandler(keyState));
     app.post("/keys", requireScope(SCOPE_ADMIN), createKeyHandler(keyState));
     app.put("/keys/:id", requireScope(SCOPE_ADMIN), updateKeyHandler(keyState));
+    app.patch("/keys/:id", requireScope(SCOPE_ADMIN), patchKeyHandler(keyState));
+    app.post("/keys/:id/reset-usage", requireScope(SCOPE_ADMIN), resetKeyUsageHandler(keyState));
     app.delete("/keys/:id", requireScope(SCOPE_ADMIN), deleteKeyHandler(keyState));
     app.post("/keys/:id/revoke", requireScope(SCOPE_ADMIN), revokeKeyHandler(keyState));
     app.post("/keys/:id/rotate", requireScope(SCOPE_ADMIN), rotateKeyHandler(keyState));
@@ -154,6 +174,16 @@ export function createAdminApp(
     app.post("/keys", requireScope(SCOPE_ADMIN), addKeyHandler(configState));
     app.delete("/keys/:id", requireScope(SCOPE_ADMIN), deleteKeyHandler(configState));
   }
+
+  // Usage statistics (0.3.0 P5): tokens / requests / errors / latency by key, model or channel.
+  app.get(
+    "/usage",
+    usageHandler({
+      ...(options?.usageStore ? { store: options.usageStore } : {}),
+      ...(options?.usageRecorder ? { recorder: options.usageRecorder } : {}),
+      ...(keyStore ? { keyStore } : {}),
+    }),
+  );
 
   // Log management
   app.get("/logs", getLogsHandler(logState));

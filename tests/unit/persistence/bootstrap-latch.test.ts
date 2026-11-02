@@ -171,7 +171,7 @@ describe("bootstrap latch migration (v4) on existing databases", () => {
     const versions = db.query("SELECT version FROM api_key_schema_migrations ORDER BY version").all() as Array<{
       version: number;
     }>;
-    expect(versions.map((v) => v.version)).toEqual([1, 2, 3, 4, 5]);
+    expect(versions.map((v) => v.version)).toEqual([1, 2, 3, 4, 5, 6]);
   });
 
   it("re-running migrations is a no-op", async () => {

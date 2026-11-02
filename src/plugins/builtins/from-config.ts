@@ -7,9 +7,9 @@
  * word-filter `blocklist`/`blockedWords`) are accepted, unknown keys throw.
  */
 
-import type { PluginConfig, TargetConfig } from "../../config/types.js";
+import type { PluginConfig } from "../../config/types.js";
 import type { IPlugin, Stage } from "../types.js";
-import { BudgetPlugin } from "./budget.js";
+import { REMOVED_PLUGINS } from "../../config/removed.js";
 import { CachePlugin } from "./cache.js";
 import { MaxTokenPlugin } from "./max-token.js";
 import { RateLimitPlugin } from "./rate-limit.js";
@@ -28,10 +28,7 @@ export function normalizePluginName(name: string): string {
   return name.trim().toLowerCase().replace(/_/g, "-");
 }
 
-export function buildPluginsFromConfig(
-  entries: readonly PluginConfig[] | undefined,
-  targets: readonly TargetConfig[] = [],
-): PluginRegistration[] {
+export function buildPluginsFromConfig(entries: readonly PluginConfig[] | undefined): PluginRegistration[] {
   const out: PluginRegistration[] = [];
   for (const entry of entries ?? []) {
     if (entry.enabled === false) continue;
@@ -51,20 +48,9 @@ export function buildPluginsFromConfig(
         out.push({ stage: "after_request", plugin: new CachePlugin(cfg, "after_request") });
         break;
       }
-      case "budget": {
-        const cfg = {
-          ...parseBuiltinPluginConfig("budget", entry.name, raw),
-          // Without own rates, reserve at the most expensive target's rates.
-          estimateRates: {
-            costPer1kInputTokens: Math.max(0, ...targets.map((t) => t.costPer1kInputTokens ?? 0)),
-            costPer1kOutputTokens: Math.max(0, ...targets.map((t) => t.costPer1kOutputTokens ?? 0)),
-          },
-        };
-        // Budget reserves before and charges after (released on settle).
-        out.push({ stage: "before_request", plugin: new BudgetPlugin(cfg, "before_request") });
-        out.push({ stage: "after_request", plugin: new BudgetPlugin(cfg, "after_request") });
-        break;
-      }
+      case "budget":
+        // Removed in 0.3.0 (validation reports it first; embedded callers get the same message).
+        throw new Error(REMOVED_PLUGINS["budget"]);
       case "logger": {
         // Removed in 0.2.0: it duplicated the gateway's own request log.
         // Accepted (so old configs still start) but ignored, with one warning.

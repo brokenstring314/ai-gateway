@@ -1,5 +1,5 @@
 /**
- * Config keys and values removed or deprecated in 0.2.0, with migration hints.
+ * Config keys and values removed or deprecated (0.2.0, 0.3.0), with migration hints.
  *
  * Removed items fail validation (both `ai-gateway validate` and startup) with
  * a message that says what to write instead. Deprecated aliases still work
@@ -11,7 +11,7 @@ export const REMOVED_STRATEGY_MODES: Readonly<Record<string, string>> = {
   least_latency:
     "strategy mode least_latency was removed in 0.2.0; use fallback (list strategy.targets in order of preference)",
   cost_optimized:
-    "strategy mode cost_optimized was removed in 0.2.0; use fallback with strategy.targets ordered from cheapest to most expensive",
+    "strategy mode cost_optimized was removed in 0.2.0; use fallback with strategy.targets in order of preference",
   content_based:
     "strategy mode content_based was removed in 0.2.0; use conditional with rules like " +
     "{ field: prompt, contains: <keyword>, target: <name> } (or pattern: <regex>)",
@@ -49,9 +49,9 @@ export const REMOVED_STRATEGY_KEYS: Readonly<Record<string, string>> = {
   ab_variants:
     "strategy.ab_variants was removed in 0.2.0; use mode: loadbalance with strategy.weights: { <target>: <weight> }",
   unpricedStrategy:
-    "strategy.unpricedStrategy was removed in 0.2.0 together with cost_optimized; use fallback ordered by price",
+    "strategy.unpricedStrategy was removed in 0.2.0 together with cost_optimized; use fallback with strategy.targets in order of preference",
   unpriced_strategy:
-    "strategy.unpriced_strategy was removed in 0.2.0 together with cost_optimized; use fallback ordered by price",
+    "strategy.unpriced_strategy was removed in 0.2.0 together with cost_optimized; use fallback with strategy.targets in order of preference",
 };
 
 /** Removed observability keys → migration hint. */
@@ -61,14 +61,33 @@ export const REMOVED_OBSERVABILITY_KEYS: Readonly<Record<string, string>> = {
     "use observability.tracing (OTLP: enabled, otlpEndpoint, headers)",
 };
 
+function COST_REMOVED(key: string): string {
+  return (
+    `targets[].${key} was removed in 0.3.0: the gateway no longer prices requests (no costs, prices or money ` +
+    "quotas). Delete the key; usage is reported in tokens (GET /admin/usage) and client keys are limited by " +
+    "token quota, RPM and TPM"
+  );
+}
+
 /** Target keys that were accepted but never read by any strategy or plugin → migration hint. */
 export const REMOVED_TARGET_KEYS: Readonly<Record<string, string>> = {
   priority:
     "targets[].priority is not supported (it was accepted but never read by any strategy); " +
     "to prefer targets in order use mode: fallback and list strategy.targets in order of preference",
   budget:
-    "targets[].budget is not supported (it was accepted but never enforced); " +
-    "use the budget plugin for a daily USD limit: plugins: [{ name: budget, stage: before_request, config: { dailyBudget: <usd> } }]",
+    "targets[].budget is not supported (it was accepted but never enforced). The gateway has no money-based limits " +
+    'since 0.3.0: limit a client key by tokens instead (Admin API PATCH /admin/keys/:id {"quotaTokens": N} or ' +
+    "ai-gateway keys create --quota-tokens N)",
+  costPer1kInputTokens: COST_REMOVED("costPer1kInputTokens"),
+  costPer1kOutputTokens: COST_REMOVED("costPer1kOutputTokens"),
+};
+
+/** Removed built-in plugins (normalized kebab-case name) → migration hint. Enabled entries fail validation. */
+export const REMOVED_PLUGINS: Readonly<Record<string, string>> = {
+  budget:
+    "the budget plugin was removed in 0.3.0: the gateway no longer prices requests or enforces money budgets. " +
+    "Remove it from plugins and limit client keys by tokens instead: a token quota per key " +
+    '(PATCH /admin/keys/:id {"quotaTokens": N} or ai-gateway keys create --quota-tokens N), plus rpm / tpm',
 };
 
 /** Message for observability.tracing.otlpProtocol: grpc (only OTLP/HTTP is implemented). */

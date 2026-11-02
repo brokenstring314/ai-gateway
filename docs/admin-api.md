@@ -2,7 +2,7 @@
 
 Channels (upstream targets) and their keys, published models and their bindings, routing settings, config
 versions with rollback, the audit log and provider presets — all JSON under `/admin`, changed live without a
-restart. 中文说明见 [README_CN.md](../README_CN.md#运行时配置管理-api030)。
+restart. Client keys with token quota / RPM / TPM and usage statistics: [Key limits and usage](#key-limits-and-usage). 中文说明见 [README_CN.md](../README_CN.md#运行时配置管理-api030)。
 
 ## Rules for every endpoint
 
@@ -65,8 +65,7 @@ Create body:
   "models": ["deepseek-v4-flash"],    // what the channel serves when models are derived (no models: section)
   "keyStrategy": "round_robin",       // round_robin | weighted | fill_first
   "keyCooldownSeconds": 30,           // after a 429 without Retry-After
-  "settings": { "weight": 1, "retry": {…}, "circuitBreaker": {…}, "concurrency": {…},
-                "costPer1kInputTokens": 0, "costPer1kOutputTokens": 0 },
+  "settings": { "weight": 1, "retry": {…}, "circuitBreaker": {…}, "concurrency": {…} },
   "keys": [{ "key": "sk-…", "weight": 1, "enabled": true }]
 }
 ```
@@ -157,3 +156,96 @@ one (`aliases: {}` / `plugins: []` / `compatibility: null` clear it). Same schem
   whose keys all cool down answers `429` with the remaining `Retry-After` (no upstream call); one whose keys are
   all disabled answers `503 no_upstream_key` until an operator re-enables or adds a key.
 - None of this reads the database on the request path: routing, key choice and key health are in memory.
+
+## Key limits and usage
+
+The gateway has one owner. There are no prices, costs, money quotas, payments or user accounts (0.3.0 removed the
+`budget` plugin and every price field). Client keys handed to other people are limited in tokens and requests.
+
+### Keys
+
+| Method | Path | Scope | Body / notes |
+| ------ | ---- | ----- | ------------ |
+| GET | `/admin/keys`, `/admin/keys/:id` | read_only | key views (below); `:id` sends `ETag` = the key's `revision` |
+| POST | `/admin/keys` | admin | `{ name, scopes?, expiresAt?, allowedModels?, quotaTokens?, rpm?, tpm? }` → 201, the secret once |
+| PATCH | `/admin/keys/:id` | admin | any of `name`, `scopes`, `allowedModels`, `expiresAt`, `quotaTokens`, `rpm`, `tpm` (`null` clears); `If-Match` required |
+| POST | `/admin/keys/:id/reset-usage` | admin | used tokens → 0, `usageResetAt` = now; `If-Match` optional (checked when sent) |
+| PUT, DELETE, `…/revoke`, `…/rotate` | | admin | unchanged (PUT: name and scopes only, no If-Match) |
+
+`PATCH` follows the same rules as the runtime-config writes: strict body (`400` for unknown fields, a
+non-integer, `rpm`/`tpm` < 1, `quotaTokens` < 0), CSRF guard, `If-Match: "<revision>"` (missing → `428
+precondition_required`, stale → `409 revision_mismatch` with `currentRevision`). Every key write (create, update,
+patch, revoke, rotate, delete, reset-usage) is recorded in `GET /admin/audit` (`resourceType: "api_key"`,
+actions `key_create`, `key_update`, `key_delete`, `key_revoke`, `key_rotate`, `key_reset_usage`; the detail holds
+changed field names and limits, never a key) when the server runs with the config store. Key settings are not
+part of config versions and are not rolled back.
+
+Key view (added in 0.3.0 P5):
+
+```json
+{
+  "id": "…", "name": "friend", "scopes": ["inference"], "allowedModels": ["ds-chat"], "expiresAt": null,
+  "quotaTokens": 2000000,      // null = unlimited
+  "rpm": 20,                   // null = the rate-limit plugin's maxRequestsPerMinute (if any)
+  "tpm": null,                 // null = the rate-limit plugin's maxTokensPerMinute (if any)
+  "usedTokens": 1834121,       // live counter of the running server
+  "remainingTokens": 165879,   // null without a quota
+  "quotaExhausted": false,
+  "usageResetAt": null,
+  "revision": 4
+}
+```
+
+### What counts, and when a key is refused
+
+- **Tokens** = prompt + completion tokens of a finished request as the upstream reports them (cache-hit and
+  reasoning tokens are part of those), estimated (~4 characters per token) for a stream without a usage chunk or
+  a stream the client abandoned. MCP tool rounds are summed. Refused requests count 0.
+- **Quota:** checked once, before the request starts: used ≥ quota → `403 quota_exhausted` (type
+  `insufficient_quota`, no `Retry-After`: the quota never refills by itself). An admitted request always runs to
+  the end — streams are never cut for quota — and its tokens are added when it ends, so the last request and
+  requests already in flight can take the key past its quota. Raise the quota or reset the usage to re-open it.
+- **Not meterable:** image generation and pass-through proxy routes have no token usage, so a key **with a
+  quota** gets `403 quota_not_metered` there (keys without a quota are unaffected).
+- **RPM / TPM:** fixed one-minute windows per key. RPM counts admitted requests; TPM refuses new requests once
+  the tokens of requests completed in the window reach it. Both answer `429 rate_limit_exceeded` with
+  `Retry-After`. A key with its own `rpm` is exempt from the rate-limit plugin's per-minute limit (its daily limit
+  still applies); a key without one is limited by the plugin. A key without its own `tpm` uses the plugin's
+  `maxTokensPerMinute` when set. Config-file keys (`auth.keys`) have no own limits.
+- **Order:** published model and `allowedModels` (403/404) → quota → RPM → TPM → plugins.
+- **Hot path:** all of this reads in-memory counters only (no database access). Used tokens are persisted
+  asynchronously about once a second (`USAGE_FLUSH_INTERVAL_MS`) and on shutdown, restored at startup, and never
+  reset by a config change or rollback. A crash loses at most the last interval of counted tokens. Counters are
+  per process (replicas do not share them).
+
+### `GET /admin/usage`
+
+Any `read_only` credential. Query:
+
+| Param | Default | Notes |
+| ----- | ------- | ----- |
+| `groupBy` | `key` | `key` \| `model` (published name, aliases resolved) \| `channel` (`none` = no upstream call) |
+| `from`, `to` | the last 7 days up to today | `YYYY-MM-DD`, inclusive, at most 366 days |
+| `tz` | `UTC` | IANA zone (`Asia/Shanghai`): `from` / `to` / `daily` dates are calendar days there |
+| `daily` | `false` | `true`: every group also gets a `daily` array |
+
+```json
+{
+  "object": "usage", "groupBy": "key", "from": "2026-11-01", "to": "2026-11-02", "tz": "Asia/Shanghai",
+  "data": [
+    { "key": "3f2a…", "name": "friend", "kind": "store",   // store | config (auth.keys entry n: cfg_<n>) | deleted | none (no key)
+      "requests": 12, "errors": 1, "inputTokens": 900, "outputTokens": 4200, "totalTokens": 5100,
+      "cacheHitTokens": 640, "reasoningTokens": 1300, "estimatedRequests": 0,
+      "avgLatencyMs": 2310, "maxLatencyMs": 8120 }
+  ],
+  "totals": { "requests": 12, "errors": 1, … }
+}
+```
+
+Storage: every finished request — refused ones included, as errors — is added in memory to an hourly bucket
+(UTC hour × key × model × channel) and written to `<data dir>/usage.sqlite` (WAL) in batches about once a second;
+the endpoint flushes first, so it always includes every finished request. Buckets are whole UTC hours: a day in a
+zone with a :30 / :45 offset is accurate to the hour. Rollups are kept indefinitely (they grow with hours ×
+distinct key/model/channel, not with traffic). Per-request rows stay in `GET /admin/logs` (now with `keyId`,
+`cacheHitTokens`, `reasoningTokens`, `durationMs`, `status`). Without a data directory (embedded `createApp`)
+the endpoint answers `503 usage_unavailable`.

@@ -279,8 +279,8 @@ describe("strategy modes and fields (0.2.0)", () => {
   for (const [mode, hint] of [
     ["least_latency", "use fallback"],
     ["least-latency", "use fallback"],
-    ["cost_optimized", "cheapest to most expensive"],
-    ["cost-optimized", "cheapest to most expensive"],
+    ["cost_optimized", "in order of preference"],
+    ["cost-optimized", "in order of preference"],
     ["content_based", "field: prompt"],
     ["content-based", "field: prompt"],
   ] as const) {

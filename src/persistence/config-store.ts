@@ -148,7 +148,45 @@ ALTER TABLE channel_keys ADD COLUMN revision INTEGER NOT NULL DEFAULT 1;
 ALTER TABLE channel_keys ADD COLUMN last_error_at TEXT;
 CREATE INDEX audit_log_resource ON audit_log(resource_type, resource_id);`,
     },
+    {
+      // 0.3.0 P5: the gateway no longer prices requests: drop the (never used)
+      // model pricing column and any cost rates stored in channel settings.
+      version: 3,
+      name: "remove_pricing",
+      fn: (db) => {
+        const cols = db.query("PRAGMA table_info(models)").all() as Array<{ name: string }>;
+        if (cols.some((c) => c.name === "pricing_json")) db.exec("ALTER TABLE models DROP COLUMN pricing_json");
+        const rows = db.query("SELECT id, settings_json FROM channels").all() as Array<{
+          id: string;
+          settings_json: string;
+        }>;
+        for (const r of rows) {
+          const stripped = stripRemovedSettings(r.settings_json);
+          if (stripped !== r.settings_json) {
+            db.query("UPDATE channels SET settings_json = ? WHERE id = ?").run(stripped, r.id);
+          }
+        }
+      },
+    },
   ];
+}
+
+/** Channel settings removed in 0.3.0 (prices); dropped from stored rows and restored snapshots. */
+const REMOVED_CHANNEL_SETTINGS = ["costPer1kInputTokens", "costPer1kOutputTokens"] as const;
+
+/** `settings_json` without the removed settings (unchanged text when none is present). */
+function stripRemovedSettings(json: string): string {
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(json);
+  } catch {
+    return json;
+  }
+  if (parsed === null || typeof parsed !== "object" || Array.isArray(parsed)) return json;
+  const obj = parsed as Record<string, unknown>;
+  if (!REMOVED_CHANNEL_SETTINGS.some((k) => k in obj)) return json;
+  for (const k of REMOVED_CHANNEL_SETTINGS) delete obj[k];
+  return JSON.stringify(obj);
 }
 
 /** Open (or create) the config database: WAL, busy timeout, foreign keys on. */
@@ -215,7 +253,7 @@ export interface ChannelView {
   readonly enabled: boolean;
   readonly priority: number;
   readonly models: readonly string[];
-  /** Target settings: weight, retry, circuitBreaker, concurrency, costs, keyStrategy, keyCooldownSeconds. */
+  /** Target settings: weight, retry, circuitBreaker, concurrency, keyStrategy, keyCooldownSeconds. */
   readonly settings: Readonly<Record<string, unknown>>;
   /** "public": base URL written via the Admin API (public internet only); "trusted": from the config file. */
   readonly urlPolicy: "public" | "trusted";
@@ -1181,8 +1219,8 @@ export class ConfigStore {
     }
     this.db
       .query(
-        `INSERT INTO models (id, name, display_name, description, enabled, metadata_json, pricing_json, routing_json, revision, created_at, updated_at)
-         VALUES (?, ?, ?, ?, ?, ?, '{}', ?, ?, ?, ?)`,
+        `INSERT INTO models (id, name, display_name, description, enabled, metadata_json, routing_json, revision, created_at, updated_at)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
       )
       .run(
         m.id,
@@ -1420,7 +1458,14 @@ export class ConfigStore {
         .query(`INSERT INTO ${table} (${cols.join(", ")}) VALUES (${cols.map(() => "?").join(", ")})`)
         .run(...(vals as Array<string | number | null>));
     };
-    for (const c of snap.channels) insert("channels", CHANNEL_COLUMNS, c, { revision: newVersion, updated_at: now });
+    for (const c of snap.channels) {
+      const settings = typeof c["settings_json"] === "string" ? stripRemovedSettings(c["settings_json"]) : undefined;
+      insert("channels", CHANNEL_COLUMNS, c, {
+        revision: newVersion,
+        updated_at: now,
+        ...(settings !== undefined ? { settings_json: settings } : {}),
+      });
+    }
     for (const k of snap.keys)
       insert("channel_keys", KEY_COLUMNS, k, {
         revision: newVersion,
@@ -1606,7 +1651,6 @@ const MODEL_COLUMNS = [
   "description",
   "enabled",
   "metadata_json",
-  "pricing_json",
   "routing_json",
   "revision",
   "created_at",

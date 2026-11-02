@@ -352,10 +352,11 @@ describe("RequestLogStore", () => {
       version: number;
       name: string;
     }>;
-    expect(rows).toHaveLength(2);
+    expect(rows).toHaveLength(3);
     expect(rows[0]!.version).toBe(1);
     expect(rows[0]!.name).toBe("request_logs_baseline");
     expect(rows[1]!.version).toBe(2);
     expect(rows[1]!.name).toBe("request_logs_created_at_index");
+    expect(rows[2]!.name).toBe("request_logs_usage_details");
   });
 });

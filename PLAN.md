@@ -5,6 +5,8 @@
 > 当前状态：**v0.2.0 已发布**（tag `v0.2.0`）。第 5 节的初始阶段与 0.2.0 重构均已完成；
 > 后续工作从第 6 节（待办）开始。
 >
+> **用户规则（2026-11-02，硬性）：本网关不是收费的 API 服务**——没有价格、费用计算、金额额度、支付、计费或用户账号；单一所有者/管理员，分给别人的 key 只按 token 额度、RPM/TPM、可用模型、过期时间限制（详见 0.3.0 计划 §3.6）。
+>
 > **下一版本 0.3.0：管理控制台 + 实时配置**，计划见 [`docs/plans/0.3.0-console-live-config.md`](docs/plans/0.3.0-console-live-config.md)（2026-10-27 立项，优先级高于第 6 节其余待办）。行为细节以 README.md / README_CN.md 和 CHANGELOG.md 为准，二者与代码不一致时以代码为准并修文档。
 
 ## 1. 项目定义
@@ -51,7 +53,9 @@
 
 ### 3.3 插件系统
 - [x] 生命周期：`before_request` / `after_request` / `on_error`；插件管理器：注册、执行链、短路、拒绝（可带 status / Retry-After / code）
-- [x] 内置插件（6 个）：rate-limit、cache、word-filter、max-token、budget（before 预留、after 结算）、pii-secret-guard（PII + 密钥检测：block / redact / log）
+- [x] 内置插件（5 个）：rate-limit（每 key RPM / 每日请求数 / TPM）、cache、word-filter、max-token、pii-secret-guard（PII + 密钥检测：block / redact / log）
+- [—] ~~budget 插件~~：0.3.0 P5 删除（用户决定：不做任何金额计费；配置中出现会校验失败并提示改用 key 的 token 额度）
+- [x] 每 key 限额（0.3.0 P5）：token 额度（用完 403 `quota_exhausted`，已放行请求必定完整结束）、RPM/TPM，内存计数、异步持久化；`GET /admin/usage` 用量统计
 - [—] ~~Logger 插件~~：0.2.0 移除（与网关自带请求日志重复；配置中出现会被忽略并告警）
 
 ### 3.4 MCP (Model Context Protocol)
@@ -71,7 +75,7 @@
 
 ### 3.7 可观测性
 - [x] OpenTelemetry tracing（每请求一个根 span，OTLP/HTTP 导出，采样与隐私级别）
-- [x] Prometheus metrics（`metrics/metrics.ts`：请求数、延迟、token、成本、上游错误、熔断状态、MCP、限流、插件拦截、guardrail 检测）
+- [x] Prometheus metrics（`metrics/metrics.ts`：请求数、延迟、token、上游错误、熔断状态、MCP、限流、插件拦截、guardrail 检测）
 - [x] 请求日志（结构化 JSON 到 stdout + SQLite 请求日志库，供 `/admin/logs`）
 
 ### 3.8 配置
@@ -135,13 +139,16 @@ config.example.yaml / config.example.json / Dockerfile / README.md / README_CN.m
 
 - [x] ~~`requestTimeout` 的 `500ms` 被超时中间件解析成 500 分钟~~：已修复，校验与运行时共用 `config/duration.ts`（ms/s/m/h，可组合如 `1m30s`，必须 > 0）
 - [x] ~~`otlpProtocol: grpc` 被接受但不起作用~~：已修复，`grpc` 校验报错并给出迁移提示（只实现 OTLP/HTTP，不引入 gRPC 依赖）
-- [x] ~~`targets[].priority`、`targets[].budget` 无代码读取~~：已修复，严格校验拒绝并给出迁移提示（fallback + `strategy.targets` 排序；budget 插件）
+- [x] ~~`targets[].priority`、`targets[].budget` 无代码读取~~：已修复，严格校验拒绝并给出迁移提示（fallback + `strategy.targets` 排序；0.3.0 起改用 key 的 token 额度）
 - [x] ~~内置插件 `config` 不做严格校验~~：已修复，每个内置插件都有严格 Zod schema（`plugins/builtins/config-schemas.ts`），校验与插件工厂共用
 - [ ] 插件条目的 `stage` 必填但不起作用（内置插件自行决定阶段），`type` 也不起作用
 - [x] ~~MCP `maxCallDepth` 只取第一个条目~~：已修复，取各服务器所设值的最小值（与 Go 原版一致），都未设置时默认 5
 - [x] ~~`src/dashboard/static/dashboard.js`、`style.css` 遗留文件~~：已删除
 - [ ] `abtest` 废弃别名计划在 0.3.0 删除
 - [ ] 本地/局域网模型服务（Ollama、vLLM）的显式开关：0.3.0 P4 起 Admin API 写入的渠道 base_url 只允许公网（2026-11-02 用户决定）；以后加默认关闭的 CIDR/主机名白名单开关，云元数据地址始终拒绝（见 docs/plans/0.3.0-console-live-config.md §10）
+- [ ] 用量汇总（usage.sqlite，按小时）目前不清理（只随小时数 × key/模型/渠道组合增长，不随流量增长）；需要时加保留期
+- [ ] 每个 `/v1` 请求的 key 校验仍同步读一次密钥库并写一次 `usage_count`/`last_used_at`（0.2.0 起就有）；额度/RPM/TPM 不读库，但这次读写可改为缓存 + 批量写
+- [ ] 多副本部署时 key 的额度/RPM/TPM 计数各进程独立（单机单进程是目标场景）
 - [ ] 配置版本表（config_versions）目前不清理，每次修改保存一份完整快照；需要保留策略（例如保留最近 N 个 + 按天）
 
 ## 7. 降级策略（防止卡住）
@@ -157,6 +164,7 @@ config.example.yaml / config.example.json / Dockerfile / README.md / README_CN.m
 
 - ❌ Anthropic/Gemini/Bedrock/Cohere/Vertex AI 协议翻译
 - ❌ PostgreSQL 后端（只用 SQLite）
+- ❌ 价格、费用计算、金额额度、支付、计费、用户账号、key 分组、IP 白名单（2026-11-02 用户决定：单一所有者，不是收费 API 服务）
 - ~~❌ 完整 Dashboard UI~~ / ~~❌ 配置热重载、运行时配置写 API~~：2026-10-27 起改为 0.3.0 目标（见 docs/plans/0.3.0-console-live-config.md）
 - ❌ 性能压测优化
 - （原计划中的 “不做单二进制编译” 已改变：0.2.0 起发布 `bun build --compile` 二进制）

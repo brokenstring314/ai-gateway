@@ -9,27 +9,42 @@
  *   DELETE /admin/keys/:id         — delete a key
  *   POST   /admin/keys/:id/revoke  — revoke a key
  *   POST   /admin/keys/:id/rotate  — rotate a key (plaintext returned)
+ *   PATCH  /admin/keys/:id         — change any setting incl. limits (If-Match)
+ *   POST   /admin/keys/:id/reset-usage — used tokens back to 0
  *   GET    /admin/keys/usage       — usage aggregation
  *
  * Errors are always { error: { message, type, code } }.
  */
 
 import type { Context, MiddlewareHandler } from "hono";
+import { z } from "zod";
 import type { ConfigState } from "./config-handlers.js";
 import {
+  assertLimit,
   BootstrapLatchedError,
   InvalidAllowedModelsError,
+  InvalidKeyLimitError,
+  InvalidScopeError,
   normalizeAllowedModels,
   KeyNotFoundError,
+  KeyRevisionMismatchError,
   VALID_SCOPES,
   type APIKey,
+  type KeyPatch,
   type KeyStore,
 } from "@/persistence/key-store";
+import { strictObject } from "@/config/strict";
+import type { KeyMeter } from "@/usage/key-meter";
+import { actorOf, adminError, etag, parseIfMatch } from "./guards.js";
 
 export { SCOPE_ADMIN, SCOPE_READ_ONLY, SCOPE_INFERENCE } from "@/persistence/key-store";
 
 export interface KeyHandlerState {
   keyStore: KeyStore;
+  /** Live used-token counters (the gateway's key meter); without it the persisted value is shown. */
+  meter?: KeyMeter;
+  /** Audit sink for key changes (the config store's audit log, when there is one). */
+  audit?: (actor: string, action: string, keyId: string, detail: Record<string, unknown>) => void;
 }
 
 // ---------------------------------------------------------------------------
@@ -60,8 +75,14 @@ export function requireScope(...scopes: string[]): MiddlewareHandler {
 // Serialization
 // ---------------------------------------------------------------------------
 
+/** Used tokens of a key: the live in-memory counter when the server has one, else the persisted value. */
+function usedTokens(key: APIKey, meter: KeyMeter | undefined): number {
+  return meter?.used(key.id) ?? key.usedTokens;
+}
+
 /** JSON-safe key shape; the plaintext secret is never included. */
-function serializeKey(key: APIKey) {
+function serializeKey(key: APIKey, meter?: KeyMeter) {
+  const used = usedTokens(key, meter);
   return {
     id: key.id,
     keyDisplay: key.keyDisplay,
@@ -75,7 +96,25 @@ function serializeKey(key: APIKey) {
     usageCount: key.usageCount,
     lastUsedAt: key.lastUsedAt !== null ? key.lastUsedAt.toISOString() : null,
     allowedModels: key.allowedModels,
+    // 0.3.0 P5: limits and usage. null limits = unlimited / global default.
+    quotaTokens: key.quotaTokens,
+    rpm: key.rpm,
+    tpm: key.tpm,
+    usedTokens: used,
+    remainingTokens: key.quotaTokens === null ? null : Math.max(0, key.quotaTokens - used),
+    quotaExhausted: key.quotaTokens !== null && used >= key.quotaTokens,
+    usageResetAt: key.usageResetAt !== null ? key.usageResetAt.toISOString() : null,
+    revision: key.revision,
   };
+}
+
+function audit(state: KeyHandlerState, c: Context, action: string, keyId: string, detail: Record<string, unknown>) {
+  if (!state.audit) return;
+  try {
+    state.audit(actorOf(c), action, keyId, detail);
+  } catch (err) {
+    console.error(`[admin] could not write the audit entry for ${action} ${keyId}: ${String(err)}`);
+  }
 }
 
 /** `allowedModels` from a request body: undefined = not given, null = every model, else the list. Throws on bad input. */
@@ -129,7 +168,7 @@ function notFound(c: Context) {
 /** GET /admin/keys — list all keys (display form, never plaintext). */
 export function listKeysHandler(state: KeyHandlerState) {
   return (c: Context) => {
-    const keys = state.keyStore.list().map(serializeKey);
+    const keys = state.keyStore.list().map((k) => serializeKey(k, state.meter));
     return c.json({ keys, total: keys.length });
   };
 }
@@ -141,7 +180,8 @@ export function getKeyHandler(state: KeyHandlerState) {
     if (id === undefined) return notFound(c);
     const key = state.keyStore.get(id);
     if (key === null) return notFound(c);
-    return c.json(serializeKey(key));
+    c.header("ETag", etag(key.revision));
+    return c.json(serializeKey(key, state.meter));
   };
 }
 
@@ -153,6 +193,9 @@ export function createKeyHandler(state: KeyHandlerState) {
       scopes?: unknown;
       expiresAt?: unknown;
       allowedModels?: unknown;
+      quotaTokens?: unknown;
+      rpm?: unknown;
+      tpm?: unknown;
     } | null;
 
     if (typeof body?.name !== "string" || body.name.trim().length === 0) {
@@ -191,14 +234,34 @@ export function createKeyHandler(state: KeyHandlerState) {
       return invalidRequest(c, err instanceof Error ? err.message : "invalid 'allowedModels'");
     }
 
+    try {
+      assertLimit("quotaTokens", body.quotaTokens, 0);
+      assertLimit("rpm", body.rpm, 1);
+      assertLimit("tpm", body.tpm, 1);
+    } catch (err) {
+      return invalidRequest(c, err instanceof Error ? err.message : "invalid limit");
+    }
+    const limits = {
+      ...(body.quotaTokens !== undefined ? { quotaTokens: body.quotaTokens as number | null } : {}),
+      ...(body.rpm !== undefined ? { rpm: body.rpm as number | null } : {}),
+      ...(body.tpm !== undefined ? { tpm: body.tpm as number | null } : {}),
+    };
+
     // Empty/omitted scopes default to ["inference"] in the store.
     let created: APIKey;
     try {
-      created = state.keyStore.create(name, scopes, expiresAt, { ...writeOptions(c), allowedModels });
+      created = state.keyStore.create(name, scopes, expiresAt, { ...writeOptions(c), allowedModels, ...limits });
     } catch (err) {
       if (err instanceof BootstrapLatchedError) return bootstrapRefused(c);
       throw err;
     }
+    audit(state, c, "key_create", created.id, {
+      name: created.name,
+      scopes: created.scopes,
+      quotaTokens: created.quotaTokens,
+      rpm: created.rpm,
+      tpm: created.tpm,
+    });
     return c.json(
       {
         id: created.id,
@@ -207,6 +270,11 @@ export function createKeyHandler(state: KeyHandlerState) {
         name: created.name,
         scopes: created.scopes,
         allowedModels: created.allowedModels,
+        expiresAt: created.expiresAt !== null ? created.expiresAt.toISOString() : null,
+        quotaTokens: created.quotaTokens,
+        rpm: created.rpm,
+        tpm: created.tpm,
+        revision: created.revision,
       },
       201,
     );
@@ -237,7 +305,8 @@ export function updateKeyHandler(state: KeyHandlerState) {
       if (id === undefined) return notFound(c);
       let updated = state.keyStore.update(id, typeof body?.name === "string" ? body.name : "", scopes, writeOptions(c));
       if (allowedModels !== undefined) updated = state.keyStore.setAllowedModels(id, allowedModels);
-      return c.json(serializeKey(updated));
+      audit(state, c, "key_update", id, { via: "PUT" });
+      return c.json(serializeKey(updated, state.meter));
     } catch (err) {
       if (err instanceof KeyNotFoundError) return notFound(c);
       if (err instanceof BootstrapLatchedError) return bootstrapRefused(c);
@@ -260,6 +329,8 @@ export function deleteKeyHandler(state: KeyHandlerState | ConfigState) {
         const id = c.req.param("id");
         if (id === undefined) return notFound(c);
         state.keyStore.delete(id);
+        state.meter?.forget(id);
+        audit(state, c, "key_delete", id, {});
         return c.json({ deleted: true, id });
       } catch (err) {
         if (err instanceof KeyNotFoundError) return notFound(c);
@@ -291,6 +362,7 @@ export function revokeKeyHandler(state: KeyHandlerState) {
       const id = c.req.param("id");
       if (id === undefined) return notFound(c);
       state.keyStore.revoke(id);
+      audit(state, c, "key_revoke", id, {});
       return c.json({ revoked: true, id });
     } catch (err) {
       if (err instanceof KeyNotFoundError) return notFound(c);
@@ -306,6 +378,7 @@ export function rotateKeyHandler(state: KeyHandlerState) {
       const id = c.req.param("id");
       if (id === undefined) return notFound(c);
       const rotated = state.keyStore.rotateKey(id);
+      audit(state, c, "key_rotate", id, {});
       return c.json({
         id: rotated.id,
         key: rotated.key,
@@ -320,6 +393,126 @@ export function rotateKeyHandler(state: KeyHandlerState) {
   };
 }
 
+const nullableLimit = (min: number) => z.number().int().min(min).max(Number.MAX_SAFE_INTEGER).nullable().optional();
+
+/** PATCH /admin/keys/:id body: every field optional; null clears a limit / allow-list / expiry. */
+export const KeyPatchBodySchema = strictObject({
+  name: z.string().trim().min(1).max(200).optional(),
+  scopes: z
+    .array(z.enum(VALID_SCOPES as [string, ...string[]]))
+    .min(1)
+    .optional(),
+  allowedModels: z.array(z.string()).max(10_000).nullable().optional(),
+  expiresAt: z.iso.datetime({ offset: true }).nullable().optional(),
+  quotaTokens: nullableLimit(0),
+  rpm: nullableLimit(1),
+  tpm: nullableLimit(1),
+});
+
+/**
+ * PATCH /admin/keys/:id — change a key's name, scopes, allowed models,
+ * expiry and limits in one transaction. Same optimistic concurrency as the
+ * runtime-config API: If-Match with the key's revision (ETag of GET
+ * /admin/keys/:id) is required (missing → 428, stale → 409). Audited.
+ * New limits apply to the key's next request; used tokens are unchanged
+ * (raising the quota re-opens an exhausted key).
+ */
+export function patchKeyHandler(state: KeyHandlerState) {
+  return async (c: Context) => {
+    const id = c.req.param("id");
+    if (id === undefined) return notFound(c);
+    const raw: unknown = await c.req.json().catch(() => undefined);
+    const parsed = KeyPatchBodySchema.safeParse(raw ?? null);
+    if (!parsed.success) return invalidRequest(c, z.prettifyError(parsed.error));
+    const ifMatch = parseIfMatch(c.req.header("If-Match"));
+    if (ifMatch === undefined) {
+      return adminError(
+        c,
+        428,
+        "precondition_required",
+        "PATCH /admin/keys/:id needs If-Match with the key's revision",
+      );
+    }
+    if (Number.isNaN(ifMatch)) return adminError(c, 400, "invalid_request", 'If-Match must be a revision, e.g. "3"');
+    const b = parsed.data;
+    const patch: KeyPatch = {};
+    if (b.name !== undefined) patch.name = b.name;
+    if (b.scopes !== undefined) patch.scopes = b.scopes;
+    if (b.allowedModels !== undefined) patch.allowedModels = b.allowedModels;
+    if (b.expiresAt !== undefined) patch.expiresAt = b.expiresAt === null ? null : new Date(b.expiresAt);
+    if (b.quotaTokens !== undefined) patch.quotaTokens = b.quotaTokens;
+    if (b.rpm !== undefined) patch.rpm = b.rpm;
+    if (b.tpm !== undefined) patch.tpm = b.tpm;
+    let updated: APIKey;
+    try {
+      updated = state.keyStore.patch(id, patch, ifMatch, writeOptions(c));
+    } catch (err) {
+      if (err instanceof KeyNotFoundError) return notFound(c);
+      if (err instanceof KeyRevisionMismatchError) {
+        return adminError(c, 409, "revision_mismatch", "The key was changed by someone else; reload it and retry", {
+          currentRevision: err.currentRevision,
+        });
+      }
+      if (err instanceof BootstrapLatchedError) return bootstrapRefused(c);
+      if (
+        err instanceof InvalidAllowedModelsError ||
+        err instanceof InvalidKeyLimitError ||
+        err instanceof InvalidScopeError
+      ) {
+        return invalidRequest(c, err.message);
+      }
+      throw err;
+    }
+    audit(state, c, "key_update", id, { changed: Object.keys(patch), ...limitDetail(b) });
+    c.header("ETag", etag(updated.revision));
+    return c.json(serializeKey(updated, state.meter));
+  };
+}
+
+function limitDetail(b: { quotaTokens?: number | null; rpm?: number | null; tpm?: number | null }) {
+  const out: Record<string, unknown> = {};
+  if (b.quotaTokens !== undefined) out["quotaTokens"] = b.quotaTokens;
+  if (b.rpm !== undefined) out["rpm"] = b.rpm;
+  if (b.tpm !== undefined) out["tpm"] = b.tpm;
+  return out;
+}
+
+/**
+ * POST /admin/keys/:id/reset-usage — set the key's used tokens back to 0
+ * (in memory at once, persisted in the same call) and record when. If-Match
+ * is optional here (checked when given). Requests already running keep
+ * running; their tokens count toward the fresh total. Audited.
+ */
+export function resetKeyUsageHandler(state: KeyHandlerState) {
+  return (c: Context) => {
+    const id = c.req.param("id");
+    if (id === undefined) return notFound(c);
+    const ifMatch = parseIfMatch(c.req.header("If-Match"));
+    if (ifMatch !== undefined && Number.isNaN(ifMatch)) {
+      return adminError(c, 400, "invalid_request", 'If-Match must be a revision, e.g. "3"');
+    }
+    const current = state.keyStore.get(id);
+    if (current === null) return notFound(c);
+    if (ifMatch !== undefined && ifMatch !== current.revision) {
+      return adminError(c, 409, "revision_mismatch", "The key was changed by someone else; reload it and retry", {
+        currentRevision: current.revision,
+      });
+    }
+    const before = usedTokens(current, state.meter);
+    let updated: APIKey;
+    try {
+      updated = state.keyStore.resetUsage(id);
+    } catch (err) {
+      if (err instanceof KeyNotFoundError) return notFound(c);
+      throw err;
+    }
+    state.meter?.reset(id);
+    audit(state, c, "key_reset_usage", id, { usedTokensBefore: before });
+    c.header("ETag", etag(updated.revision));
+    return c.json(serializeKey(updated, state.meter));
+  };
+}
+
 /** GET /admin/keys/usage — usage aggregation across all keys. */
 export function keyUsageHandler(state: KeyHandlerState) {
   return (c: Context) => {
@@ -328,7 +521,13 @@ export function keyUsageHandler(state: KeyHandlerState) {
     return c.json({
       totalKeys: keys.length,
       totalUsageCount,
-      keys: keys.map((k) => ({ id: k.id, name: k.name, usageCount: k.usageCount })),
+      keys: keys.map((k) => ({
+        id: k.id,
+        name: k.name,
+        usageCount: k.usageCount,
+        usedTokens: usedTokens(k, state.meter),
+        quotaTokens: k.quotaTokens,
+      })),
     });
   };
 }

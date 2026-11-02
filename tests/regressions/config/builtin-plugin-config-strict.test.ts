@@ -14,7 +14,7 @@ describe("strict built-in plugin config (backlog #4)", () => {
     ["max-token", { maxTokens: 10, maxMessages: 5 }, /unknown key "maxMessages"/],
     ["cache", { ttlSecond: 60 }, /unknown key "ttlSecond" \(did you mean "ttlSeconds"\?\)/],
     ["rate-limit", { maxRequestsPerMinute: 5, maxRequestPerDay: 9 }, /did you mean "maxRequestsPerDay"/],
-    ["budget", { dailyBudget: 1, costPer1kInput: 0.1, dailybudget: 2 }, /unknown key "dailybudget"/],
+    ["rate-limit", { tpm: 5, tokensPerMinute: 9 }, /unknown key "tokensPerMinute"/],
   ];
   for (const [name, config, expected] of typos) {
     it(`${name}: unknown key is a validation error`, () => {
@@ -39,7 +39,8 @@ describe("strict built-in plugin config (backlog #4)", () => {
     ok(plugin("cache", undefined));
     ok(plugin("word-filter", { blocklist: ["x"], mode: "redact" }));
     ok(plugin("max-token", { maxTokens: 4096 }));
-    ok(plugin("budget", { dailyBudget: 100, costPer1kInput: 0.01, costPer1kOutput: 0.03, reserveOutputTokens: 512 }));
+    ok(plugin("rate-limit", { maxTokensPerMinute: 1000 }));
+    ok(plugin("rate-limit", { rpm: 10, tpm: 1000 }));
   });
 
   it("a disabled entry is not validated", () => {

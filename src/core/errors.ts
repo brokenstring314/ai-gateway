@@ -25,7 +25,8 @@ import { isTimeoutAbort, isTimeoutError } from "./outcome.js";
 export type ErrorKind =
   | "invalid_request" // 400  gateway-side validation
   | "auth" // 401/403 gateway client auth
-  | "plugin_rejected" // 403, or the plugin's own status (rate-limit / budget → 429)
+  | "plugin_rejected" // 403, or the plugin's own status (rate-limit → 429)
+  | "key_limit" // 403 quota_exhausted / quota_not_metered, 429 key RPM / TPM (0.3.0 key limits)
   | "model_not_found" // 404  no target serves this model / capability
   | "upstream_client" // upstream 4xx passed through (400/404/409/413/422 …)
   | "upstream_auth" // upstream 401/403 after failover → 502
@@ -95,6 +96,36 @@ export function invalidRequest(message: string, code = "invalid_request", param?
 /** 403: the caller's API key may not use this model (key allowed_models). */
 export function modelNotAllowed(message: string): GatewayError {
   return new GatewayError("auth", { status: 403, message, type: "permission_error", code: "model_not_allowed" });
+}
+
+/**
+ * 403 quota_exhausted: the caller's key has used its token quota. 403, not
+ * 429, on purpose: the quota never refills by itself (only an operator can
+ * raise it or reset the usage), so clients must not retry.
+ */
+export function quotaExhausted(message: string): GatewayError {
+  return new GatewayError("key_limit", { status: 403, message, type: "insufficient_quota", code: "quota_exhausted" });
+}
+
+/** 403 quota_not_metered: a key with a token quota on a route whose tokens the gateway cannot count. */
+export function quotaNotMetered(message: string): GatewayError {
+  return new GatewayError("key_limit", {
+    status: 403,
+    message,
+    type: "insufficient_quota",
+    code: "quota_not_metered",
+  });
+}
+
+/** 429 for a key's own RPM / TPM (or the global TPM): retry after the window ends. */
+export function keyRateLimited(message: string, retryAfterSeconds: number): GatewayError {
+  return new GatewayError("key_limit", {
+    status: 429,
+    message,
+    type: "rate_limit_error",
+    code: "rate_limit_exceeded",
+    retryAfter: String(Math.max(1, Math.ceil(retryAfterSeconds))),
+  });
 }
 
 export function modelNotFound(message: string): GatewayError {
@@ -398,7 +429,7 @@ export function errorToSseEvent(e: GatewayError): string {
 
 /** Log line for a failed request: the full detail (target, upstream message) stays server-side. */
 export function logGatewayError(e: GatewayError, label = "gateway"): void {
-  if (e.kind === "plugin_rejected" || e.kind === "invalid_request") return;
+  if (e.kind === "plugin_rejected" || e.kind === "invalid_request" || e.kind === "key_limit") return;
   const cause = e.cause instanceof Error ? e.cause.message : e.cause !== undefined ? String(e.cause) : "";
   console.error(
     `[${label}] ${e.status} ${e.kind}${e.target ? ` target=${e.target}` : ""}: ${e.message}${cause && cause !== e.message ? ` (${cause})` : ""}`,

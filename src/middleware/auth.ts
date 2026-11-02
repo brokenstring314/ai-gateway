@@ -12,6 +12,7 @@
 
 import type { Context, MiddlewareHandler } from "hono";
 import { timingSafeEqual } from "@/auth/key-hash";
+import type { MeteredKey } from "@/usage/key-meter";
 import type { KeyStore } from "@/persistence/key-store";
 import { createBootstrapGate, type BootstrapGate } from "@/auth/bootstrap";
 
@@ -96,21 +97,31 @@ export function authMiddleware(opts: AuthMiddlewareOptions): MiddlewareHandler {
       c.set("keyScopes", apiKey.scopes);
       // Per-key model allow-list (0.3.0): enforced by the pipeline.
       if (apiKey.allowedModels !== null) c.set("allowedModels", apiKey.allowedModels);
+      // Per-key quota / RPM / TPM (0.3.0 P5): checked by the pipeline against in-memory counters.
+      setClient(c, {
+        id: apiKey.id,
+        limits: { quotaTokens: apiKey.quotaTokens, rpm: apiKey.rpm, tpm: apiKey.tpm },
+        persistedUsed: apiKey.usedTokens,
+      });
       await next();
       return;
     }
 
     const configKeys = opts.configKeys?.() ?? [];
     let configKeyMatch = false;
-    for (const candidate of configKeys) {
+    let matchedIndex = -1;
+    for (const [i, candidate] of configKeys.entries()) {
       // No early exit: compare against every candidate.
       if (typeof candidate === "string" && candidate !== "" && timingSafeEqual(token, candidate)) {
         configKeyMatch = true;
+        matchedIndex = i;
       }
     }
     if (configKeyMatch) {
       c.set("apiKey", token);
       c.set("keyScopes", []);
+      // Config keys have no own limits; usage is reported as cfg_<index> (never derived from the key).
+      setClient(c, { id: configKeyId(matchedIndex) });
       await next();
       return;
     }
@@ -241,6 +252,19 @@ export function adminAuthMiddleware(opts: AdminAuthMiddlewareOptions): Middlewar
 
     return adminUnauthorized(c);
   };
+}
+
+/**
+ * Usage id of a config.auth.keys entry: `cfg_<position in the list>`. Not
+ * derived from the key itself: a hash of an owner-chosen (possibly weak)
+ * string in the logs would allow offline guessing.
+ */
+export function configKeyId(index: number): string {
+  return `cfg_${index}`;
+}
+
+function setClient(c: Context, client: MeteredKey): void {
+  (c.set as unknown as (k: string, v: unknown) => void)("client", client);
 }
 
 /** Who is acting, for audit logs: a label or key id, never the credential. */

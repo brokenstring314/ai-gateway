@@ -15,6 +15,7 @@ import {
   RetryConfigSchema,
   StrategyConfigSchema,
 } from "../config/schema.js";
+import { REMOVED_TARGET_KEYS } from "../config/removed.js";
 import { strictObject } from "../config/strict.js";
 
 const name = z
@@ -38,14 +39,18 @@ const upstreamKey = z
 const baseURL = z.string().min(1).max(2048);
 
 /** Target settings an admin may set on a channel (everything else is its own field). */
-export const ChannelSettingsSchema = strictObject({
-  weight: z.number().nonnegative().max(1_000_000).optional(),
-  costPer1kInputTokens: z.number().nonnegative().optional(),
-  costPer1kOutputTokens: z.number().nonnegative().optional(),
-  retry: RetryConfigSchema.optional(),
-  circuitBreaker: CircuitBreakerConfigSchema.optional(),
-  concurrency: ConcurrencyConfigSchema.optional(),
-});
+export const ChannelSettingsSchema = strictObject(
+  {
+    weight: z.number().nonnegative().max(1_000_000).optional(),
+    retry: RetryConfigSchema.optional(),
+    circuitBreaker: CircuitBreakerConfigSchema.optional(),
+    concurrency: ConcurrencyConfigSchema.optional(),
+  },
+  {
+    costPer1kInputTokens: REMOVED_TARGET_KEYS["costPer1kInputTokens"]!,
+    costPer1kOutputTokens: REMOVED_TARGET_KEYS["costPer1kOutputTokens"]!,
+  },
+);
 
 export const NewKeySchema = strictObject({
   key: upstreamKey,

@@ -80,12 +80,7 @@ export const RESPONSE_MESSAGE_EXTRA_KEYS: readonly string[] = [
 ];
 
 /** Usage fields besides the token counts and `*_tokens_details` (which are typed). */
-export const USAGE_EXTRA_KEYS: readonly string[] = [
-  "prompt_cache_hit_tokens",
-  "prompt_cache_miss_tokens",
-  "cost",
-  "cost_details",
-];
+export const USAGE_EXTRA_KEYS: readonly string[] = ["prompt_cache_hit_tokens", "prompt_cache_miss_tokens"];
 
 export function isJsonObject(v: unknown): v is Json {
   return typeof v === "object" && v !== null && !Array.isArray(v);

@@ -15,6 +15,12 @@ export interface RequestLogEntry {
   totalTokens: number;
   errorMessage: string;
   createdAt: Date;
+  /** 0.3.0 P5 (optional for older callers): client key id, token details, latency, HTTP status. */
+  keyId?: string;
+  cacheHitTokens?: number;
+  reasoningTokens?: number;
+  durationMs?: number;
+  status?: number;
 }
 
 export interface RequestLogQuery {
@@ -94,6 +100,24 @@ function buildMigrationSteps(): MigrationStep[] {
         } catch (err) {
           throw new DeferredStepError(`build request log index: ${err instanceof Error ? err.message : String(err)}`);
         }
+      },
+    },
+    {
+      // 0.3.0 P5: per-request key id, cache-hit / reasoning tokens, latency and status.
+      version: 3,
+      name: "request_logs_usage_details",
+      fn: (db: Database) => {
+        const cols = new Set(
+          (db.query("PRAGMA table_info(request_logs)").all() as Array<{ name: string }>).map((c) => c.name),
+        );
+        const add = (name: string, ddl: string) => {
+          if (!cols.has(name)) db.exec(`ALTER TABLE request_logs ADD COLUMN ${ddl}`);
+        };
+        add("key_id", "key_id TEXT");
+        add("cache_hit_tokens", "cache_hit_tokens INTEGER NOT NULL DEFAULT 0");
+        add("reasoning_tokens", "reasoning_tokens INTEGER NOT NULL DEFAULT 0");
+        add("duration_ms", "duration_ms INTEGER");
+        add("status", "status INTEGER");
       },
     },
   ];
@@ -223,8 +247,8 @@ export class RequestLogStore {
     // query() caches the compiled statement (one prepare per process, not per request).
     this.db
       .query(
-        `INSERT INTO request_logs(trace_id, stage, model, provider, prompt_tokens, completion_tokens, total_tokens, error_message, created_at)
-         VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+        `INSERT INTO request_logs(trace_id, stage, model, provider, prompt_tokens, completion_tokens, total_tokens, error_message, created_at, key_id, cache_hit_tokens, reasoning_tokens, duration_ms, status)
+         VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
       )
       .run(
         entry.traceId,
@@ -236,6 +260,11 @@ export class RequestLogStore {
         entry.totalTokens,
         entry.errorMessage,
         createdAt.toISOString(),
+        entry.keyId !== undefined && entry.keyId !== "" ? entry.keyId : null,
+        Math.round(entry.cacheHitTokens ?? 0),
+        Math.round(entry.reasoningTokens ?? 0),
+        entry.durationMs !== undefined ? Math.round(entry.durationMs) : null,
+        entry.status ?? null,
       );
   }
 
@@ -256,7 +285,8 @@ export class RequestLogStore {
     // Fetch paginated rows
     const rows = this.db
       .prepare(
-        `SELECT trace_id, stage, model, provider, prompt_tokens, completion_tokens, total_tokens, error_message, created_at
+        `SELECT trace_id, stage, model, provider, prompt_tokens, completion_tokens, total_tokens, error_message, created_at,
+                key_id, cache_hit_tokens, reasoning_tokens, duration_ms, status
          FROM request_logs${whereSQL}
          ORDER BY created_at DESC
          LIMIT ? OFFSET ?`,
@@ -271,6 +301,11 @@ export class RequestLogStore {
       total_tokens: number;
       error_message: string | null;
       created_at: string;
+      key_id: string | null;
+      cache_hit_tokens: number;
+      reasoning_tokens: number;
+      duration_ms: number | null;
+      status: number | null;
     }>;
 
     const data: RequestLogEntry[] = rows.map((row) => ({
@@ -283,6 +318,11 @@ export class RequestLogStore {
       totalTokens: row.total_tokens,
       errorMessage: row.error_message ?? "",
       createdAt: new Date(row.created_at),
+      ...(row.key_id !== null ? { keyId: row.key_id } : {}),
+      cacheHitTokens: row.cache_hit_tokens,
+      reasoningTokens: row.reasoning_tokens,
+      ...(row.duration_ms !== null ? { durationMs: row.duration_ms } : {}),
+      ...(row.status !== null ? { status: row.status } : {}),
     }));
 
     return { data, total };

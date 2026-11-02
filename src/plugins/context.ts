@@ -28,7 +28,7 @@ export function settlePluginContext(ctx: PluginContext): void {
 
 /**
  * Stable, non-reversible identifier for an API key. Plugins bucket by this
- * (rate-limit, budget, cache tenant) so the raw secret never lands in plugin
+ * (rate-limit, cache tenant) so the raw secret never lands in plugin
  * metadata or logs.
  */
 export function apiKeyId(apiKey: string): string {

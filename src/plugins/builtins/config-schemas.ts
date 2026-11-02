@@ -12,7 +12,6 @@ import { strictObject } from "../../config/strict.js";
 
 const positiveInt = z.number().int().positive();
 const positiveNumber = z.number().positive();
-const nonNegativeNumber = z.number().nonnegative();
 
 /**
  * Keys that name the same setting (`maxAge` = `ttlSeconds`). At most one may
@@ -47,17 +46,33 @@ export const RateLimitPluginConfigSchema = strictObject({
   rpm: positiveInt.optional(),
   maxRequestsPerDay: positiveInt.optional(),
   rpd: positiveInt.optional(),
+  // 0.3.0: tokens per minute per key (counted when a request completes).
+  maxTokensPerMinute: positiveInt.optional(),
+  tpm: positiveInt.optional(),
   key: z.string().min(1).optional(),
 })
   .superRefine(
     aliasCheck([
-      { keys: ["maxRequestsPerMinute", "keyRpm", "rpm"], required: true },
+      { keys: ["maxRequestsPerMinute", "keyRpm", "rpm"] },
       { keys: ["maxRequestsPerDay", "rpd"] },
+      { keys: ["maxTokensPerMinute", "tpm"] },
     ]),
   )
+  .superRefine((c, ctx) => {
+    const limits = [c.maxRequestsPerMinute, c.keyRpm, c.rpm, c.maxRequestsPerDay, c.rpd, c.maxTokensPerMinute, c.tpm];
+    if (limits.every((v) => v === undefined)) {
+      ctx.addIssue({
+        code: "custom",
+        path: ["maxRequestsPerMinute"],
+        message:
+          "maxRequestsPerMinute is required (aliases: keyRpm, rpm) unless maxRequestsPerDay or maxTokensPerMinute is set",
+      });
+    }
+  })
   .transform((c) => ({
-    maxRequestsPerMinute: first(c.maxRequestsPerMinute, c.keyRpm, c.rpm) as number,
+    maxRequestsPerMinute: first(c.maxRequestsPerMinute, c.keyRpm, c.rpm),
     maxRequestsPerDay: first(c.maxRequestsPerDay, c.rpd),
+    maxTokensPerMinute: first(c.maxTokensPerMinute, c.tpm),
     key: c.key,
   }));
 
@@ -72,13 +87,6 @@ export const CachePluginConfigSchema = strictObject({
     ttlSeconds: first(c.ttlSeconds, c.maxAge) ?? 300,
     maxSize: first(c.maxSize, c.maxEntries) ?? 1000,
   }));
-
-export const BudgetPluginConfigSchema = strictObject({
-  dailyBudget: positiveNumber,
-  costPer1kInput: nonNegativeNumber.optional(),
-  costPer1kOutput: nonNegativeNumber.optional(),
-  reserveOutputTokens: z.number().int().nonnegative().optional(),
-});
 
 export const WordFilterPluginConfigSchema = strictObject({
   blocklist: z.array(z.string()).optional(),
@@ -96,7 +104,6 @@ export const MaxTokenPluginConfigSchema = strictObject({
 export const BUILTIN_PLUGIN_CONFIG_SCHEMAS = {
   "rate-limit": RateLimitPluginConfigSchema,
   cache: CachePluginConfigSchema,
-  budget: BudgetPluginConfigSchema,
   "word-filter": WordFilterPluginConfigSchema,
   "max-token": MaxTokenPluginConfigSchema,
 } as const;

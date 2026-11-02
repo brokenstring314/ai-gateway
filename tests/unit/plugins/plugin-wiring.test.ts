@@ -207,15 +207,12 @@ describe("H3: config.plugins are instantiated", () => {
       { name: "logger", stage: "after_request" },
       { name: "word_filter", stage: "before_request", config: { blockedWords: ["x"] } },
       { name: "max_token", stage: "before_request", config: { maxTokens: 100 } },
-      { name: "budget", stage: "before_request", config: { dailyBudget: 1 } },
       { name: "cache", stage: "before_request", enabled: false },
     ]);
     expect(regs.map((r) => `${r.plugin.name}@${r.stage}`)).toEqual([
       "rate-limit@before_request",
       "word-filter@before_request",
       "max-token@before_request",
-      "budget@before_request",
-      "budget@after_request",
     ]);
   });
 
@@ -224,9 +221,15 @@ describe("H3: config.plugins are instantiated", () => {
   });
 
   it("rejects invalid builtin config instead of silently ignoring it", () => {
-    expect(() => buildPluginsFromConfig([{ name: "budget", stage: "before_request", config: {} }])).toThrow(
-      /dailyBudget/,
+    expect(() => buildPluginsFromConfig([{ name: "max_token", stage: "before_request", config: {} }])).toThrow(
+      /maxTokens/,
     );
+  });
+
+  it("the budget plugin was removed in 0.3.0: building it throws the migration hint", () => {
+    expect(() =>
+      buildPluginsFromConfig([{ name: "budget", stage: "before_request", config: { dailyBudget: 1 } }]),
+    ).toThrow(/budget plugin was removed in 0\.3\.0/);
   });
 });
 

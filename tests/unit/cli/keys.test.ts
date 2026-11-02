@@ -101,6 +101,41 @@ describe("ai-gateway keys", () => {
     store.close();
   });
 
+  it("create --quota-tokens / --rpm / --tpm store the key's limits (0.3.0 P5); list shows them", async () => {
+    const { cfg, dataDir } = await setup();
+    const r = await run([
+      "create",
+      "--quota-tokens",
+      "100000",
+      "--rpm",
+      "10",
+      "--tpm",
+      "5000",
+      "--json",
+      "-c",
+      cfg,
+      "--data-dir",
+      dataDir,
+    ]);
+    expect(r.code).toBe(0);
+    const j = JSON.parse(r.out[0]!) as { id: string; quotaTokens: number; rpm: number; tpm: number };
+    expect(j).toMatchObject({ quotaTokens: 100000, rpm: 10, tpm: 5000 });
+    const store = await openStore(dataDir);
+    expect(store.get(j.id)).toMatchObject({ quotaTokens: 100000, rpm: 10, tpm: 5000, usedTokens: 0 });
+    store.close();
+    const list = await run(["list", "--json", "-c", cfg, "--data-dir", dataDir]);
+    expect(JSON.parse(list.out[0]!).keys[0]).toMatchObject({ quotaTokens: 100000, rpm: 10, tpm: 5000, usedTokens: 0 });
+    for (const bad of [
+      ["--quota-tokens", "-1"],
+      ["--rpm", "0"],
+      ["--tpm", "1.5"],
+      ["--quota-tokens", "lots"],
+    ]) {
+      expect((await run(["create", ...bad, "-c", cfg, "--data-dir", dataDir])).code).toBe(1);
+    }
+    expect((await run(["list", "--rpm", "5", "-c", cfg, "--data-dir", dataDir])).code).toBe(1);
+  });
+
   it("list shows keys without secrets; revoke disables a key", async () => {
     const { cfg, dataDir } = await setup();
     const created = await run(["create", "--admin", "--json", "-c", cfg, "--data-dir", dataDir]);

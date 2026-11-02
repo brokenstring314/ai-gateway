@@ -6,7 +6,7 @@
  * pipeline; the after-request plugins, the request log and the metrics see
  * the streamed request exactly once, however it ends: normal completion,
  * upstream error, or the client going away (generator return()). Without a
- * usage chunk, usage is estimated (~4 chars/token) so the budget cannot be
+ * usage chunk, usage is estimated (~4 chars/token) so a token quota cannot be
  * bypassed.
  *
  * Breaker, limiter, retry and failover before the first chunk:

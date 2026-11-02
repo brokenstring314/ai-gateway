@@ -16,7 +16,7 @@ fixed by 1.4 while this suite was being written).
 | sec/s3-5-config-scrub-gaps | S3-5 (remaining scrub gaps) — fixed, now a regression test | 3.3 |
 | sec/s3-6-passthrough-method-fallthrough | S3-6 — fixed (route allow-list, 405 on gateway routes, max-token on proxied bodies), now a regression test | 2.8 |
 | core/limiter-queue-timeout-opens-breaker | C3-3 — fixed (abortable limiter wait), now a regression test | 2.2 |
-| core/budget-race | C3-5 — fixed (reserve in before, settle after; budget without rates is a config error), now regression tests | 3.6 |
+| ~~core/budget-race~~ | C3-5 — fixed in 0.2.0; test deleted in 0.3.0 P5 together with the `budget` plugin (no money limits any more) | 3.6 |
 | core/breaker-stale-outcome, core/breaker-fuzz (I3/I4) | C3-6 — fixed (permit-based settlement), now regression tests | 2.2 |
 | core/prev-scopes-and-logstore | round-2: initRequestLogger never called — fixed (finalize → log store sink), now a regression test | 2.3 |
 | core/prev/mcp-loop | round-2: MCP depth error 500 (M2), MCP usage undercount (M3) — fixed (core/mcp-loop.ts), now regression tests | 2.7 |
@@ -27,6 +27,7 @@ fixed by 1.4 while this suite was being written).
 | config/request-timeout-duration | PLAN backlog: `requestTimeout: 500ms` read as 500 minutes — fixed (shared duration parser) | post-0.2.0 |
 | config/tracing-grpc-rejected | PLAN backlog: `otlpProtocol: grpc` accepted but ignored — fixed (validation error) | post-0.2.0 |
 | config/target-priority-budget-rejected | PLAN backlog: `targets[].priority` / `budget` never read — fixed (validation error + hint) | post-0.2.0 |
+| config/budget-and-prices-removed | 0.3.0 P5 (user decision): `budget` plugin and target prices rejected with a removal hint, stored prices migrated away, no cost metric | 0.3.0 |
 | config/builtin-plugin-config-strict | PLAN backlog: built-in plugin config typos silently ignored — fixed (strict schemas) | post-0.2.0 |
 | config/mcp-max-call-depth | PLAN backlog: MCP `maxCallDepth` from the first server only — fixed (smallest across servers) | post-0.2.0 |
 | qa/sigterm-drain-streams | QA round (load test): SIGTERM reset every in-flight stream (drain counted the SSE handler as done) — fixed | post-0.2.0 |

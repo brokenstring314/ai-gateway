@@ -51,6 +51,7 @@ import type { InFlightTracker } from "./server/shutdown.js";
 import { requestLogStoreSink } from "./observability/request-log.js";
 import type { KeyPool } from "./routing/key-pool.js";
 import { defaultPublicHostGuard } from "./security/url-guard.js";
+import type { MeteredKey } from "./usage/key-meter.js";
 
 /** Shared Hono environment type for all handlers and middleware. */
 export type AppEnv = {
@@ -58,6 +59,8 @@ export type AppEnv = {
     apiKey: string | undefined;
     /** Model allow-list of the authenticated store key; unset = every model. */
     allowedModels: string[] | undefined;
+    /** The client key the request is metered as (id + own limits), set by auth. */
+    client: MeteredKey | undefined;
     abortController: AbortController;
   };
 };
@@ -120,6 +123,8 @@ export function createApp(
 
   // Every finalized request is also written to the log store (/admin/logs, dashboard).
   if (options?.logStore) gateway.addRequestLogSink(requestLogStoreSink(options.logStore));
+  // …and to the usage rollups behind /admin/usage (batched, asynchronous).
+  if (options?.usageRecorder) gateway.addRequestLogSink(options.usageRecorder.sink);
 
   // ── Middleware (order matters) ──
   app.use("*", recoverMiddleware());
@@ -229,7 +234,7 @@ export function createApp(
   registerReadinessHandler(
     app,
     gateway,
-    [keyStore, options?.logStore],
+    [keyStore, options?.logStore, options?.usageStore],
     () => options?.inFlightTracker?.draining ?? false,
   );
   registerCapabilitiesHandler(app, gateway);
@@ -291,9 +296,9 @@ export function createApp(
 
   // Pass-through proxy for other /v1/* routes (e.g. /v1/responses, /v1/files).
   // It cannot apply circuit breakers, fallback, response-side plugins or
-  // budget accrual (the body/usage shapes are unknown), so it is OPT-IN
+  // token accounting (the body/usage shapes are unknown), so it is OPT-IN
   // (passthroughProxy.enabled: true). When enabled, before-request plugins
-  // (rate-limit, budget check, word-filter on messages/input/prompt) run first.
+  // (rate-limit, key limits, word-filter on messages/input/prompt) run first.
   if (config.passthroughProxy?.enabled === true) {
     const isRouteAllowed = compileRouteAllowlist(config.passthroughProxy.routes ?? DEFAULT_PASSTHROUGH_ROUTES);
     app.all(
@@ -317,6 +322,7 @@ export function createApp(
                 traceId: c.req.header("X-Request-Id") ?? crypto.randomUUID(),
                 metadata: { apiKey: (c.get as unknown as (k: string) => unknown)("apiKey") },
                 allowedModels: (c.get as unknown as (k: string) => string[] | undefined)("allowedModels"),
+                client: (c.get as unknown as (k: string) => MeteredKey | undefined)("client"),
               },
               bodyText,
               new URL(c.req.url).pathname,
@@ -372,6 +378,8 @@ export function createApp(
   const adminApp = createAdminApp(gateway, config, configPath, {
     keyStore,
     logStore: options?.logStore,
+    ...(options?.usageStore ? { usageStore: options.usageStore } : {}),
+    ...(options?.usageRecorder ? { usageRecorder: options.usageRecorder } : {}),
     ...(options?.configStore ? { configStore: options.configStore } : {}),
     ...(options?.configApi ? { configApi: options.configApi } : {}),
     adminSecret: options?.adminSecret,

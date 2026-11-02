@@ -11,8 +11,8 @@ describe("targets[].priority / targets[].budget (backlog #3)", () => {
     expect(msg).not.toMatch(/valid keys/);
   });
 
-  it("budget is rejected with a hint pointing at the budget plugin", () => {
+  it("budget is rejected with a hint pointing at token quotas (0.3.0: no money limits)", () => {
     const msg = errors(base({ targets: [target("a", { budget: 50 })] }));
-    expect(msg).toMatch(/^targets\.0: targets\[\]\.budget .*budget plugin/m);
+    expect(msg).toMatch(/^targets\.0: targets\[\]\.budget .*quotaTokens/m);
   });
 });

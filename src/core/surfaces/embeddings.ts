@@ -36,7 +36,7 @@ export const embeddingsSurface: Surface<EmbeddingRequest, EmbeddingResponse> = {
   exposeResult: (pc, res) => {
     pc.metadata["_embeddingResponse"] = res;
   },
-  // Usage for after-request plugins (budget) as a chat-shaped response.
+  // Usage for after-request plugins and the key meter as a chat-shaped response.
   toPluginResponse: (res) => {
     const promptTokens = res.usage?.promptTokens ?? 0;
     return {

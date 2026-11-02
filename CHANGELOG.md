@@ -4,6 +4,25 @@
 
 ### Added
 
+- Per-key limits and usage statistics (0.3.0 P5, user decisions 2026-11-02; `docs/admin-api.md#key-limits-and-usage`).
+  The gateway has one owner and no money anywhere: client keys get a **token quota** (`quotaTokens`, all-time
+  prompt + completion tokens until reset; `null` = unlimited), their own **RPM** and **TPM** (unset → the
+  `rate-limit` plugin's values; new plugin option `maxTokensPerMinute` / `tpm`). Key store migration 6 (`quota_tokens`,
+  `rpm`, `tpm`, `used_tokens`, `usage_reset_at`, `revision`). New: `PATCH /admin/keys/:id` (If-Match, 428/409, strict
+  body), `POST /admin/keys/:id/reset-usage`, limits on `POST /admin/keys` and `ai-gateway keys create --quota-tokens
+  --rpm --tpm`; key views carry `usedTokens`, `remainingTokens`, `quotaExhausted`, `usageResetAt`, `revision` (ETag).
+  Every key write is audited (with the config store). A key at or over its quota is refused before the request
+  starts with `403 quota_exhausted`; admitted requests always finish (streams are never cut), so the last ones may
+  overshoot; keys with a quota get `403 quota_not_metered` on image generation and pass-through routes; RPM / TPM →
+  `429 rate_limit_exceeded` + `Retry-After`. All checks use in-memory counters (no database access on the request
+  path), shared across config reloads, persisted asynchronously (~1 s, `USAGE_FLUSH_INTERVAL_MS`, and on shutdown) and
+  restored at startup.
+- `GET /admin/usage?groupBy=key|model|channel&from&to&tz&daily` (read_only): requests, errors, input / output /
+  cache-hit / reasoning tokens, average and max latency, from hourly UTC rollups in `<data dir>/usage.sqlite` (batched
+  WAL writes, flushed before each read); days follow any IANA `tz` (default UTC). The request log gained `keyId`,
+  `publishedModel`, `tokens.cacheHit` / `tokens.reasoning` (stdout) and `keyId`, `cacheHitTokens`,
+  `reasoningTokens`, `durationMs`, `status` columns (`/admin/logs`, request-log migration 3).
+
 - Runtime-config Admin API (0.3.0 P4, `docs/admin-api.md`): `/admin/channels` (+ keys, `test`, `fetch-models`),
   `/admin/models` (+ `PUT …/bindings`), `/admin/settings`, `/admin/config/versions` (+ `rollback`),
   `/admin/audit`, `/admin/presets`. Writes need the `admin` scope (`read_only` may read), strict JSON bodies,
@@ -54,6 +73,19 @@
 
 ### Breaking changes
 
+- **P5: no prices or money anywhere (user decision 2026-11-02).** The `budget` plugin is deleted: any `budget` entry in
+  `plugins` (enabled or not, also in the config store's settings) fails validation with "the budget plugin was removed
+  in 0.3.0 …" — *migration:* remove it and give client keys a `quotaTokens`. `targets[].costPer1kInputTokens` /
+  `costPer1kOutputTokens` (and channel `settings` of the Admin API) are rejected with a removal hint — *migration:*
+  delete them; the config store migration 3 drops them from stored channels (and the unused `models.pricing_json`
+  column), and rollbacks to older versions drop them too. The Prometheus counter `ai_gateway_request_cost_usd` is
+  gone, and an upstream's `usage.cost` / `cost_details` are no longer passed through to clients. `core/usage.ts`
+  no longer exports `costOf` / `hasCostRates` / `CostRates`; `BudgetPlugin` / `BudgetConfig` are no longer exported;
+  `buildPluginsFromConfig` takes no `targets` argument.
+- P5: the `rate-limit` plugin's `maxRequestsPerMinute` is no longer required when `maxRequestsPerDay` or
+  `maxTokensPerMinute` is set (at least one is). A key-store key with its own `rpm` is no longer limited by the
+  plugin's per-minute value.
+
 - P4: a target needs `apiKey` or `apiKeys` (as before, a target without a key is a config error). A single-key
   target that gets an upstream 429 now pauses that key for the Retry-After time (default 30 s): meanwhile its
   requests answer `429` with the remaining Retry-After (or fail over to another target) instead of being sent
@@ -95,7 +127,8 @@ now fail `ai-gateway validate` and startup with a migration hint:
 - **`targets[].priority` and `targets[].budget` are rejected** (never read by
   any strategy or plugin, and not in the Go original). Removed from
   `TargetConfig`. *Migration:* order targets with `mode: fallback` and
-  `strategy.targets`; use the `budget` plugin (`dailyBudget`) for spend limits.
+  `strategy.targets`; limit client keys with a token quota (`quotaTokens`, P5 — the `budget` plugin
+  this hint used to point to was removed in P5).
 - **Built-in plugin configs are strictly validated** (`rate-limit`, `cache`,
   `budget`, `word-filter`, `max-token`, like `pii-secret-guard` already was):
   unknown keys (with a did-you-mean hint), wrong types, missing required

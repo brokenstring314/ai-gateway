@@ -212,8 +212,6 @@ targets:
     baseURL: "https://api.openai.com/v1"   # 可选，每个 provider 有默认值
     models: ["gpt-4o", "gpt-4o-mini"]
     weight: 3                               # 用于 loadbalance 策略（0 = 摘除）
-    costPer1kInputTokens: 0.005             # 价格（budget 插件 / 指标）
-    costPer1kOutputTokens: 0.015
     retry:                                  # 每个目标的重试（不写 = 只尝试 1 次）
       attempts: 3                           # 最大尝试次数（写了该块时默认 3）
       initialBackoffMs: 100                 # 基础退避时间（默认：100ms）
@@ -278,12 +276,6 @@ plugins:                        # 按列出顺序执行；各选项见“插件�
     config:
       maxAge: 300
       maxEntries: 1000
-  - name: budget
-    stage: before_request
-    config:
-      dailyBudget: 100
-      costPer1kInput: 0.01
-      costPer1kOutput: 0.03
 
 compatibility:
   onUnsupportedParam: warn      # warn | drop | reject
@@ -430,7 +422,7 @@ POST /v1/chat/completions
 - `max_tokens` / `max_completion_tokens`
 - `parallel_tool_calls`
 - `tools[].function.strict`
-- 网关不建模的字段按白名单双向透传。请求：`reasoning_effort`、`verbosity`、`store`、`metadata`、`modalities`、`audio`、`prediction`、`service_tier`、`web_search_options`、`prompt_cache_key`、`safety_identifier` 以及常见厂商参数（`top_k`、`min_p`、`repetition_penalty`、`reasoning`、`thinking`、`enable_thinking`、`chat_template_kwargs`、Perplexity 的 `search_*` / `return_*`）；消息上的 `reasoning_content` / `reasoning` / `refusal` / `audio` / `prefix`。响应与流式 chunk：`system_fingerprint`、`service_tier`、`citations`、`search_results`；`choices[].logprobs`；message / delta 上的 `reasoning_content`、`reasoning`、`refusal`、`annotations`、`audio`；usage 的 `prompt_tokens_details`、`completion_tokens_details`、`cost`。其他未知字段仍会丢弃。
+- 网关不建模的字段按白名单双向透传。请求：`reasoning_effort`、`verbosity`、`store`、`metadata`、`modalities`、`audio`、`prediction`、`service_tier`、`web_search_options`、`prompt_cache_key`、`safety_identifier` 以及常见厂商参数（`top_k`、`min_p`、`repetition_penalty`、`reasoning`、`thinking`、`enable_thinking`、`chat_template_kwargs`、Perplexity 的 `search_*` / `return_*`）；消息上的 `reasoning_content` / `reasoning` / `refusal` / `audio` / `prefix`。响应与流式 chunk：`system_fingerprint`、`service_tier`、`citations`、`search_results`；`choices[].logprobs`；message / delta 上的 `reasoning_content`、`reasoning`、`refusal`、`annotations`、`audio`；usage 的 `prompt_tokens_details`、`completion_tokens_details`、`prompt_cache_hit_tokens`、`prompt_cache_miss_tokens`。其他未知字段仍会丢弃（0.3.0 起也包括上游的 `cost` / `cost_details`：网关不再携带任何金额字段）。
 - 显式传 `null` 的可选参数（`"temperature": null`、`"tools": null` 等）视为未设置，与 OpenAI API 一致
 
 **请求：**
@@ -559,7 +551,7 @@ passthroughProxy:
 
 只转发白名单内的路由，其他一律 **403** `route_not_allowed`。默认只放无状态的 POST：所有透传请求都使用 target 唯一的上游密钥，列出/读取/删除已存对象的路由（`GET /v1/files`、`DELETE /v1/files/{id}`、`GET /v1/responses/{id}`、batches、vector stores、已存的 chat completions）会让一个客户端访问到所有其他客户端的数据。只有网关只服务单一租户时才应加入这类路由。条目格式为 `"METHOD /v1/path"` 或 `"METHOD /v1/prefix/*"`（方法写 `*` 表示任意方法）；含编码斜杠的路径永不转发。
 
-开启后，请求会先运行 **before-request 插件**（限流、预算检查、对 `messages` / `input` / `prompt` / `instructions` 的敏感词过滤；max-token 作用于 `max_output_tokens` / `max_tokens` / `max_completion_tokens`，`/v1/responses` 未设置时注入 `max_output_tokens`），再按 `X-Provider` 头或请求体顶层 `model` 原样转发。由于请求体结构未知，需要改写内容的插件（word-filter `redact`）或短路会直接返回 403；被封顶的 token 上限会写入转发的请求体。透传请求**没有**熔断、回退、after-request 插件和预算累计，因此默认关闭。
+开启后，请求会先运行 **before-request 插件**（限流、key 的 RPM、对 `messages` / `input` / `prompt` / `instructions` 的敏感词过滤；max-token 作用于 `max_output_tokens` / `max_tokens` / `max_completion_tokens`，`/v1/responses` 未设置时注入 `max_output_tokens`），再按 `X-Provider` 头或请求体顶层 `model` 原样转发。由于请求体结构未知，需要改写内容的插件（word-filter `redact`）或短路会直接返回 403；被封顶的 token 上限会写入转发的请求体。透传请求**没有**熔断、回退、after-request 插件和 token 计量，因此默认关闭。设了 token 额度的 key 在透传路由上会被拒绝（403 `quota_not_metered`）：它们的 token 无法计量。
 
 ### 健康探针
 
@@ -593,10 +585,13 @@ Prometheus 格式的指标，包括：
 | ------ | ------------------------- | --------- | ----------------- |
 | GET    | `/admin/config`           | read_only | 获取当前配置（已脱敏：API 密钥、admin secret、客户端密钥、URL 中的凭据、OTLP 头、MCP env/args、插件配置里疑似密钥的字段；完整的 `${VAR}` 模板原样显示） |
 | GET    | `/admin/keys`             | read_only | 列出 API 密钥（不返回明文） |
-| GET    | `/admin/keys/usage`       | read_only | 使用计数：`totalKeys`、`totalUsageCount`、每个密钥的 `usageCount` |
-| GET    | `/admin/keys/:id`         | read_only | 单个密钥 |
-| POST   | `/admin/keys`             | admin     | 创建密钥（`{"name", "scopes"?, "expiresAt"?}`），密钥只返回一次 |
+| GET    | `/admin/keys/usage`       | read_only | 使用计数：`totalKeys`、`totalUsageCount`、每个密钥的 `usageCount`、`usedTokens`、`quotaTokens` |
+| GET    | `/admin/keys/:id`         | read_only | 单个密钥，含限额与已用 token；`ETag` = 其 revision |
+| POST   | `/admin/keys`             | admin     | 创建密钥（`{"name", "scopes"?, "expiresAt"?, "allowedModels"?, "quotaTokens"?, "rpm"?, "tpm"?}`），密钥只返回一次 |
 | PUT    | `/admin/keys/:id`         | admin     | 修改名称和作用域（`{"name", "scopes"}`） |
+| PATCH  | `/admin/keys/:id`         | admin     | 修改名称、作用域、可用模型、过期时间、`quotaTokens`、`rpm`、`tpm`（必须带 `If-Match`） |
+| POST   | `/admin/keys/:id/reset-usage` | admin | 已用 token 清零（`If-Match` 可选） |
+| GET    | `/admin/usage`            | read_only | 按 `key`、`model` 或 `channel` 汇总一段日期内的 token / 请求数 / 错误数 / 延迟 |
 | POST   | `/admin/keys/:id/revoke`  | admin     | 吊销密钥 |
 | POST   | `/admin/keys/:id/rotate`  | admin     | 轮换密钥（新密钥只返回一次） |
 | DELETE | `/admin/keys/:id`         | admin     | 删除密钥 |
@@ -688,7 +683,34 @@ ai-gateway keys list -c config.yaml            # id、名称、作用域、状�
 ai-gateway keys revoke <id> -c config.yaml
 ```
 
-可选：`--expires 2027-01-01T00:00:00Z`、`--read-only`（代替 `--admin`；都不指定则为 `inference`）。该命令会校验配置，但不会打印配置或除新密钥以外的任何秘密；数据目录下没有密钥库时直接报错（不会新建），所以数据目录写错会立即暴露。Docker 中：`docker exec <容器> bun src/index.ts keys create --admin -c /config/config.yaml`（镜像已设置 `GATEWAY_DATA_DIR=/data`）。
+可选：`--expires 2027-01-01T00:00:00Z`、`--read-only`（代替 `--admin`；都不指定则为 `inference`）、`--models a,b`、`--quota-tokens N`、`--rpm N`、`--tpm N`（见下文）。该命令会校验配置，但不会打印配置或除新密钥以外的任何秘密；数据目录下没有密钥库时直接报错（不会新建），所以数据目录写错会立即暴露。Docker 中：`docker exec <容器> bun src/index.ts keys create --admin -c /config/config.yaml`（镜像已设置 `GATEWAY_DATA_DIR=/data`）。
+
+#### key 额度与用量（0.3.0）
+
+本网关只有一个所有者/管理员，不是收费的 API 服务：没有价格、费用、金额额度、支付或用户账号。把 key 分给别人时，可以按 **token** 和 **请求数** 限制：
+
+| 字段 | 含义 | `null` / 不设置 |
+| ---- | ---- | --------------- |
+| `quotaTokens` | 该 key 在被重置之前总共可用的 token（prompt + completion，以上游返回的 usage 为准；没有 usage 分块的流按估算） | 不限 |
+| `rpm` | 该 key 自己的每分钟请求数 | `rate-limit` 插件的 `maxRequestsPerMinute`（如有） |
+| `tpm` | 该 key 自己的每分钟 token 数（请求结束时计入） | `rate-limit` 插件的 `maxTokensPerMinute`（如有） |
+| `allowedModels`、`expiresAt` | 可用的对外模型；过期时间 | 全部模型；永不过期 |
+
+创建时设置（`POST /admin/keys`，或 `ai-gateway keys create --quota-tokens N --rpm N --tpm N`），之后用 `PATCH /admin/keys/:id` 修改（`If-Match: "<revision>"`，取自 `GET /admin/keys/:id` 的 ETag；`null` 表示清除该限额）。配置文件 `auth.keys` 里的 key 属于所有者，没有自己的限额（适用插件的值）。
+
+**额度语义。** key 的已用 token 达到额度后，新请求在开始前即被拒绝：**403 `quota_exhausted`**（type `insufficient_quota`；用 403 而不是 429，因为等待没有用——额度不会自动恢复）。已经放行的请求**一定完整结束**，流不会因为额度被中途切断；其 token 在结束时计入，所以最后一个请求（以及当时已在进行中的请求）可能让 key 超出额度。调高额度（`PATCH`）或 `POST /admin/keys/:id/reset-usage` 后可继续使用。图片生成和透传路由无法按 token 计量，因此设了额度的 key 在这些路由上返回 **403 `quota_not_metered`**。RPM / TPM 超限返回 **429 `rate_limit_exceeded`** 并带 `Retry-After`。
+
+**性能。** 额度、RPM、TPM 只检查内存计数器：请求路径上不读也不写数据库。已用 token 大约每秒（以及关闭时）异步写回密钥库，启动时恢复；在线改配置（重载）不会清零任何计数。进程崩溃最多丢失约 1 秒的计量。
+
+**用量统计。** 每个结束的请求（包括被拒绝的，计为错误）都会累加到 `<数据目录>/usage.sqlite` 的按小时汇总表（批量写入、WAL）：请求数、错误数、输入 / 输出 / 缓存命中 / 推理 token、延迟，按 key × 模型 × 渠道。`GET /admin/usage?groupBy=key|model|channel&from=YYYY-MM-DD&to=YYYY-MM-DD[&tz=Asia/Shanghai][&daily=true]`（`read_only` 即可）按需汇总；日期是 `tz` 时区（默认 UTC）里的自然日，存储按整点 UTC 小时分桶，因此半小时偏移的时区精确到小时；单次最多 366 天，默认最近 7 天。每个 key 的响应里还带 `usedTokens`、`remainingTokens`、`quotaExhausted`、`usageResetAt`。详见 [docs/admin-api.md](docs/admin-api.md#key-limits-and-usage)。
+
+```bash
+# 给朋友 200 万 token、每分钟 20 次、只能用 ds-chat
+curl -X POST -H "X-Admin-Secret: $S" -H "Content-Type: application/json" http://localhost:3000/admin/keys \
+  -d '{"name":"friend","allowedModels":["ds-chat"],"quotaTokens":2000000,"rpm":20}'
+curl -H "X-Admin-Secret: $S" "http://localhost:3000/admin/usage?groupBy=key&tz=Asia/Shanghai"
+curl -X POST -H "X-Admin-Secret: $S" http://localhost:3000/admin/keys/<id>/reset-usage
+```
 
 ### 管理控制台
 
@@ -731,7 +753,10 @@ HTML 页面和 `/admin/static/console.{js,css}` 不需要认证，因为它们�
 | 没有目标支持该模型 | 404 | `model_not_found` |
 | 插件拒绝（word-filter 等） | 403 | `plugin_rejected` |
 | `pii-secret-guard` 拦截（请求 / 响应） | 400 / 422 | `secret_detected` / `pii_detected` |
-| `rate-limit` / `budget` 插件拒绝 | 429（rate-limit 带 `Retry-After`） | `plugin_rejected` |
+| `rate-limit` 插件拒绝 | 429 + `Retry-After` | `plugin_rejected` |
+| key 的 token 额度用完 | 403 | `quota_exhausted` |
+| 有额度的 key 调用图片 / 透传路由 | 403 | `quota_not_metered` |
+| key 自己的 RPM / TPM（或插件的 TPM）超限 | 429 + `Retry-After` | `rate_limit_exceeded` |
 | 上游 4xx（400、404、413、422 等） | 原状态码 | 上游 `code`；上游 `message`/`type`/`param` 原样保留 |
 | 上游 429 | 429，透传上游 `Retry-After` | 上游 `code`（默认 `rate_limit_exceeded`） |
 | 上游 401/403（切换后仍失败） | 502 | `upstream_auth_failed` |
@@ -830,7 +855,7 @@ strategy:
 | 已移除                                         | 改用                                                   |
 | ------------------------------------------- | ---------------------------------------------------- |
 | `least_latency`                             | `fallback`，targets 按偏好顺序排列                           |
-| `cost_optimized`（及 `unpricedStrategy`）      | `fallback`，targets 按价格从低到高排列                         |
+| `cost_optimized`（及 `unpricedStrategy`）      | `fallback`，targets 按偏好顺序排列                             |
 | `content_based`（及 `keywords`、`contentConditions`） | `conditional` + `field: prompt` 规则（`contains` 或 `pattern`） |
 | `abtest`（及 `abVariants`）                    | `loadbalance` + `weights`。`abtest` 暂时作为 `loadbalance` 的废弃别名保留（启动时告警），0.3.0 移除 |
 | `strategy.conditions`（Go 的 `key/value/target_key`） | `strategy.rules: [{ field, pattern, target }]`  |
@@ -928,12 +953,13 @@ plugins:
   - name: rate-limit
     stage: before_request
     config:
-      maxRequestsPerMinute: 60  # 必填（别名：keyRpm、rpm）
+      maxRequestsPerMinute: 60  # 每个 key（别名：keyRpm、rpm）；key 自己的 rpm 优先
       maxRequestsPerDay: 5000   # 可选（别名：rpd）；不设置时不跟踪日窗口
+      maxTokensPerMinute: 100000 # 可选（别名：tpm）；每个 key，key 自己的 tpm 优先
       key: shared               # 可选，没有 API 密钥的请求使用的桶名（默认："default"）
 ```
 
-窗口从该密钥的第一个请求开始计时，60 秒 / 24 小时后重置，因此跨越窗口边界的突发最多可放行两倍限额。限额按进程计算（多副本之间不共享）。被拒绝时返回 429 `plugin_rejected`，并带 `Retry-After`（距窗口重置的秒数）。`budget` 插件拒绝同样返回 429。
+窗口从该密钥的第一个请求开始计时，60 秒 / 24 小时后重置，因此跨越窗口边界的突发最多可放行两倍限额。限额按进程计算（多副本之间不共享）。被拒绝时返回 429 `plugin_rejected`，并带 `Retry-After`（距窗口重置的秒数）。三个限额至少设置一个。设了自己 `rpm` / `tpm` 的 key 改用自己的值（见 [key 额度与用量](#key-额度与用量030)）；`maxTokensPerMinute` 由同一个内存 key 计量器执行（请求结束时计入 token，超限 429 `rate_limit_exceeded`）。
 
 #### 响应缓存（Cache）
 
@@ -1018,29 +1044,9 @@ plugins:
       maxTokens: 4096           # 必填。封顶 max_tokens / max_completion_tokens；两者都没设置时注入为 max_tokens
 ```
 
-#### 预算控制（Budget）
+#### 预算控制（Budget，0.3.0 已删除）
 
-每个 API 密钥的每日 USD 预算控制。
-
-```yaml
-plugins:
-  - name: budget
-    stage: before_request
-    config:
-      dailyBudget: 100          # 每日消费限额（美元）
-      costPer1kInput: 0.01     # 每 1K 输入 token 的成本
-      costPer1kOutput: 0.03    # 每 1K 输出 token 的成本
-      reserveOutputTokens: 1024 # 可选：请求未设 max_tokens 时预留的输出 token 数
-```
-
-每个请求发送前先按估算预留费用（prompt 约 4 字符/token，加上其 `max_tokens`
-或 `reserveOutputTokens`），完成后按实际用量结算；无论请求如何结束，预留都会释放。
-同一密钥还有在途请求时，只有估算能放进剩余额度的请求才会被放行，因此并发不会冲破预算。
-未配置 `costPer1kInput` / `costPer1kOutput` 时使用实际服务 target 的
-`costPer1kInputTokens` / `costPer1kOutputTokens`；任何地方都没有费率的 budget
-配置直接报错（否则永远不会生效）。
-没有 usage 分块的流式请求按估算计费（流式输出的内容、工具调用文本以及
-`reasoning_content` / `reasoning`，约 4 字符/token）。
+网关不再给请求定价。`plugins` 里出现 `budget`（无论是否启用）都会校验失败并给出提示；请改用按 token 限制 key（[key 额度与用量](#key-额度与用量030)）。
 
 #### 日志（Logger，0.2.0 已移除）
 
@@ -1048,8 +1054,8 @@ plugins:
 
 ### 插件配置与错误策略
 
-- 条目按列出顺序执行。schema 要求填写 `stage`，但每个内置插件会自行注册到所需阶段：`cache` 和 `budget` 同时注册 `before_request` 与 `after_request`，`pii-secret-guard` 取决于 `direction`，其余为 `before_request`。`type` 可选，仅作说明。`enabled: false` 跳过该条目；名称里的 `-` 可写成 `_`。未知插件名会被忽略并告警。
-- **每个内置插件的 `config` 都做严格校验**（`ai-gateway validate` 与启动时）：未知键（附“是否想写”提示）、类型错误、缺少必填项（`rate-limit` 的 `maxRequestsPerMinute`、`max-token` 的 `maxTokens`、`budget` 的 `dailyBudget`）、`word-filter` 的 `mode` 不是 `reject` / `redact`，以及同一选项的两个别名同时设置（如 `maxAge` 与 `ttlSeconds`）都会报错。只接受上面各插件示例中的键（及列出的别名）；计数类字段（`maxRequestsPerMinute`、`maxRequestsPerDay`、`maxEntries`、`maxTokens`、`reserveOutputTokens`）必须是整数。
+- 条目按列出顺序执行。schema 要求填写 `stage`，但每个内置插件会自行注册到所需阶段：`cache` 同时注册 `before_request` 与 `after_request`，`pii-secret-guard` 取决于 `direction`，其余为 `before_request`。`type` 可选，仅作说明。`enabled: false` 跳过该条目；名称里的 `-` 可写成 `_`。未知插件名会被忽略并告警。
+- **每个内置插件的 `config` 都做严格校验**（`ai-gateway validate` 与启动时）：未知键（附“是否想写”提示）、类型错误、缺少必填项（`rate-limit` 需要 `maxRequestsPerMinute` / `maxRequestsPerDay` / `maxTokensPerMinute` 之一，`max-token` 需要 `maxTokens`）、`word-filter` 的 `mode` 不是 `reject` / `redact`，以及同一选项的两个别名同时设置（如 `maxAge` 与 `ttlSeconds`）都会报错。只接受上面各插件示例中的键（及列出的别名）；计数类字段（`maxRequestsPerMinute`、`maxRequestsPerDay`、`maxTokensPerMinute`、`maxEntries`、`maxTokens`）必须是整数。
 - **所有插件的错误都是故障关闭（fail-closed）：** 插件抛异常时请求失败（500 `Internal server error`，并随请求记录日志）。没有 fail-open 模式。
 
 ---
@@ -1133,7 +1139,6 @@ observability:
 | `ai_gateway_request_duration_seconds` | histogram | `method`, `status`, `provider` |
 | `ai_gateway_tokens_input_total`  | counter   | `provider`, `model` |
 | `ai_gateway_tokens_output_total` | counter   | `provider`, `model` |
-| `ai_gateway_request_cost_usd`    | counter   | `provider`, `model`（target 配了 `costPer1k*Tokens` 时） |
 | `ai_gateway_provider_errors_total` | counter | `provider`, `error_type`（每次失败的上游尝试，含已 failover 的） |
 | `ai_gateway_circuit_breaker_state` | gauge   | `provider`, `state`（当前状态为 1） |
 | `ai_gateway_mcp_server_up`       | gauge     | `server` |
@@ -1154,12 +1159,14 @@ observability:
   "strategy": "single",
   "durationMs": 1500,
   "surface": "chat",
-  "tokens": {"prompt": 15, "completion": 8, "total": 23},
+  "publishedModel": "gpt-4o",
+  "keyId": "3f2a…",
+  "tokens": {"prompt": 15, "completion": 8, "total": 23, "cacheHit": 4, "reasoning": 2},
   "status": 200
 }
 ```
 
-可选字段：`error`、`usageEstimated`（流式且没有 usage chunk）、`plugin` / `outcome`（被插件结束的请求）、`guardrail`（检测结果，只有实体类型）。`surface` 取值为 `chat`、`chat_stream`、`completions`、`completions_stream`、`embedding`、`image` 或 `passthrough`。
+`keyId` 是客户端 key 的 id（密钥库 id，或 `cfg_<n>` 表示 `auth.keys` 中第 n 个条目，从 0 起），绝不是 key 本身；`publishedModel` 是客户端请求的对外模型（已解析别名）。可选字段：`error`、`usageEstimated`（流式且没有 usage chunk）、`plugin` / `outcome`（被插件结束的请求）、`guardrail`（检测结果，只有实体类型）。`surface` 取值为 `chat`、`chat_stream`、`completions`、`completions_stream`、`embedding`、`image` 或 `passthrough`。
 
 ---
 
@@ -1469,8 +1476,8 @@ gateway.close();
 │  builtins: rate-    │  │  targets: single, fallback,│  │  one adapter for all │
 │  limit, cache,      │  │  loadbalance, conditional  │  │  22 presets          │
 │  word-filter, max-  │  │  circuit-breaker (permits),│  │  (core/provider-     │
-│  token, budget,     │  │  concurrency-limiter queue,│  │  presets.ts),        │
-│  pii-secret-guard   │  │  retry (exp. jitter)       │  │  wire-extras,        │
+│  token, pii-secret- │  │  concurrency-limiter queue,│  │  presets.ts),        │
+│  guard              │  │  retry (exp. jitter)       │  │  wire-extras,        │
 └─────────────────────┘  └────────────────────────────┘  │  sse-parser,         │
                                                          │  capabilities        │
                                                          └──────────┬───────────┘
@@ -1499,8 +1506,10 @@ gateway.close();
   ├─ gateway.execute(chatSurface)  →  core/pipeline.ts
   │   │
   │   ├─ 1 别名解析（aliases）
+  │   ├─ 1b 模型访问（已发布模型、key 的 allowed_models）、key 限额
+  │   │     （usage/key-meter.ts：额度 403、RPM / TPM 429；只用内存）
   │   ├─ 2 before 插件，按配置顺序：rate-limit、word-filter、max-token、
-  │   │     pii-secret-guard、cache 查询、budget 预留 ……
+  │   │     pii-secret-guard、cache 查询 ……
   │   │     拒绝 → finalize → 错误；短路（缓存命中）→ finalize → 200
   │   ├─ 3 插件视图写回；注入 MCP 工具（chat，非流式）
   │   ├─ 4 strategy.selectTargets() → 有序候选目标
@@ -1513,8 +1522,9 @@ gateway.close();
   │   │       调用方 4xx / 客户端中止 / 网关超时？结束
   │   ├─ 6 MCP 循环：网关侧工具的 tool_calls → 调用工具 → 再走第 5 步
   │   │     （直到没有 tool_calls 或达到 maxCallDepth；usage 累加）
-  │   └─ 7 finalize，恰好一次：after / on_error 插件（缓存写入、预算扣费、
-  │         响应扫描）→ settle 回调（释放预算预留）→ 请求日志（stdout + SQLite）
+  │   └─ 7 finalize，恰好一次：after / on_error 插件（缓存写入、响应扫描）
+  │         → settle 回调 → key 计量（token 计入额度 / TPM）→ 请求日志
+  │         （stdout + SQLite、用量汇总，批量写入）
   │         → 指标 → 结束 span
   │
   └─ handlers：内部响应 → OpenAI wire JSON（+ X-Gateway-* 响应头）
@@ -1528,7 +1538,7 @@ finalize 都只运行一次（上游没给 usage 时按估算计）。只有正�
 `data: [DONE]`，其他结束方式发送不带 `[DONE]` 的 SSE 错误事件。流式请求不注入 MCP 工具。
 
 透传（`passthroughProxy.enabled`）：白名单检查 → before 插件（`core/surfaces/passthrough.ts`）
-→ `proxy/proxy.ts` 原样转发；没有熔断、failover、after 插件和预算累计。
+→ `proxy/proxy.ts` 原样转发；没有熔断、failover、after 插件和 token 计量。
 
 ### 项目结构
 
@@ -1588,7 +1598,7 @@ src/
 │   ├── assembly.ts          # 配置 → registry、插件、策略、熔断器、限流器、pipeline
 │   ├── strategy-config.ts   # config.strategy → 模式 + 各模式配置
 │   ├── provider-presets.ts  # 22 个 provider 预设（base URL、别名、附加项）
-│   ├── usage.ts             # usage 累加、流式估算、costOf
+│   ├── usage.ts             # usage 累加、流式估算
 │   ├── types.ts             # Surface, RequestRun, FinalizeOutcome, StreamEnd
 │   └── surfaces/            # chat, completions, embeddings, images, passthrough
 │
@@ -1614,12 +1624,16 @@ src/
 │
 ├── plugins/
 │   ├── manager.ts  context.ts  error.ts  types.ts
-│   └── builtins/            # 6 个内置插件 + from-config.ts + config-schemas.ts（插件 config 严格校验）
-│       ├── rate-limit.ts  cache.ts  word-filter.ts  max-token.ts  budget.ts
+│   └── builtins/            # 5 个内置插件 + from-config.ts + config-schemas.ts（插件 config 严格校验）
+│       ├── rate-limit.ts  cache.ts  word-filter.ts  max-token.ts
 │       └── pii-secret-guard/   # config, detectors, validators, plugin
 │
 ├── mcp/                     # stdio 客户端（MCP 2025-03-26 子集）、registry、executor
 ├── proxy/proxy.ts           # 白名单 /v1/* 路由的透传代理
+├── usage/
+│   ├── key-meter.ts         # 每个 key 的 token 额度、RPM、TPM（内存计数，重载不清零）
+│   ├── usage-store.ts       # 按小时的用量汇总（usage.sqlite）
+│   └── recorder.ts          # 汇总与已用 token 的异步批量写入
 ├── secrets/secret-box.ts    # 上游 key 的 AES-256-GCM + HKDF 加密封装（GATEWAY_SECRET_KEY）
 ├── security/url-guard.ts    # SSRF 防护：base URL 只允许公网、DNS 检查、受限 fetch
 ├── persistence/
@@ -1629,7 +1643,7 @@ src/
 │   └── migrations.ts        # 带版本的 SQLite 迁移
 ├── auth/                    # bootstrap.ts（bootstrap 密钥闸门）、key-hash.ts
 ├── admin/                   # /admin/* API：运行时配置（config-api.ts、config-schemas.ts、guards.ts：
-│                            #   CSRF / If-Match / 限流）、密钥、日志、状态、脱敏
+│                            #   CSRF / If-Match / 限流）、密钥（含限额、reset-usage）、用量、日志、状态
 ├── dashboard/               # 控制台页面外壳 + static/console.{js,css}（打包内嵌）
 ├── observability/           # OTel SDK + tracer 桥接、采样/隐私、请求日志、脱敏
 ├── metrics/metrics.ts       # Prometheus 注册表（prom-client）

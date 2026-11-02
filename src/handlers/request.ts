@@ -32,6 +32,8 @@ export function handlerRequest(c: AnyContext): HandlerRequest {
   };
   const allowedModels = c.get("allowedModels");
   if (allowedModels !== undefined) ctx.allowedModels = allowedModels;
+  const client = c.get("client");
+  if (client !== undefined) ctx.client = client;
   return { ctx, upstreamAbort };
 }
 
