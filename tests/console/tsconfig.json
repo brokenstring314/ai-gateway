@@ -1,0 +1,5 @@
+{
+  "extends": "../../console/tsconfig.json",
+  "compilerOptions": { "types": ["bun"], "noUnusedLocals": false, "noUnusedParameters": false },
+  "include": ["./**/*.ts", "./**/*.tsx", "../../console/src/**/*.ts", "../../console/src/**/*.tsx"]
+}

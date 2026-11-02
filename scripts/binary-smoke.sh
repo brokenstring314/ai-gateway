@@ -51,7 +51,7 @@ grep -q '[0-9]\+\.[0-9]\+\.[0-9]\+' version.txt || fail "version printed nothing
 BASE="http://127.0.0.1:$PORT"
 status() { curl -s -o /dev/null -w '%{http_code}' --max-time 3 "$@" || true; }
 
-GATEWAY_DATA_DIR="$WORK/data" "$BIN" serve -c config.yaml >serve.log 2>&1 &
+GATEWAY_SECRET_KEY="$(head -c 32 /dev/urandom | base64)" GATEWAY_DATA_DIR="$WORK/data" "$BIN" serve -c config.yaml >serve.log 2>&1 &
 PID=$!
 for _ in $(seq 1 60); do
   [ "$(status "$BASE/livez")" = "200" ] && break
@@ -61,12 +61,16 @@ done
 [ "$(status "$BASE/livez")" = "200" ] || fail "/livez never returned 200"
 code="$(status "$BASE/readyz")"; [ "$code" = "200" ] || fail "/readyz returned $code"
 
-code="$(status "$BASE/admin/dashboard")"; [ "$code" = "200" ] || fail "/admin/dashboard returned $code"
-for asset in console.js console.css; do
-  curl -sf --max-time 3 "$BASE/admin/static/$asset" -o "$asset" || fail "/admin/static/$asset not 200"
-  [ "$(wc -c <"$asset")" -gt 500 ] || fail "/admin/static/$asset is suspiciously small"
+# Admin console (embedded Preact app): the page and every asset it references.
+curl -sf --max-time 3 "$BASE/admin/dashboard" -o console.html || fail "/admin/dashboard not 200"
+assets="$(grep -oE '/admin/dashboard/assets/[^"]+' console.html)"
+[ -n "$assets" ] || fail "/admin/dashboard references no assets"
+for path in $assets; do
+  f="$(basename "$path")"
+  curl -sf --max-time 3 "$BASE$path" -o "$f" || fail "$path not 200"
+  [ "$(wc -c <"$f")" -gt 500 ] || fail "$path is suspiciously small"
 done
-grep -q 'sessionStorage' console.js || fail "console.js content is not the console script"
+grep -q 'aigw_csrf' ./*.js || fail "the console script is not the embedded console"
 
 code="$(status -X POST -H 'content-type: application/json' -d '{"model":"gpt-4o","messages":[{"role":"user","content":"hi"}]}' "$BASE/v1/chat/completions")"
 [ "$code" = "401" ] || fail "anonymous /v1/chat/completions returned $code, expected 401"
@@ -76,6 +80,10 @@ ADMIN_KEY="$("$BIN" keys create --admin --name smoke -c config.yaml --data-dir "
 "$BIN" keys list -c config.yaml --data-dir "$WORK/data" | grep -q smoke || fail "keys list does not show the new key"
 code="$(status -H "Authorization: Bearer $ADMIN_KEY" "$BASE/admin/keys")"
 [ "$code" = "200" ] || fail "GET /admin/keys with the CLI-created admin key returned $code"
+# Console sign-in: the admin key buys an HttpOnly session cookie.
+curl -s --max-time 3 -D login.headers -o /dev/null -H 'content-type: application/json' \
+  -d "{\"key\":\"$ADMIN_KEY\"}" "$BASE/admin/session/login" || fail "console login request failed"
+grep -qi '^set-cookie: aigw_session=.*HttpOnly' login.headers || fail "console login did not set an HttpOnly session cookie"
 
 kill -TERM "$PID"
 for _ in $(seq 1 40); do kill -0 "$PID" 2>/dev/null || break; sleep 0.25; done

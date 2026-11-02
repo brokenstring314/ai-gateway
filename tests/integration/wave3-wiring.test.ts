@@ -114,8 +114,18 @@ describe("Wave 3 wiring (integration)", () => {
     expect(text).toContain("ai_gateway_tokens_input_total");
   });
 
-  it("console shells are public, carry no data, and set the strict CSP", async () => {
-    for (const page of ["", "/keys", "/logs", "/config", "/login"]) {
+  it("console app shell is public, carries no data, and sets the strict CSP", async () => {
+    for (const page of [
+      "",
+      "/channels",
+      "/models",
+      "/keys",
+      "/usage",
+      "/logs",
+      "/playground",
+      "/settings",
+      "/versions",
+    ]) {
       const res = await app.request(`/admin/dashboard${page}`);
       expect(res.status).toBe(200);
       expect(res.headers.get("Content-Security-Policy")).toContain("script-src 'self'");
@@ -126,10 +136,8 @@ describe("Wave 3 wiring (integration)", () => {
     }
   });
 
-  it("removed placeholder pages are gone", async () => {
-    for (const page of ["/providers", "/analytics", "/playground", "/getting-started"]) {
-      expect((await app.request(`/admin/dashboard${page}`)).status).not.toBe(200);
-    }
+  it("the 0.2 console assets are gone", async () => {
+    expect((await app.request("/admin/static/console.js")).status).toBe(404);
   });
 
   it("console data endpoint requires admin auth", async () => {
@@ -138,13 +146,16 @@ describe("Wave 3 wiring (integration)", () => {
     expect(res.status).toBe(200);
   });
 
-  it("console static assets are served", async () => {
-    const css = await app.request("/admin/static/console.css");
-    expect(css.status).toBe(200);
-    expect(css.headers.get("Content-Type")).toContain("text/css");
-    const js = await app.request("/admin/static/console.js");
-    expect(js.status).toBe(200);
-    expect(js.headers.get("Content-Type")).toContain("javascript");
+  it("console assets are served", async () => {
+    const html = await (await app.request("/admin/dashboard")).text();
+    const refs = [...html.matchAll(/(?:src|href)="(\/admin\/dashboard\/assets\/[^"]+)"/g)].map((m) => m[1]!);
+    expect(refs.some((r) => r.endsWith(".js"))).toBe(true);
+    expect(refs.some((r) => r.endsWith(".css"))).toBe(true);
+    for (const ref of refs) {
+      const res = await app.request(ref);
+      expect(res.status).toBe(200);
+      expect(res.headers.get("Content-Type")).toMatch(/javascript|text\/css/);
+    }
   });
 
   it("admin keys API works end-to-end with SQLite store", async () => {

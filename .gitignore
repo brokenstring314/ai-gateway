@@ -39,3 +39,4 @@ config.test.json
 
 # runtime data (SQLite databases)
 .data/
+console/dist/

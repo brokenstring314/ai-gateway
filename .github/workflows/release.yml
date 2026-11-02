@@ -57,6 +57,8 @@ jobs:
         with:
           bun-version-file: .bun-version
       - run: bun install --frozen-lockfile
+      - name: build the admin console (embedded into the binary)
+        run: bun run console:build
       - name: build + package (linux, darwin, windows)
         run: ./scripts/build-binaries.sh "${{ needs.meta.outputs.version }}"
       - name: verify SHA256SUMS

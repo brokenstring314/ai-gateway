@@ -37,22 +37,51 @@ describe("admin console", () => {
     up?.stop();
   });
 
-  it("serves every page shell and asset without auth, with the strict CSP", async () => {
-    for (const path of [
-      "/admin/dashboard",
-      "/admin/dashboard/keys",
-      "/admin/dashboard/logs",
-      "/admin/dashboard/config",
-      "/admin/dashboard/login",
-      "/admin/static/console.js",
-      "/admin/static/console.css",
-    ]) {
-      const res = await gw.fetch(path, { auth: null });
+  it("serves the built console and its embedded assets without auth, with the strict CSP", async () => {
+    const page = await gw.fetch("/admin/dashboard/channels", { auth: null });
+    expect(page.status).toBe(200);
+    expect(page.headers.get("content-security-policy")).toContain("script-src 'self'");
+    const html = await page.text();
+    const refs = [...html.matchAll(/(?:src|href)="(\/admin\/dashboard\/assets\/[^"]+)"/g)].map((m) => m[1]!);
+    expect(refs.length).toBeGreaterThanOrEqual(2);
+    for (const ref of refs) {
+      const res = await gw.fetch(ref, { auth: null });
       expect(res.status).toBe(200);
       expect(res.headers.get("content-security-policy")).toContain("script-src 'self'");
-      await res.arrayBuffer();
+      expect(res.headers.get("cache-control")).toContain("immutable");
+      expect((await res.text()).length).toBeGreaterThan(100);
     }
-    expect((await gw.fetch("/admin/dashboard/playground", { auth: null })).status).not.toBe(200);
+    expect((await gw.fetch("/admin/static/console.js", { auth: null })).status).toBe(404);
+  });
+
+  it("smoke over HTTP: sign in with the admin key, read with the cookie, write with the CSRF token, sign out", async () => {
+    const login = await postJson(gw, "/admin/session/login", { key: adminKey }, { auth: null });
+    expect(login.status).toBe(200);
+    const setCookies = login.headers.getSetCookie();
+    expect(setCookies.find((c) => c.startsWith("aigw_session="))).toContain("HttpOnly");
+    const cookie = setCookies.map((c) => c.split(";")[0]).join("; ");
+    const { csrfToken } = (await login.json()) as { csrfToken: string };
+    const status = await gw.fetch("/admin/status", { auth: null, headers: { cookie } });
+    expect(status.status).toBe(200);
+    const denied = await postJson(gw, "/admin/keys", { name: "via-console" }, { auth: null, headers: { cookie } });
+    expect(denied.status).toBe(403);
+    const created = await postJson(
+      gw,
+      "/admin/keys",
+      { name: "via-console" },
+      { auth: null, headers: { cookie, "x-csrf-token": csrfToken } },
+    );
+    expect(created.status).toBe(201);
+    const out = await postJson(
+      gw,
+      "/admin/session/logout",
+      {},
+      { auth: null, headers: { cookie, "x-csrf-token": csrfToken } },
+    );
+    expect(out.status).toBe(204);
+    expect((await gw.fetch("/admin/status", { auth: null, headers: { cookie } })).status).toBe(401);
+    // The /v1 surface never accepts the console cookie.
+    expect((await gw.fetch("/v1/models", { auth: null, headers: { cookie } })).status).toBe(401);
   });
 
   it("login check: admin key -> 200 with admin scope; bad key -> 401; inference key -> 403", async () => {

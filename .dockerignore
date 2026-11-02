@@ -4,6 +4,8 @@
 node_modules
 tests
 scripts
+!scripts/embed-console.ts
+console/dist
 coverage
 *.md
 *.log

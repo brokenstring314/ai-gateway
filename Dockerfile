@@ -10,6 +10,18 @@ WORKDIR /app
 COPY package.json bun.lock ./
 RUN bun install --frozen-lockfile --production
 
+# Admin console (0.3.0 P6): Preact + Vite are build-time only. The built
+# assets are embedded into src/dashboard/assets.generated.ts (also committed and
+# checked fresh in CI); rebuilding here keeps the image tied to console/ source.
+FROM --platform=$BUILDPLATFORM oven/bun:${BUN_VERSION}-alpine AS console
+WORKDIR /app
+COPY package.json bun.lock ./
+RUN bun install --frozen-lockfile
+COPY tsconfig.json ./
+COPY console ./console
+COPY scripts/embed-console.ts ./scripts/
+RUN mkdir -p src/dashboard && bun run console:build
+
 FROM oven/bun:${BUN_VERSION}-alpine
 LABEL org.opencontainers.image.title="ai-gateway" \
       org.opencontainers.image.description="OpenAI-compatible AI gateway (TypeScript, Bun, Hono)" \
@@ -25,6 +37,7 @@ ENV NODE_ENV=production \
 COPY --from=deps /app/node_modules ./node_modules
 COPY package.json tsconfig.json LICENSE NOTICE ./
 COPY src ./src
+COPY --from=console /app/src/dashboard/assets.generated.ts ./src/dashboard/assets.generated.ts
 # uid/gid 1000 = the image's "bun" user; numeric so runAsNonRoot can verify it.
 RUN mkdir -p /data /config && chown -R 1000:1000 /data
 USER 1000:1000

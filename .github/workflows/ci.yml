@@ -29,6 +29,15 @@ jobs:
         run: bun run typecheck
       - name: typecheck (tests)
         run: bun run typecheck:tests
+      - name: typecheck (console)
+        run: bun run console:typecheck
+      - name: console build is fresh (embedded assets match console/ source)
+        run: |
+          bun run console:build
+          git diff --exit-code -- src/dashboard/assets.generated.ts || {
+            echo "::error::src/dashboard/assets.generated.ts is stale: run 'bun run console:build' and commit it"
+            exit 1
+          }
       - name: unit + integration tests
         run: bun test --timeout 20000
       - name: e2e contract tests (real server + mock upstream + openai SDK)

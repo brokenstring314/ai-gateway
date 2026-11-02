@@ -13,14 +13,21 @@
     "typecheck": "tsc --noEmit",
     "lint": "biome ci .",
     "typecheck:tests": "tsc --noEmit -p tsconfig.test.json",
-    "lint:fix": "biome lint --write ."
+    "lint:fix": "biome lint --write .",
+    "console:build": "bun --bun vite build --config console/vite.config.ts --logLevel warn && bun scripts/embed-console.ts",
+    "console:dev": "bun --bun vite --config console/vite.config.ts",
+    "console:typecheck": "tsc --noEmit -p console/tsconfig.json && tsc --noEmit -p tests/console/tsconfig.json"
   },
   "devDependencies": {
     "@biomejs/biome": "2.5.15",
+    "@preact/preset-vite": "^2.10.6",
     "@types/bun": "1.3.14",
     "@types/node": "^26.1.1",
+    "happy-dom": "^21.0.4",
     "openai": "7.38.0",
-    "typescript": "7.0.2"
+    "preact": "10",
+    "typescript": "7.0.2",
+    "vite": "7"
   },
   "dependencies": {
     "@opentelemetry/api": "^1.9.1",

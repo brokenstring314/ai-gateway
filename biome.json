@@ -6,7 +6,14 @@
     "useIgnoreFile": true
   },
   "files": {
-    "includes": ["src/**", "tests/**", "!src/dashboard/static/**"]
+    "includes": [
+      "src/**",
+      "tests/**",
+      "console/**",
+      "scripts/*.ts",
+      "!src/dashboard/assets.generated.ts",
+      "!console/dist"
+    ]
   },
   "formatter": {
     "enabled": true,

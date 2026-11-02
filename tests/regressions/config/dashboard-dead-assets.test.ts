@@ -1,16 +1,18 @@
-// Backlog #6: src/dashboard/static/dashboard.js and style.css were leftovers of
-// the old placeholder dashboard: not served, not imported, not built.
-// Every file in src/dashboard/static must be an asset the console serves.
+// Backlog #6: the console must not ship dead assets. Since 0.3.0 P6 the console is
+// built by Vite and embedded (src/dashboard/assets.generated.ts); every embedded
+// asset must be referenced by index.html, and the 0.2 static directory is gone.
 import { describe, expect, it } from "bun:test";
-import { readdirSync, readFileSync } from "node:fs";
+import { existsSync } from "node:fs";
 import { join } from "node:path";
-
-const dir = join(import.meta.dir, "../../../src/dashboard/static");
+import { CONSOLE_ASSETS, CONSOLE_INDEX_HTML } from "../../../src/dashboard/assets.generated";
 
 describe("dashboard static assets (backlog #6)", () => {
-  it("every file under src/dashboard/static is imported by src/dashboard/index.ts", () => {
-    const index = readFileSync(join(dir, "../index.ts"), "utf8");
-    const unreferenced = readdirSync(dir).filter((f) => !index.includes(`./static/${f}`));
+  it("every embedded asset is referenced by index.html", () => {
+    const unreferenced = Object.keys(CONSOLE_ASSETS).filter((f) => !CONSOLE_INDEX_HTML.includes(`/assets/${f}`));
     expect(unreferenced).toEqual([]);
+  });
+
+  it("the 0.2 vanilla console directory is removed", () => {
+    expect(existsSync(join(import.meta.dir, "../../../src/dashboard/static"))).toBe(false);
   });
 });
