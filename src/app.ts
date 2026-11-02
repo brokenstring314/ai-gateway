@@ -368,11 +368,22 @@ export function createApp(
     );
   }
 
-  // ── Admin console (page shells + static assets) ──
+  // ── Admin console (Preact single-page app, embedded assets) ──
   // Registered before the admin API so its auth middleware does not apply:
-  // the shells carry no data (a browser navigation cannot send a Bearer
-  // header); console.js loads everything from the authenticated /admin API.
+  // the page and its hashed assets carry no data; the app signs in through
+  // POST /admin/session/login and reads everything from the /admin API.
   app.route("/", createDashboardApp());
+
+  // Console Playground: a chat completion through the real routing, authorized
+  // by the admin session instead of a client key (usage is recorded as
+  // "console-playground", which has no limits).
+  const playgroundApp: AppType = new Hono<AppEnv>();
+  playgroundApp.use("*", requestTimeoutMiddleware(config.requestTimeout));
+  playgroundApp.use("*", async (c, next) => {
+    c.set("client", { id: "console-playground" });
+    await next();
+  });
+  registerChatHandler(playgroundApp, gateway);
 
   // ── Admin API ──
   const adminApp = createAdminApp(gateway, config, configPath, {
@@ -386,6 +397,7 @@ export function createApp(
     bootstrapKey: options?.bootstrapKey,
     bootstrapReadOnlyKey: options?.bootstrapReadOnlyKey,
     bootstrap,
+    playground: (request) => playgroundApp.fetch(request),
   });
   app.route("/admin", adminApp);
 

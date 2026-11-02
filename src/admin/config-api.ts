@@ -114,6 +114,50 @@ class HttpError extends Error {
 
 const MAX_MODELS_FETCHED = 5000;
 
+type BalanceInfo = { available?: boolean; balances: Array<{ currency: string; total: string }> };
+
+function balanceString(v: unknown): string | undefined {
+  if (typeof v === "number" && Number.isFinite(v)) return String(v);
+  if (typeof v === "string" && /^-?\d+(\.\d+)?$/.test(v) && v.length <= 32) return v;
+  return undefined;
+}
+
+/**
+ * Providers whose account balance can be read with the channel's key
+ * (informational, so the owner knows when to top up). Keyed by preset id.
+ */
+export const BALANCE_ENDPOINTS: Record<
+  string,
+  { url: (base: string) => string; parse: (body: unknown) => BalanceInfo | undefined }
+> = {
+  // GET https://api.deepseek.com/user/balance → { is_available, balance_infos: [{ currency, total_balance, … }] }
+  deepseek: {
+    url: (base) => `${new URL(base).origin}/user/balance`,
+    parse: (body) => {
+      const b = body as { is_available?: unknown; balance_infos?: unknown };
+      if (!b || typeof b !== "object" || !Array.isArray(b.balance_infos)) return undefined;
+      const balances = b.balance_infos.slice(0, 10).flatMap((i: unknown) => {
+        const r = i as { currency?: unknown; total_balance?: unknown };
+        const total = balanceString(r?.total_balance);
+        return typeof r?.currency === "string" && r.currency.length <= 8 && total !== undefined
+          ? [{ currency: r.currency, total }]
+          : [];
+      });
+      return { ...(typeof b.is_available === "boolean" ? { available: b.is_available } : {}), balances };
+    },
+  },
+  // GET https://openrouter.ai/api/v1/credits → { data: { total_credits, total_usage } } (USD)
+  openrouter: {
+    url: (base) => `${base}/credits`,
+    parse: (body) => {
+      const d = (body as { data?: { total_credits?: unknown; total_usage?: unknown } })?.data;
+      if (!d || typeof d.total_credits !== "number" || typeof d.total_usage !== "number") return undefined;
+      const left = Math.round((d.total_credits - d.total_usage) * 10_000) / 10_000;
+      return { available: left > 0, balances: [{ currency: "USD", total: String(left) }] };
+    },
+  },
+};
+
 function zodMessage(err: z.ZodError): string {
   return z.prettifyError(err);
 }
@@ -130,7 +174,12 @@ async function readBody(c: Context): Promise<unknown> {
 
 async function parseBody<S extends z.ZodTypeAny>(c: Context, schema: S): Promise<z.infer<S>> {
   const parsed = schema.safeParse(await readBody(c));
-  if (!parsed.success) throw new HttpError(400, "invalid_request", zodMessage(parsed.error));
+  if (!parsed.success) {
+    // `fields` lets the console put each message next to its input.
+    throw new HttpError(400, "invalid_request", zodMessage(parsed.error), {
+      fields: parsed.error.issues.slice(0, 50).map((i) => ({ path: i.path.map(String).join("."), message: i.message })),
+    });
+  }
   return parsed.data;
 }
 
@@ -791,6 +840,86 @@ export function registerRuntimeConfigApi(app: Hono<never>, opts: RuntimeConfigAp
     "/channels/:id/fetch-models",
     ...write,
     handle((c) => probeChannel(c, "fetch_models")),
+  );
+
+  // ── Channel account balance (informational; P6 user decision) ──
+  // Only for providers that expose it; fetched on demand, never stored, no cost is computed anywhere.
+
+  const balanceLimiter = new WindowLimiter(
+    opts.probe?.perActorPerMinute ? opts.probe.perActorPerMinute * 3 : 30,
+    60_000,
+  );
+  const balanceGlobal = new WindowLimiter(opts.probe?.globalPerMinute ? opts.probe.globalPerMinute * 2 : 60, 60_000);
+
+  r.get(
+    "/channels/:id/balance",
+    handle(async (c) => {
+      const id = c.req.param("id") ?? "";
+      const ch = store?.getChannel(id);
+      if (!ch) throw new ConfigNotFoundError(`channel ${id} not found`);
+      c.header("Cache-Control", "no-store");
+      const endpoint = BALANCE_ENDPOINTS[presetId(ch.preset)];
+      if (!endpoint) return c.json({ channelId: id, supported: false });
+      const wait = balanceLimiter.take(actorOf(c)) ?? balanceGlobal.take("*");
+      if (wait !== undefined) {
+        c.header("Retry-After", String(wait));
+        throw new HttpError(429, "rate_limited", `Too many balance lookups; retry in ${wait}s`);
+      }
+      const keyRow = ch.keys.find((k) => k.enabled && k.status === "ok") ?? ch.keys.find((k) => k.enabled);
+      if (!keyRow) return c.json({ channelId: id, supported: true, ok: false, error: "no enabled key" });
+      const v = await store!.keyValue(keyRow.id);
+      const key = v.kind === "env_ref" ? expandEnvRefsSafe(v.value) : v.value;
+      if (!key) return c.json({ channelId: id, supported: true, ok: false, error: "the key is empty" });
+      let base: string;
+      try {
+        base = resolveBaseURL({ name: ch.name, provider: ch.preset, baseURL: ch.baseURL }).replace(/\/+$/, "");
+      } catch (err) {
+        throw new HttpError(422, "config_invalid", err instanceof Error ? err.message : String(err));
+      }
+      const fetchedAt = new Date().toISOString();
+      let result: { status: number; body: string };
+      try {
+        result = await limitedFetch(
+          endpoint.url(base),
+          { method: "GET", headers: { Accept: "application/json", Authorization: `Bearer ${key}` } },
+          {
+            timeoutMs: probeTimeout,
+            maxBytes: 64 * 1024,
+            ...(ch.urlPolicy === "public" ? { guard: probeGuard } : {}),
+          },
+        );
+      } catch (err) {
+        const message = keyErrorText(0, err instanceof Error ? err.message : String(err), key).replace(/^0: /, "");
+        return c.json({ channelId: id, supported: true, ok: false, keyId: keyRow.id, fetchedAt, error: message });
+      }
+      if (result.status < 200 || result.status >= 300) {
+        return c.json({
+          channelId: id,
+          supported: true,
+          ok: false,
+          keyId: keyRow.id,
+          fetchedAt,
+          error: keyErrorText(result.status, `HTTP ${result.status}`, key),
+        });
+      }
+      let parsed: { available?: boolean; balances: Array<{ currency: string; total: string }> } | undefined;
+      try {
+        parsed = endpoint.parse(JSON.parse(result.body) as unknown);
+      } catch {
+        parsed = undefined;
+      }
+      if (!parsed) {
+        return c.json({
+          channelId: id,
+          supported: true,
+          ok: false,
+          keyId: keyRow.id,
+          fetchedAt,
+          error: "unexpected response",
+        });
+      }
+      return c.json({ channelId: id, supported: true, ok: true, keyId: keyRow.id, fetchedAt, ...parsed });
+    }),
   );
 
   // ── Models ──

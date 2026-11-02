@@ -346,6 +346,14 @@ export const GatewayConfigSchema = strictObject({
       .optional(),
   }).optional(),
   adminSecret: z.string().min(8).optional(),
+  // Admin console sessions (0.3.0 P6): cookie lifetime, idle timeout, login lockout.
+  console: strictObject({
+    sessionTtlMinutes: z.number().int().min(5).max(43_200).optional(),
+    idleTimeoutMinutes: z.number().int().min(1).max(43_200).optional(),
+    maxLoginFailures: z.number().int().min(1).max(100).optional(),
+    lockoutMinutes: z.number().int().min(1).max(1440).optional(),
+    secureCookie: z.enum(["auto", "always", "never"]).optional(),
+  }).optional(),
   // Where targets/strategy/aliases/plugins/compatibility come from (0.3.0):
   // "database" (default; imported from this file on first start, then
   // managed live) or "file" (this file only, read-only, as in 0.2.0).

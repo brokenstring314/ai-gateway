@@ -244,6 +244,18 @@ export interface GatewayConfig {
   };
   adminSecret?: string;
   /**
+   * Admin console sessions (0.3.0 P6). Defaults: 720-minute (12 h) lifetime,
+   * 60-minute idle timeout, 5 failed sign-ins per client IP → 15-minute
+   * lockout, Secure cookie when the request is https ("auto").
+   */
+  console?: {
+    sessionTtlMinutes?: number;
+    idleTimeoutMinutes?: number;
+    maxLoginFailures?: number;
+    lockoutMinutes?: number;
+    secureCookie?: "auto" | "always" | "never";
+  };
+  /**
    * Where the runtime sections (targets, strategy, aliases, plugins,
    * compatibility) come from. "database" (default): imported from this file
    * on first start into <dataDir>/config.sqlite, then managed live; the

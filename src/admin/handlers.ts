@@ -14,6 +14,7 @@ import type { GatewayConfig } from "../config/types.js";
 import type { KeyStore } from "../persistence/key-store.js";
 import type { RequestLogStore } from "../persistence/request-log-store.js";
 import { adminAuthMiddleware } from "../middleware/auth.js";
+import { timingSafeEqual } from "../auth/key-hash.js";
 import type { BootstrapGate } from "../auth/bootstrap.js";
 import { type ConfigState, getConfigHandler, removedConfigWriteHandler } from "./config-handlers.js";
 import {
@@ -41,6 +42,14 @@ import { type LogHandlerState, getLogsHandler, getLogsStatsHandler, deleteLogsHa
 import { usageHandler } from "./usage-handlers.js";
 import type { UsageStore } from "../usage/usage-store.js";
 import type { UsageRecorder } from "../usage/recorder.js";
+import type { MiddlewareHandler } from "hono";
+import { type ConsoleSessionOptions, SessionManager } from "./session.js";
+import {
+  registerSessionPublicRoutes,
+  registerSessionRoutes,
+  sessionOrCredential,
+  type SessionDeps,
+} from "./session-routes.js";
 
 export interface AdminAppOptions {
   keyStore?: KeyStore;
@@ -57,6 +66,10 @@ export interface AdminAppOptions {
   bootstrapReadOnlyKey?: string;
   /** Shared bootstrap-key gate (see auth/bootstrap.ts). */
   bootstrap?: BootstrapGate;
+  /** Console sessions (P6); built from config.console when omitted. */
+  sessions?: SessionManager;
+  /** Runs a chat completion through the real routing for the console Playground (app.ts wires it). */
+  playground?: (request: Request) => Response | Promise<Response>;
 }
 
 export type AdminAppEnv = {
@@ -78,20 +91,36 @@ export function createAdminApp(
   const keyStore = options?.keyStore;
   const adminSecret = options?.adminSecret ?? config.adminSecret;
 
+  const sessions = options?.sessions ?? new SessionManager(config.console as ConsoleSessionOptions | undefined);
+  const configStoreForAudit = options?.configStore;
+  const sessionDeps: SessionDeps = {
+    sessions,
+    ...(keyStore ? { keyStore } : {}),
+    ...(adminSecret ? { adminSecret } : {}),
+    ...(options?.bootstrap ? { bootstrap: options.bootstrap } : {}),
+    allowedOrigins: () => config.cors?.origins,
+    ...(configStoreForAudit
+      ? {
+          audit: (actor: string, action: string, id: string | null, detail: Record<string, unknown>) =>
+            configStoreForAudit.auditOnly(actor, action, "console_session", id, detail),
+        }
+      : {}),
+  };
+  // Console sign-in / sign-out: public (rate limited), before the auth middleware.
+  registerSessionPublicRoutes(app as never, sessionDeps);
+
+  let credentialAuth: MiddlewareHandler;
   if (keyStore) {
-    app.use(
-      "*",
-      adminAuthMiddleware({
-        keyStore,
-        adminSecret,
-        bootstrapKey: options?.bootstrapKey,
-        bootstrapReadOnlyKey: options?.bootstrapReadOnlyKey,
-        configKeys: () => config.auth?.keys,
-        bootstrap: options?.bootstrap,
-      }),
-    );
+    credentialAuth = adminAuthMiddleware({
+      keyStore,
+      adminSecret,
+      bootstrapKey: options?.bootstrapKey,
+      bootstrapReadOnlyKey: options?.bootstrapReadOnlyKey,
+      configKeys: () => config.auth?.keys,
+      bootstrap: options?.bootstrap,
+    });
   } else {
-    app.use("*", async (c, next) => {
+    credentialAuth = async (c, next) => {
       if (!adminSecret) {
         return c.json(
           {
@@ -105,7 +134,7 @@ export function createAdminApp(
         );
       }
       const headerSecret = c.req.header("X-Admin-Secret") ?? c.req.header("Authorization")?.replace(/^Bearer\s+/i, "");
-      if (!headerSecret || headerSecret !== adminSecret) {
+      if (!headerSecret || !timingSafeEqual(headerSecret, adminSecret)) {
         return c.json(
           {
             error: { message: "Invalid admin credentials", type: "authentication_error", code: "invalid_admin_secret" },
@@ -117,14 +146,35 @@ export function createAdminApp(
       c.set("keyScopes", ["admin"]);
       (c.set as unknown as (k: string, v: unknown) => void)("actor", "admin-secret");
       await next();
-    });
+    };
   }
+  // Bearer / X-Admin-Secret exactly as before; otherwise the console session cookie (+ CSRF token on writes).
+  app.use("*", sessionOrCredential(sessionDeps, credentialAuth));
 
   // Every state-changing admin request: no cross-site origin, JSON bodies only (admin/guards.ts).
   app.use("*", csrfGuard({ allowedOrigins: () => config.cors?.origins }));
 
   const logState: LogHandlerState = { logStore: options?.logStore ?? null };
   const configState: ConfigState = { config, configPath, current: () => gateway.getConfig() };
+
+  // Console session info and management (list / revoke).
+  registerSessionRoutes(app as never, sessionDeps);
+
+  // Console Playground: one chat completion through the real routing (admin only; spends upstream tokens).
+  const playground = options?.playground;
+  if (playground) {
+    app.post("/playground/chat/completions", requireScope(SCOPE_ADMIN), async (c) => {
+      const body = await c.req.text();
+      return playground(
+        new Request(new URL("/v1/chat/completions", c.req.url).toString(), {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body,
+          signal: c.req.raw.signal,
+        }),
+      );
+    });
+  }
 
   // Console overview (scopes, breakers, MCP, request summary)
   app.get("/status", getStatusHandler(gateway));

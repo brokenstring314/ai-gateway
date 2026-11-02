@@ -204,40 +204,10 @@ export function adminAuthMiddleware(opts: AdminAuthMiddlewareOptions): Middlewar
       );
     }
 
-    if (opts.adminSecret !== undefined && timingSafeEqual(token, opts.adminSecret)) {
-      c.set("apiKey", token);
-      c.set("keyScopes", [SCOPE_ADMIN]);
-      setActor(c, "admin-secret");
-      await next();
-      return;
-    }
-
-    const bootstrapScopes = bootstrap.match(token);
-    if (bootstrapScopes !== undefined) {
-      c.set("apiKey", token);
-      c.set("keyScopes", bootstrapScopes);
-      // Key-store writes under a bootstrap credential re-check the latch in
-      // their transaction (admin/key-handlers.ts).
-      c.set("authMethod", "bootstrap");
-      setActor(c, "bootstrap-key");
-      await next();
-      return;
-    }
-
-    const apiKey = keyStore.validateKey(token);
-    // read_only keys are admitted here; mutating admin routes enforce
-    // requireScope("admin") themselves.
-    if (apiKey !== null && (apiKey.scopes.includes(SCOPE_ADMIN) || apiKey.scopes.includes(SCOPE_READ_ONLY))) {
-      c.set("apiKey", token);
-      c.set("keyScopes", apiKey.scopes);
-      setActor(c, `key:${apiKey.id}`);
-      await next();
-      return;
-    }
-
-    // A valid key without a management scope (e.g. "inference") is
-    // authenticated but not authorized for /admin/*.
-    if (apiKey !== null) {
+    const cred = resolveAdminCredential({ keyStore, adminSecret: opts.adminSecret, bootstrap }, token);
+    if (cred === "insufficient_scope") {
+      // A valid key without a management scope (e.g. "inference") is
+      // authenticated but not authorized for /admin/*.
       return c.json(
         {
           error: {
@@ -249,9 +219,49 @@ export function adminAuthMiddleware(opts: AdminAuthMiddlewareOptions): Middlewar
         403,
       );
     }
-
-    return adminUnauthorized(c);
+    if (cred === undefined) return adminUnauthorized(c);
+    c.set("apiKey", token);
+    c.set("keyScopes", cred.scopes);
+    // Key-store writes under a bootstrap credential re-check the latch in
+    // their transaction (admin/key-handlers.ts).
+    if (cred.kind === "bootstrap") c.set("authMethod", "bootstrap");
+    setActor(c, cred.actor);
+    await next();
   };
+}
+
+/** An admin credential resolved from a presented token (never the token itself). */
+export interface AdminCredential {
+  kind: "secret" | "bootstrap" | "key";
+  scopes: string[];
+  /** Audit label: admin-secret, bootstrap-key or key:<id>. */
+  actor: string;
+  keyId?: string;
+}
+
+/**
+ * Resolve a presented admin token: the admin secret, an active bootstrap key,
+ * or a store key with the admin or read_only scope. "insufficient_scope" for a
+ * valid key without either; undefined when nothing matches. Shared by the
+ * Bearer middleware and the console login (admin/session-routes.ts).
+ */
+export function resolveAdminCredential(
+  opts: { keyStore?: KeyStore; adminSecret?: string; bootstrap?: BootstrapGate },
+  token: string,
+): AdminCredential | "insufficient_scope" | undefined {
+  if (token === "") return undefined;
+  if (opts.adminSecret !== undefined && timingSafeEqual(token, opts.adminSecret)) {
+    return { kind: "secret", scopes: [SCOPE_ADMIN], actor: "admin-secret" };
+  }
+  const bootstrapScopes = opts.bootstrap?.match(token);
+  if (bootstrapScopes !== undefined) return { kind: "bootstrap", scopes: bootstrapScopes, actor: "bootstrap-key" };
+  const apiKey = opts.keyStore?.validateKey(token) ?? null;
+  // read_only keys are admitted; mutating admin routes enforce requireScope("admin") themselves.
+  if (apiKey !== null && (apiKey.scopes.includes(SCOPE_ADMIN) || apiKey.scopes.includes(SCOPE_READ_ONLY))) {
+    return { kind: "key", scopes: apiKey.scopes, actor: `key:${apiKey.id}`, keyId: apiKey.id };
+  }
+  if (apiKey !== null) return "insufficient_scope";
+  return undefined;
 }
 
 /**
