@@ -19,6 +19,7 @@ import { ProviderError, type UpstreamErrorBody } from "../providers/openai-compa
 import { ReadableStreamError, type StreamErrorCode } from "../providers/sse-parser.js";
 import { CircuitOpenError } from "../routing/circuit-breaker.js";
 import { ConcurrencyLimitError } from "../routing/concurrency-limiter.js";
+import { NoUsableKeyError } from "../routing/key-pool.js";
 import { isTimeoutAbort, isTimeoutError } from "./outcome.js";
 
 export type ErrorKind =
@@ -33,6 +34,7 @@ export type ErrorKind =
   | "upstream_unavailable" // network error / RST / invalid body → 502
   | "breaker_open" // every candidate's breaker OPEN → 503
   | "overloaded" // local concurrency queue full / queue timeout → 429
+  | "unavailable" // 503: published model with no usable channel / channel without a usable key
   | "timeout" // gateway request timeout → 504
   | "internal"; // 500
 
@@ -101,6 +103,16 @@ export function modelNotFound(message: string): GatewayError {
     message,
     type: "invalid_request_error",
     code: "model_not_found",
+  });
+}
+
+/** 503: the model is published but none of its channels can serve it (all disabled / unbound). */
+export function modelUnavailable(message: string): GatewayError {
+  return new GatewayError("unavailable", {
+    status: 503,
+    message,
+    type: "server_error",
+    code: "model_unavailable",
   });
 }
 
@@ -175,6 +187,28 @@ export function toGatewayError(err: unknown, opts: ToGatewayErrorOptions = {}): 
       code: "circuit_open",
       target: inner.target,
       retryAfter: inner.retryAfterSeconds !== undefined ? String(inner.retryAfterSeconds) : undefined,
+      cause: inner,
+    });
+  }
+  if (inner instanceof NoUsableKeyError) {
+    // Every key cooling down after upstream 429s: the upstream's rate limit, passed on.
+    if (inner.retryAfterSeconds !== undefined) {
+      return new GatewayError("upstream_rate", {
+        status: 429,
+        message: "Upstream rate limit reached; retry later",
+        type: "rate_limit_error",
+        code: "upstream_rate_limited",
+        target: inner.channel,
+        retryAfter: String(inner.retryAfterSeconds),
+        cause: inner,
+      });
+    }
+    return new GatewayError("unavailable", {
+      status: 503,
+      message: "No usable upstream credential for this model; an operator must fix the channel's keys",
+      type: "server_error",
+      code: "no_upstream_key",
+      target: inner.channel,
       cause: inner,
     });
   }
@@ -323,6 +357,7 @@ const PRIORITY: Readonly<Partial<Record<ErrorKind, number>>> = {
   upstream_server: 4,
   upstream_unavailable: 3,
   overloaded: 2,
+  unavailable: 1,
   breaker_open: 1,
 };
 

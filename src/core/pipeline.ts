@@ -29,7 +29,7 @@ import { CircuitOpenError } from "../routing/circuit-breaker.js";
 import { ConcurrencyLimitError } from "../routing/concurrency-limiter.js";
 import type { IStrategy } from "../routing/types.js";
 import { type ModelCatalog, type ModelRoute, modelAllowed } from "../routing/model-catalog.js";
-import { invalidRequest, modelNotAllowed, modelNotFound, toGatewayError } from "./errors.js";
+import { invalidRequest, modelNotAllowed, modelNotFound, modelUnavailable, toGatewayError } from "./errors.js";
 import { checkLimits, enforceChatPolicy } from "./model-policy.js";
 import { strategyRunOptions, type TargetExecutor } from "./executor.js";
 import type { McpLoop } from "./mcp-loop.js";
@@ -230,6 +230,7 @@ export class Pipeline {
     if (!entry.enabled) {
       throw modelNotFound(`The model "${requested}" is currently disabled on this gateway.`);
     }
+    if (!entry.available) throw unavailableModel(requested);
   }
 
   /**
@@ -268,6 +269,7 @@ export class Pipeline {
       );
     }
     if (!entry.enabled) throw modelNotFound(`The model "${model}" is currently disabled on this gateway.`);
+    if (!entry.available) throw unavailableModel(model);
     return entry.route;
   }
 
@@ -465,6 +467,13 @@ export class Pipeline {
     const cost = costOf(this.deps.targetConfig(target), usage);
     if (cost > 0) metrics.recordCost(target, model, cost);
   }
+}
+
+function unavailableModel(model: string) {
+  return modelUnavailable(
+    `The model "${model}" is published but has no available channel right now ` +
+      "(every binding is disabled, drained or bound to a disabled channel).",
+  );
 }
 
 /** Sum usage helper re-exported for callers that accumulate (MCP loop, streams). */

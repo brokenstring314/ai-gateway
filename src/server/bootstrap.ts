@@ -10,6 +10,7 @@ import { createApp, metricsPlacement, metricsResponse } from "../app.js";
 import { createBootstrapGate } from "../auth/bootstrap.js";
 import { loadConfigFromPath } from "../config/loader.js";
 import { resolveRuntimeConfig } from "../config/runtime-source.js";
+import type { ConfigStore } from "../persistence/config-store.js";
 import type { GatewayConfig } from "../config/types.js";
 import { KeyStore, keyStorePath, openKeyStoreDatabase, resolveDataDir } from "../persistence/key-store.js";
 import { RequestLogStore, openRequestLogDatabase } from "../persistence/request-log-store.js";
@@ -147,9 +148,14 @@ export async function bootstrap(configPath: string, overrides: ServeOverrides = 
   const port = overrides.port ?? config.server?.port ?? 3000;
   const host = overrides.host ?? config.server?.host ?? "0.0.0.0";
   const metrics = metricsPlacement(config, port);
+  if (runtime.store) persistKeyHealth(gateway, runtime.store);
   const app = createApp(gateway, config, configPath, keyStore, {
     metrics,
     logStore,
+    ...(runtime.store ? { configStore: runtime.store } : {}),
+    configApi: {
+      backups: { keep: 5, minIntervalMs: parseEnvNumber(process.env["CONFIG_BACKUP_MIN_INTERVAL_MS"]) ?? 0 },
+    },
     adminSecret: config.adminSecret,
     bootstrapKey: process.env["ADMIN_BOOTSTRAP_KEY"],
     bootstrapReadOnlyKey: process.env["ADMIN_BOOTSTRAP_READ_ONLY_KEY"],
@@ -232,6 +238,41 @@ export async function bootstrap(configPath: string, overrides: ServeOverrides = 
     shutdown,
     stop: (reason = "stop() called") => shutdown.shutdown(reason),
   };
+}
+
+/**
+ * Upstream key health → config store, asynchronously (the request path
+ * never waits on the database): a key disabled after a 401/402 is recorded
+ * (status, last error, audit row) and stays out of later runtime builds; a
+ * 429 cooldown is in memory only and just logged.
+ */
+export function persistKeyHealth(gateway: Gateway, store: ConfigStore): () => void {
+  return gateway.onKeyEvent((e) => {
+    if (e.kind === "cooldown") {
+      console.warn(
+        `[keys] channel "${e.channel}" key ${e.keyId} rate limited upstream; cooling down for ${e.seconds}s`,
+      );
+      return;
+    }
+    console.warn(
+      `[keys] channel "${e.channel}" key ${e.keyId} disabled after upstream ${e.httpStatus} (${e.status}): ${e.error}`,
+    );
+    setTimeout(() => {
+      try {
+        store.recordKeyDisabled({
+          keyId: e.keyId,
+          status: e.status,
+          error: e.error,
+          at: e.at,
+          httpStatus: e.httpStatus,
+        });
+      } catch (err) {
+        console.error(
+          `[keys] could not persist the disabled key ${e.keyId}: ${err instanceof Error ? err.message : String(err)}`,
+        );
+      }
+    }, 0);
+  });
 }
 
 /**

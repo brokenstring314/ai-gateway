@@ -85,11 +85,48 @@ export const ConcurrencyConfigSchema = strictObject({
   queueSize: z.number().int().nonnegative().max(10000).optional().default(1000),
 });
 
+const TargetKeyObjectSchema = strictObject({
+  // Stable id (set by the config store; optional in the file).
+  id: z.string().min(1).max(100).optional(),
+  key: z.string(),
+  weight: z.number().nonnegative().optional(),
+  enabled: z.boolean().optional(),
+});
+
+/**
+ * One upstream key of a target: the key itself, or { key, weight, enabled }
+ * (0.3.0 P4). Checked by hand rather than with z.union so a mistake in the
+ * object form reports the offending field instead of "Invalid input".
+ */
+export const TargetKeySchema = z
+  .unknown()
+  .superRefine((v, ctx) => {
+    if (typeof v === "string") return;
+    if (typeof v !== "object" || v === null || Array.isArray(v)) {
+      ctx.addIssue({ code: "custom", message: "a key is a string or an object { key, weight?, enabled? }" });
+      return;
+    }
+    const r = TargetKeyObjectSchema.safeParse(v);
+    if (!r.success)
+      for (const issue of r.error.issues) ctx.addIssue({ code: "custom", path: issue.path, message: issue.message });
+  })
+  .transform((v) => v as string | z.infer<typeof TargetKeyObjectSchema>);
+
+export const KEY_STRATEGIES = ["round_robin", "weighted", "fill_first"] as const;
+export const BALANCE_MODES = ["weighted", "round_robin", "least_inflight"] as const;
+
 export const TargetConfigSchema = strictObject(
   {
     name: z.string().min(1),
     provider: z.string().min(1),
-    apiKey: z.string().min(1),
+    // One key (apiKey) or several (apiKeys); at least one of the two (see superRefine).
+    apiKey: z.string().min(1).optional(),
+    apiKeys: z.array(TargetKeySchema).max(1000).optional(),
+    keyStrategy: z.enum(KEY_STRATEGIES).optional(),
+    keyCooldownSeconds: z.number().int().positive().max(3600).optional(),
+    enabled: z.boolean().optional(),
+    // Refuse non-public upstream addresses at request time (set for channels written via the Admin API).
+    publicNetworkOnly: z.boolean().optional(),
     // A URL, or a string with ${VAR} refs (validated as a URL after expansion,
     // when the provider is built).
     baseURL: z
@@ -105,7 +142,15 @@ export const TargetConfigSchema = strictObject(
     concurrency: ConcurrencyConfigSchema.optional(),
   },
   REMOVED_TARGET_KEYS,
-);
+).superRefine((t, ctx) => {
+  if (t.apiKey === undefined && t.apiKeys === undefined) {
+    ctx.addIssue({
+      code: "custom",
+      path: ["apiKey"],
+      message: 'target needs an upstream key: "apiKey" (one key) or "apiKeys" (several)',
+    });
+  }
+});
 
 export const ModelMetadataSchema = strictObject({
   contextWindow: z.number().int().positive().optional(),
@@ -135,17 +180,19 @@ export const PublishedModelSchema = strictObject({
   displayName: z.string().max(200).optional(),
   description: z.string().max(2000).optional(),
   strategy: z.enum(["fallback", "loadbalance"]).optional(),
-  bindings: z
-    .array(
-      strictObject({
-        target: z.string().min(1),
-        model: z.string().min(1).optional(),
-        priority: z.number().int().optional(),
-        weight: z.number().nonnegative().optional(),
-        params: z.record(z.string(), z.unknown()).optional(),
-      }),
-    )
-    .min(1),
+  // How to pick within a priority group (0.3.0 P4).
+  balance: z.enum(BALANCE_MODES).optional(),
+  // Empty (or every binding disabled / on a disabled target): published but unavailable (503).
+  bindings: z.array(
+    strictObject({
+      target: z.string().min(1),
+      model: z.string().min(1).optional(),
+      priority: z.number().int().optional(),
+      weight: z.number().nonnegative().optional(),
+      enabled: z.boolean().optional(),
+      params: z.record(z.string(), z.unknown()).optional(),
+    }),
+  ),
   metadata: ModelMetadataSchema.optional(),
 });
 

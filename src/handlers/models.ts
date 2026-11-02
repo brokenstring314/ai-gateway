@@ -3,7 +3,9 @@
  *
  * Lists the published models (and aliases of them) the caller's API key may
  * use, in OpenAI's format. Published metadata rides along as extension
- * fields (OpenAI SDKs ignore unknown fields). Disabled models are hidden.
+ * fields (OpenAI SDKs ignore unknown fields). Disabled models are hidden;
+ * a published model with no usable channel right now is listed with
+ * `available: false` (requests get 503 model_unavailable).
  */
 
 import type { AppType } from "../app.js";
@@ -25,6 +27,7 @@ export function registerModelsHandler(app: AppType, gateway: Gateway): void {
         ...(e.displayName !== undefined ? { display_name: e.displayName } : {}),
         ...(e.description !== undefined ? { description: e.description } : {}),
         ...(e.metadata !== undefined ? { metadata: e.metadata } : {}),
+        ...(e.available ? {} : { available: false }),
       });
     }
     for (const [alias, target] of Object.entries(catalog.aliasMap())) {
@@ -37,6 +40,7 @@ export function registerModelsHandler(app: AppType, gateway: Gateway): void {
         owned_by: e.targets[0] ?? "gateway",
         alias_of: target,
         ...(e.metadata !== undefined ? { metadata: e.metadata } : {}),
+        ...(e.available ? {} : { available: false }),
       });
     }
     return c.json({ object: "list", data }, 200);

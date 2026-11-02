@@ -43,6 +43,24 @@ function fileConfig(extra: Record<string, unknown> = {}) {
 }
 
 const box = () => SecretBox.create(new Uint8Array(32).fill(7));
+
+/**
+ * The store hands each key back with its id (key events map to the row):
+ * compare configs with every target's keys as a plain list of key texts.
+ */
+function normalizeKeys(config: { targets: readonly object[] }): Record<string, unknown> {
+  return {
+    ...config,
+    targets: config.targets.map((t) => {
+      const { apiKey, apiKeys, ...rest } = t as { apiKey?: string; apiKeys?: Array<string | { key: string }> };
+      const keys = [
+        ...(apiKey !== undefined ? [apiKey] : []),
+        ...(apiKeys ?? []).map((k) => (typeof k === "string" ? k : k.key)),
+      ];
+      return { ...rest, keys };
+    }),
+  };
+}
 const dirs: string[] = [];
 function tempDir(): string {
   const d = mkdtempSync(join(tmpdir(), "cfgstore-"));
@@ -62,7 +80,45 @@ describe("ConfigStore import / load", () => {
     expect(v.version).toBe(1);
     expect(store.isInitialized()).toBe(true);
     const composed = composeConfig(file, await store.loadRuntimeSections());
-    expect(composed).toEqual(file);
+    expect(normalizeKeys(composed)).toEqual(normalizeKeys(file));
+  });
+
+  it("round-trips several keys, key strategy, disabled targets/bindings and model balance (0.3.0 P4)", async () => {
+    const file = loadConfigFromObject({
+      strategy: { mode: "fallback", targets: ["a", "b"] },
+      targets: [
+        {
+          name: "a",
+          provider: "openai",
+          baseURL: "https://a.example/v1",
+          apiKeys: [SECRET_A, { key: "${UPSTREAM_C_KEY}", weight: 2 }],
+          keyStrategy: "weighted",
+          keyCooldownSeconds: 12,
+        },
+        { name: "b", provider: "openai", baseURL: "https://b.example/v1", apiKey: SECRET_B, enabled: false },
+      ],
+      models: [
+        {
+          name: "m",
+          balance: "least_inflight",
+          bindings: [
+            { target: "a", priority: 0 },
+            { target: "b", priority: 0, enabled: false },
+          ],
+        },
+      ],
+    });
+    const store = await ConfigStore.create(new Database(":memory:"), await box());
+    await store.importFromConfig(file);
+    const composed = composeConfig(file, await store.loadRuntimeSections());
+    expect(normalizeKeys(composed)).toEqual(normalizeKeys(file));
+    const a = store.listChannels()[0]!;
+    expect(a.keys.map((k) => [k.kind, k.weight])).toEqual([
+      ["encrypted", 1],
+      ["env_ref", 2],
+    ]);
+    expect(a.settings).toMatchObject({ keyStrategy: "weighted", keyCooldownSeconds: 12 });
+    expect(store.listChannels()[1]?.enabled).toBe(false);
   });
 
   it("lists channels with key hints only, env refs as references", async () => {
@@ -116,7 +172,7 @@ describe("ConfigStore import / load", () => {
     });
     const store = await ConfigStore.create(new Database(":memory:"), undefined);
     await store.importFromConfig(file);
-    expect(composeConfig(file, await store.loadRuntimeSections())).toEqual(file);
+    expect(normalizeKeys(composeConfig(file, await store.loadRuntimeSections()))).toEqual(normalizeKeys(file));
   });
 
   it("fails loudly when the master key is wrong or missing", async () => {
@@ -137,7 +193,9 @@ describe("ConfigStore import / load", () => {
     db.query(
       "UPDATE channel_keys SET value = (SELECT value FROM channel_keys WHERE channel_id = ?) WHERE channel_id = ?",
     ).run(a!.id, b!.id);
-    await expect(store.loadRuntimeSections()).rejects.toThrow(/channel "b"/);
+    // A fresh process (no decrypted keys in memory) must refuse the moved ciphertext.
+    const fresh = await ConfigStore.create(db, await box());
+    await expect(fresh.loadRuntimeSections()).rejects.toThrow(/channel "b"/);
   });
 
   it("enforces foreign keys: a channel with a model binding cannot be deleted", async () => {

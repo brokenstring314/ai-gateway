@@ -26,10 +26,24 @@ export interface ConcurrencyConfig {
   queueSize?: number;
 }
 
+/** One upstream key: the key text (`${VAR}` allowed in the config file) or an object. */
+export type TargetKeyConfig = string | { id?: string; key: string; weight?: number; enabled?: boolean };
+
 export interface TargetConfig {
   name: string;
   provider: string;
-  apiKey: string;
+  /** The upstream key (one key). At least one of apiKey / apiKeys is required. */
+  apiKey?: string;
+  /** Several upstream keys (0.3.0 P4), used after apiKey when both are set. */
+  apiKeys?: TargetKeyConfig[];
+  /** How a key is picked: round_robin (default), weighted, fill_first. */
+  keyStrategy?: "round_robin" | "weighted" | "fill_first";
+  /** Cooldown of a key after an upstream 429 without Retry-After (seconds, default 30). */
+  keyCooldownSeconds?: number;
+  /** false: the target gets no traffic (bindings to it are skipped). Default true. */
+  enabled?: boolean;
+  /** Refuse non-public upstream addresses at request time (Admin API channels). */
+  publicNetworkOnly?: boolean;
   baseURL?: string;
   models?: string[];
   weight?: number;
@@ -78,10 +92,12 @@ export interface ModelBindingConfig {
   target: string;
   /** Model name sent upstream; default: the published name. */
   model?: string;
-  /** fallback: lower first (default: list order). */
+  /** Priority group: lower first (default: list order). */
   priority?: number;
-  /** loadbalance: relative share (0 = drained). Default 1. */
+  /** Relative share within its group (0 = drained). Default 1. */
   weight?: number;
+  /** false: the binding is skipped. Default true. */
+  enabled?: boolean;
   /** Extra upstream body fields for this binding (win over the request's and the reasoning map's). */
   params?: Record<string, unknown>;
 }
@@ -95,8 +111,13 @@ export interface PublishedModelConfig {
   enabled?: boolean;
   displayName?: string;
   description?: string;
-  /** How to pick among the bindings. Default fallback. */
+  /**
+   * fallback (default): priority groups, lower priority first (priority
+   * defaults to list order: one binding per group); loadbalance: one group.
+   */
   strategy?: "fallback" | "loadbalance";
+  /** How to pick within a priority group: weighted (default), round_robin, least_inflight. */
+  balance?: "weighted" | "round_robin" | "least_inflight";
   bindings: ModelBindingConfig[];
   metadata?: ModelMetadata;
 }

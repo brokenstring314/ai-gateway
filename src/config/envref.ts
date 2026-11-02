@@ -111,8 +111,9 @@ export function expandAnyMap(obj: unknown): unknown {
  *
  * @throws {EnvRefError} If a referenced variable is not defined
  */
-export function expandTargetEnvRefs<T extends { apiKey: string; baseURL?: string }>(target: T): T {
-  const expanded: T = { ...target, apiKey: expandEnvRefs(target.apiKey ?? "") };
+export function expandTargetEnvRefs<T extends { apiKey?: string; baseURL?: string }>(target: T): T {
+  const expanded: T = { ...target };
+  if (target.apiKey !== undefined) expanded.apiKey = expandEnvRefs(target.apiKey);
   if (target.baseURL !== undefined) expanded.baseURL = expandEnvRefs(target.baseURL);
   return expanded;
 }

@@ -41,6 +41,7 @@ import { retryWithBackoff, RetryExhaustedError } from "../routing/retry.js";
 import { classifyAttemptError, isFailoverEligible, isTimeoutAbort } from "./outcome.js";
 import { GatewayError, gatewayTimeout, mostMeaningful } from "./errors.js";
 import { ReadableStreamError } from "../providers/sse-parser.js";
+import type { TargetLoad } from "../routing/balancer.js";
 
 export type ProviderLookup = (name: string) => IProvider | undefined;
 
@@ -54,6 +55,14 @@ export interface ExecutorDeps {
   readonly onAttemptFailure?: (name: string, err: unknown) => void;
   /** Called after a breaker permit is settled (metrics: breaker state). */
   readonly onBreakerSettled?: (name: string, breaker: CircuitBreaker) => void;
+  /**
+   * Why a target cannot be used right now (e.g. no usable upstream key), or
+   * undefined. An unavailable target is skipped without an attempt: no
+   * breaker permit, no slot, and failover moves on to the next candidate.
+   */
+  readonly unavailable?: (name: string) => unknown;
+  /** Requests in flight per target (least_inflight balancing). */
+  readonly load?: TargetLoad;
 }
 
 export interface RunOptions {
@@ -156,6 +165,7 @@ export class TargetExecutor {
 
   private async attempt<T>(name: string, ctx: RequestContext, fn: () => Promise<T>): Promise<T> {
     const a = await this.admit(name, ctx);
+    this.deps.load?.inc(name);
     try {
       const result = await fn();
       this.settle(a, "success", name);
@@ -163,6 +173,7 @@ export class TargetExecutor {
     } catch (err) {
       throw this.settleFailure(name, a, ctx, err, false);
     } finally {
+      this.deps.load?.dec(name);
       a.limiter?.release();
     }
   }
@@ -170,6 +181,7 @@ export class TargetExecutor {
   /** Streaming attempt: the slot is held and the permit settled for the whole stream. */
   private async *attemptStream<C>(name: string, ctx: RequestContext, open: () => AsyncIterable<C>): AsyncGenerator<C> {
     const a = await this.admit(name, ctx);
+    this.deps.load?.inc(name);
     let started = false;
     let settled = false;
     try {
@@ -191,6 +203,7 @@ export class TargetExecutor {
       // Consumer stopped early. With output, upstream was healthy; without
       // any, there is no signal: return the permit.
       if (!settled) this.settle(a, started ? "success" : "release", name);
+      this.deps.load?.dec(name);
       a.limiter?.release();
     }
   }
@@ -206,7 +219,8 @@ export class TargetExecutor {
   private finish(opts: RunOptions, kind: string, lastError: unknown, tried: number, errors: readonly unknown[]): never {
     const chosen = errors.length > 0 ? mostMeaningful(errors.map(unwrapRetry)) : lastError;
     if (opts.exhausted) throw opts.exhausted(chosen, tried);
-    if (tried === 0) throw lastError ?? new Error(`${opts.label}: no ${kind}provider available`);
+    if (tried === 0)
+      throw (errors.length > 0 ? chosen : lastError) ?? new Error(`${opts.label}: no ${kind}provider available`);
     throw unwrapRetry(chosen);
   }
 
@@ -232,6 +246,12 @@ export class TargetExecutor {
       }
       if (!supports(provider)) {
         lastError ??= new Error(`${opts.label}: provider "${name}" does not support this operation`);
+        continue;
+      }
+      const unusable = this.deps.unavailable?.(name);
+      if (unusable !== undefined) {
+        lastError = unusable;
+        errors.push(unusable);
         continue;
       }
       tried++;
@@ -274,6 +294,12 @@ export class TargetExecutor {
       }
       if (!supports(provider)) {
         lastError ??= new Error(`${opts.label}: provider "${name}" does not support streaming`);
+        continue;
+      }
+      const unusable = this.deps.unavailable?.(name);
+      if (unusable !== undefined) {
+        lastError = unusable;
+        errors.push(unusable);
         continue;
       }
       tried++;

@@ -37,6 +37,8 @@ export interface ProxyTarget {
   apiKey: string;
   /** Headers injected into the upstream request (usually Authorization). */
   authHeaders: Record<string, string>;
+  /** fetch for this target (e.g. the SSRF guard of an Admin API channel); default: the handler's. */
+  fetchImpl?: typeof fetch;
 }
 
 /** Resolves a proxy target by provider name or by body model. */
@@ -145,7 +147,7 @@ export function resolveProxyTarget(target: TargetConfig, opts?: ResolveProxyTarg
     name: target.name,
     provider: target.provider,
     baseURL: stripTrailingV1(target.baseURL ?? ""),
-    apiKey: target.apiKey,
+    apiKey: target.apiKey ?? "",
     authHeaders,
   };
 }
@@ -501,7 +503,7 @@ export function createProxyHandler(options: ProxyHandlerOptions): Handler<ProxyE
 
     let upstream: Response;
     try {
-      upstream = await fetchImpl(upstreamUrl, {
+      upstream = await (target.fetchImpl ?? fetchImpl)(upstreamUrl, {
         method: c.req.method,
         headers,
         body: bodyBuffer,

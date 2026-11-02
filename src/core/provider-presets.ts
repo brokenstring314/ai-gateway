@@ -11,7 +11,9 @@
  */
 
 import type { CompatibilityConfig, TargetConfig } from "../config/types.js";
-import { expandTargetEnvRefs } from "../config/envref.js";
+import { expandEnvRefs, expandTargetEnvRefs } from "../config/envref.js";
+import { DEFAULT_KEY_COOLDOWN_SECONDS, KeyPool, KeyStateRegistry, type PoolKey } from "../routing/key-pool.js";
+import { defaultPublicHostGuard, type PublicHostGuard } from "../security/url-guard.js";
 import { createOpenAICompatProvider, type OpenAICompatProvider } from "../providers/openai-compat.js";
 
 export interface ProviderPreset {
@@ -112,22 +114,79 @@ export function resolveBaseURL(target: Pick<TargetConfig, "name" | "provider" | 
   return url;
 }
 
+/** A target's upstream keys in order (apiKey first, then apiKeys), templates not yet expanded. */
+export interface TargetKeyEntry {
+  readonly id: string;
+  readonly raw: string;
+  readonly weight: number;
+  readonly enabled: boolean;
+  /** Changes when the key text changes (config-file keys have no admin revision). */
+  readonly revision: string;
+}
+
+export function targetKeyEntries(target: Pick<TargetConfig, "apiKey" | "apiKeys">): TargetKeyEntry[] {
+  const out: TargetKeyEntry[] = [];
+  const add = (id: string | undefined, raw: string, weight: number | undefined, enabled: boolean | undefined) => {
+    const index = out.length;
+    out.push({
+      // Never derived from the key text, so an id can be shown without revealing anything.
+      id: id ?? `cfg-${index}`,
+      raw,
+      weight: weight ?? 1,
+      enabled: enabled !== false,
+      revision: id !== undefined ? "store" : Bun.hash(raw).toString(36),
+    });
+  };
+  if (target.apiKey !== undefined) add(undefined, target.apiKey, undefined, undefined);
+  for (const k of target.apiKeys ?? []) {
+    if (typeof k === "string") add(undefined, k, undefined, undefined);
+    else add(k.id, k.key, k.weight, k.enabled);
+  }
+  return out;
+}
+
+export interface ProviderBuildOptions {
+  /** Key health across reloads (default: a private registry). */
+  readonly keyState?: KeyStateRegistry;
+  /** Request-time SSRF guard for targets with publicNetworkOnly (default: the shared guard). */
+  readonly guard?: PublicHostGuard;
+}
+
 /**
- * Build the provider for a target. `${VAR}` refs in apiKey/baseURL are
- * expanded here (the stored config keeps the templates), then the URL is
- * validated.
+ * Build the provider for a target. `${VAR}` refs in the keys and baseURL
+ * are expanded here (the stored config keeps the templates), then the URL
+ * is validated. Every target gets a key pool (one key or several).
  */
 export function createProviderFromTarget(
   rawTarget: TargetConfig,
   compatibility?: CompatibilityConfig["onUnsupportedParam"],
+  build: ProviderBuildOptions = {},
 ): OpenAICompatProvider {
   const target = expandTargetEnvRefs(rawTarget);
   const preset = getPreset(target.provider);
+  const entries = targetKeyEntries(rawTarget).filter((k) => k.enabled);
+  const keys: PoolKey[] = entries.map((k) => ({
+    id: k.id,
+    // A key that expands to "" falls back to the preset's (local servers without auth).
+    key: expandEnvRefs(k.raw) || preset?.defaultApiKey || "",
+    weight: k.weight,
+    revision: k.revision,
+  }));
+  const pool = new KeyPool(
+    target.name,
+    keys,
+    target.keyStrategy ?? "round_robin",
+    target.keyCooldownSeconds ?? DEFAULT_KEY_COOLDOWN_SECONDS,
+    build.keyState ?? new KeyStateRegistry(),
+  );
+  const guard = target.publicNetworkOnly === true ? (build.guard ?? defaultPublicHostGuard) : undefined;
   return createOpenAICompatProvider({
     name: target.name,
     providerType: presetId(target.provider),
     baseURL: resolveBaseURL(target),
-    apiKey: target.apiKey || preset?.defaultApiKey || "",
+    apiKey: keys[0]?.key ?? "",
+    keys: pool,
+    ...(guard ? { fetchImpl: guard.fetch() } : {}),
     models: target.models,
     extraHeaders: preset?.extraHeaders ? { ...preset.extraHeaders } : undefined,
     extraResponseFields: preset?.extraResponseFields,

@@ -19,8 +19,7 @@
 import type { GatewayConfig, ModelMetadata, PublishedModelConfig } from "../config/types.js";
 import { knownUpstreamModel } from "../core/model-presets.js";
 import type { ChatCompletionRequest, IProvider } from "../providers/types.js";
-import { FallbackStrategy } from "./fallback.js";
-import { LoadBalanceStrategy } from "./loadbalance.js";
+import { PriorityGroupStrategy, priorityGroups, TargetLoad } from "./balancer.js";
 import type { IStrategy, StrategyMode } from "./types.js";
 
 /** How a request for one published model is routed. */
@@ -36,6 +35,12 @@ export interface ModelRoute {
 export interface CatalogEntry {
   readonly name: string;
   readonly enabled: boolean;
+  /**
+   * False when no binding can serve it right now: every binding is disabled,
+   * drained (weight 0) or bound to a disabled target. The model stays
+   * published (aliases keep resolving) and requests get 503 model_unavailable.
+   */
+  readonly available: boolean;
   readonly displayName?: string;
   readonly description?: string;
   /**
@@ -43,7 +48,7 @@ export interface CatalogEntry {
    * what every bound upstream is known to support (core/model-presets.ts).
    */
   readonly metadata?: ModelMetadata;
-  /** Targets serving it, in binding order. */
+  /** Targets serving it (enabled bindings on enabled targets), in priority order. */
   readonly targets: readonly string[];
   readonly route: ModelRoute;
 }
@@ -105,20 +110,25 @@ function mergeMetadata(
   return { ...(derived ?? {}), ...(configured ?? {}) };
 }
 
-function explicitRoute(m: PublishedModelConfig): ModelRoute {
-  const byTarget = new Map(m.bindings.map((b) => [b.target, b.model ?? m.name]));
-  const paramsByTarget = new Map(m.bindings.filter((b) => b.params).map((b) => [b.target, b.params!]));
+/**
+ * Route of an explicit model: priority groups over its usable bindings
+ * (routing/balancer.ts). `fallback` (default) groups by priority, which
+ * defaults to list order; `loadbalance` puts every binding in one group.
+ */
+function explicitRoute(m: PublishedModelConfig, usable: (target: string) => boolean, load: TargetLoad): ModelRoute {
+  const active = m.bindings.map((b, i) => ({ b, i })).filter(({ b }) => b.enabled !== false && usable(b.target));
+  const byTarget = new Map(active.map(({ b }) => [b.target, b.model ?? m.name]));
+  const paramsByTarget = new Map(active.filter(({ b }) => b.params).map(({ b }) => [b.target, b.params!]));
   const upstreamModel = (t: string) => byTarget.get(t) ?? m.name;
   const params = (t: string) => paramsByTarget.get(t);
-  if (m.strategy === "loadbalance") {
-    const pool = m.bindings.map((b) => ({ name: b.target, weight: b.weight ?? 1 }));
-    return { strategy: new LoadBalanceStrategy({ targets: pool }), upstreamModel, params };
-  }
-  const ordered = m.bindings
-    .map((b, i) => ({ t: b.target, p: b.priority ?? i, i }))
-    .sort((a, b) => a.p - b.p || a.i - b.i)
-    .map((x) => x.t);
-  return { strategy: new FallbackStrategy({ targets: ordered }), upstreamModel, params };
+  const members = active.map(({ b, i }) => ({
+    name: b.target,
+    weight: b.weight ?? 1,
+    priority: m.strategy === "loadbalance" ? 0 : (b.priority ?? i),
+  }));
+  const mode: StrategyMode = m.strategy === "loadbalance" ? "loadbalance" : "fallback";
+  const strategy = new PriorityGroupStrategy(priorityGroups(members), m.balance ?? "weighted", load, mode);
+  return { strategy, upstreamModel, params };
 }
 
 const noParams = () => undefined;
@@ -142,16 +152,21 @@ export class ModelCatalog {
     config: Pick<GatewayConfig, "models" | "aliases" | "targets">,
     private readonly globalStrategy: IStrategy,
     private readonly providers: ProviderSource,
+    load: TargetLoad = new TargetLoad(),
   ) {
     this.aliases = config.aliases ?? {};
     this.providerOf = new Map(config.targets.map((t) => [t.name, t.provider]));
     this.explicit = config.models !== undefined;
+    const enabledTargets = new Set(config.targets.filter((t) => t.enabled !== false).map((t) => t.name));
     const entries = new Map<string, CatalogEntry>();
     if (config.models !== undefined) {
       for (const m of config.models) {
+        const route = explicitRoute(m, (t) => enabledTargets.has(t), load);
+        const targets = (route.strategy as PriorityGroupStrategy).members().flatMap((g) => g.map((x) => x.name));
         entries.set(m.name, {
           name: m.name,
           enabled: m.enabled !== false,
+          available: targets.length > 0,
           ...(m.displayName !== undefined ? { displayName: m.displayName } : {}),
           ...(m.description !== undefined ? { description: m.description } : {}),
           ...optionalMetadata(
@@ -162,8 +177,8 @@ export class ModelCatalog {
               ),
             ),
           ),
-          targets: m.bindings.map((b) => b.target),
-          route: explicitRoute(m),
+          targets,
+          route,
         });
       }
     }
@@ -213,6 +228,7 @@ export class ModelCatalog {
     return {
       name,
       enabled: true,
+      available: targets.length > 0,
       targets,
       ...optionalMetadata(derived),
       route: {

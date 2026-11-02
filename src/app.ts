@@ -49,6 +49,8 @@ import { expandTargetEnvRefs } from "./config/envref.js";
 import { getMetrics as getPrometheusMetrics } from "./metrics/metrics.js";
 import type { InFlightTracker } from "./server/shutdown.js";
 import { requestLogStoreSink } from "./observability/request-log.js";
+import type { KeyPool } from "./routing/key-pool.js";
+import { defaultPublicHostGuard } from "./security/url-guard.js";
 
 /** Shared Hono environment type for all handlers and middleware. */
 export type AppEnv = {
@@ -251,10 +253,21 @@ export function createApp(
         : undefined;
       target = first !== undefined ? targets.find((t) => t.name === first) : undefined;
     }
-    if (target === undefined) return undefined;
+    if (target === undefined || target.enabled === false) return undefined;
     const expanded = expandTargetEnvRefs(target);
+    // The key comes from the target's key pool (several keys rotate; none usable → unavailable).
+    let apiKey = expanded.apiKey ?? "";
+    const pool = (gateway.getRegistry().get(target.name) as { keyPool?: KeyPool } | undefined)?.keyPool;
+    if (pool) {
+      try {
+        apiKey = pool.acquire().key;
+      } catch {
+        return undefined;
+      }
+    }
     // A target without baseURL uses its provider preset's default.
-    return resolveProxyTarget({ ...expanded, baseURL: resolveBaseURL(expanded) });
+    const resolved = resolveProxyTarget({ ...expanded, apiKey, baseURL: resolveBaseURL(expanded) });
+    return target.publicNetworkOnly === true ? { ...resolved, fetchImpl: defaultPublicHostGuard.fetch() } : resolved;
   };
 
   // Gateway-owned routes answer any other method with 405 (never proxied:
@@ -359,6 +372,8 @@ export function createApp(
   const adminApp = createAdminApp(gateway, config, configPath, {
     keyStore,
     logStore: options?.logStore,
+    ...(options?.configStore ? { configStore: options.configStore } : {}),
+    ...(options?.configApi ? { configApi: options.configApi } : {}),
     adminSecret: options?.adminSecret,
     bootstrapKey: options?.bootstrapKey,
     bootstrapReadOnlyKey: options?.bootstrapReadOnlyKey,

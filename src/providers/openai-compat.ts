@@ -25,6 +25,7 @@ import type {
   ToolChoice,
 } from "./types.js";
 import type { CompatibilityConfig } from "../config/types.js";
+import { type KeyPool, keyErrorText, type Lease, NoUsableKeyError } from "../routing/key-pool.js";
 import { enforceUnsupportedParams } from "./capabilities.js";
 import { chunkFromJsonResponse, parseSSEStream } from "./sse-parser.js";
 import { extractForwardableHeaders } from "./response-headers.js";
@@ -46,7 +47,16 @@ export interface OpenAiCompatOptions {
    */
   providerType?: string;
   baseURL: string;
+  /** The upstream key when no key pool is given. */
   apiKey: string;
+  /**
+   * Several upstream keys (0.3.0 P4): one is leased per upstream call; a
+   * 429 / 401 / 402 answer takes that key out and the call is repeated with
+   * the next usable key before the attempt counts as failed.
+   */
+  keys?: KeyPool;
+  /** fetch to use (default: the global fetch at call time). */
+  fetchImpl?: typeof fetch;
   models?: readonly string[];
   bodyTransform?: (body: Record<string, unknown>) => Record<string, unknown>;
   extraResponseFields?: readonly string[];
@@ -62,7 +72,16 @@ interface OpenAiErrorResponse {
   };
 }
 
-export type OpenAICompatProvider = IProvider & IStreamProvider & IEmbeddingProvider & IImageProvider;
+export type OpenAICompatProvider = IProvider &
+  IStreamProvider &
+  IEmbeddingProvider &
+  IImageProvider & {
+    /** The channel's key pool, when it has one (executor: skip a channel without a usable key). */
+    readonly keyPool?: KeyPool;
+  };
+
+/** Upstream statuses that take one key out (cooldown / disable) and move on to the next key. */
+const KEY_STATUSES: ReadonlySet<number> = new Set([401, 402, 429]);
 
 export function createOpenAICompatProvider(opts: OpenAiCompatOptions): OpenAICompatProvider {
   const baseURL = opts.baseURL.replace(/\/+$/, "");
@@ -74,26 +93,62 @@ export function createOpenAICompatProvider(opts: OpenAiCompatOptions): OpenAICom
     ownedBy: opts.name,
   }));
 
+  /**
+   * POST `payload` to `${baseURL}${path}` with a leased key; on 401/402/429
+   * the key is reported to the pool and the call repeated with the next
+   * usable key. Returns the first OK response; throws ProviderError (the last
+   * upstream error) or an AbortError.
+   */
+  async function send(ctx: RequestContext, path: string, payload: string): Promise<Response> {
+    const pool = opts.keys;
+    const tried = new Set<string>();
+    let lastError: ProviderError | undefined;
+    while (true) {
+      let lease: Lease;
+      if (pool) {
+        try {
+          lease = pool.acquire(tried);
+        } catch (err) {
+          if (err instanceof NoUsableKeyError && lastError) throw lastError;
+          throw err;
+        }
+      } else {
+        lease = { id: "", key: opts.apiKey };
+      }
+      let response: Response;
+      try {
+        const doFetch = opts.fetchImpl ?? globalThis.fetch;
+        response = await doFetch(`${baseURL}${path}`, {
+          method: "POST",
+          headers: buildHeaders(lease.key, extraHeaders),
+          body: payload,
+          signal: ctx.signal ?? null,
+        });
+      } catch (err) {
+        // A client/caller abort is not an upstream failure: rethrow as-is.
+        if (isAbortError(err) || ctx.signal?.aborted) throw abortErrorFrom(err);
+        throw new ProviderError(opts.name, 0, `fetch failed: ${err instanceof Error ? err.message : String(err)}`);
+      }
+      if (response.ok) return response;
+      const retryAfter = response.headers.get("Retry-After");
+      const err = await buildErrorFromResponse(opts.name, response, retryAfter);
+      if (pool && KEY_STATUSES.has(response.status)) {
+        pool.report(lease.id, response.status, retryAfter, keyErrorText(response.status, err.detail, lease.key));
+        tried.add(lease.id);
+        lastError = err;
+        continue;
+      }
+      throw err;
+    }
+  }
+
   /** POST a JSON body to `${baseURL}${path}` and return the parsed JSON (throws ProviderError). */
   async function postJSON(
     ctx: RequestContext,
     path: string,
     body: Record<string, unknown>,
   ): Promise<{ raw: Record<string, unknown>; response: Response }> {
-    let response: Response;
-    try {
-      response = await fetch(`${baseURL}${path}`, {
-        method: "POST",
-        headers: buildHeaders(opts.apiKey, extraHeaders),
-        body: JSON.stringify(body),
-        signal: ctx.signal ?? null,
-      });
-    } catch (err) {
-      throw new ProviderError(opts.name, 0, `fetch failed: ${err instanceof Error ? err.message : String(err)}`);
-    }
-    if (!response.ok) {
-      throw await buildErrorFromResponse(opts.name, response, response.headers.get("Retry-After"));
-    }
+    const response = await send(ctx, path, JSON.stringify(body));
     let raw: unknown;
     try {
       raw = await response.json();
@@ -108,6 +163,7 @@ export function createOpenAICompatProvider(opts: OpenAiCompatOptions): OpenAICom
 
   const provider: OpenAICompatProvider = {
     name: opts.name,
+    ...(opts.keys ? { keyPool: opts.keys } : {}),
 
     async embed(ctx: RequestContext, req: EmbeddingRequest): Promise<EmbeddingResponse> {
       const body: Record<string, unknown> = { model: req.model, input: req.input };
@@ -144,27 +200,7 @@ export function createOpenAICompatProvider(opts: OpenAiCompatOptions): OpenAICom
       const body = buildRequestBody(request);
       const transformed = opts.bodyTransform ? opts.bodyTransform(body) : body;
 
-      const url = `${baseURL}/chat/completions`;
-      const headers = buildHeaders(opts.apiKey, extraHeaders);
-
-      let response: Response;
-      try {
-        response = await fetch(url, {
-          method: "POST",
-          headers,
-          body: JSON.stringify(transformed),
-          signal: ctx.signal ?? null,
-        });
-      } catch (err) {
-        // A client/caller abort is not an upstream failure: rethrow as-is.
-        if (isAbortError(err) || ctx.signal?.aborted) throw abortErrorFrom(err);
-        throw new ProviderError(opts.name, 0, `fetch failed: ${err instanceof Error ? err.message : String(err)}`);
-      }
-
-      if (!response.ok) {
-        const retryAfter = response.headers.get("Retry-After");
-        throw await buildErrorFromResponse(opts.name, response, retryAfter);
-      }
+      const response = await send(ctx, "/chat/completions", JSON.stringify(transformed));
 
       let raw: unknown;
       try {
@@ -198,27 +234,7 @@ export function createOpenAICompatProvider(opts: OpenAiCompatOptions): OpenAICom
       const body = buildRequestBody(streamReq);
       const transformed = opts.bodyTransform ? opts.bodyTransform(body) : body;
 
-      const url = `${baseURL}/chat/completions`;
-      const headers = buildHeaders(opts.apiKey, extraHeaders);
-
-      let response: Response;
-      try {
-        response = await fetch(url, {
-          method: "POST",
-          headers,
-          body: JSON.stringify(transformed),
-          signal: ctx.signal ?? null,
-        });
-      } catch (err) {
-        // A client/caller abort is not an upstream failure: rethrow as-is.
-        if (isAbortError(err) || ctx.signal?.aborted) throw abortErrorFrom(err);
-        throw new ProviderError(opts.name, 0, `fetch failed: ${err instanceof Error ? err.message : String(err)}`);
-      }
-
-      if (!response.ok) {
-        const retryAfter = response.headers.get("Retry-After");
-        throw await buildErrorFromResponse(opts.name, response, retryAfter);
-      }
+      const response = await send(ctx, "/chat/completions", JSON.stringify(transformed));
 
       if (!response.body) {
         throw new ProviderError(opts.name, 0, "response body is null");

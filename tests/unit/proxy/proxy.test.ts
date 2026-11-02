@@ -203,7 +203,7 @@ describe("resolveProxyTarget", () => {
   it("honors a custom auth convention", () => {
     const target = resolveProxyTarget(
       { name: "z", provider: "custom", apiKey: "tk-1", baseURL: "https://h/v1" },
-      { authHeaders: (t) => ({ "x-api-key": t.apiKey }) },
+      { authHeaders: (t) => ({ "x-api-key": t.apiKey ?? "" }) },
     );
     expect(target.authHeaders).toEqual({ "x-api-key": "tk-1" });
   });

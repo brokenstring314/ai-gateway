@@ -36,6 +36,9 @@ import type {
   StreamChunk,
 } from "./providers/types.js";
 import type { CircuitBreakerRegistry } from "./routing/circuit-breaker.js";
+import { TargetLoad } from "./routing/balancer.js";
+import type { PublicHostGuard } from "./security/url-guard.js";
+import { type KeyEvent, type KeyPool, KeyStateRegistry } from "./routing/key-pool.js";
 import type { ConcurrencyLimiterRegistry } from "./routing/concurrency-limiter.js";
 
 /**
@@ -71,8 +74,20 @@ export class Gateway {
   private readonly extraPlugins: Array<{ stage: Stage; plugin: IPlugin }> = [];
   /** Called after each successful reload. */
   private readonly reloadListeners = new Set<(snapshot: RuntimeSnapshot) => void>();
+  /** Upstream key health (cooldowns, auto-disabled keys), kept across reloads. */
+  private readonly keyStates = new KeyStateRegistry();
+  /** Requests in flight per target (least_inflight balancing), kept across reloads. */
+  private readonly targetLoad = new TargetLoad();
 
-  constructor(config: GatewayConfig) {
+  /**
+   * `options.publicHostGuard`: request-time SSRF guard for channels with
+   * publicNetworkOnly (default: the shared guard with system DNS; tests
+   * inject a resolver).
+   */
+  constructor(
+    config: GatewayConfig,
+    private readonly options: { readonly publicHostGuard?: PublicHostGuard } = {},
+  ) {
     this.snapshot = { version: 1, config, parts: this.assemble(config), createdAt: new Date() };
     this.mcpRegistry = new McpRegistry();
     this.mcpExecutor = createMcpExecutor(config, this.mcpRegistry);
@@ -82,7 +97,13 @@ export class Gateway {
   private assemble(config: GatewayConfig, previous?: GatewayParts): GatewayParts {
     const parts = assembleGateway(
       config,
-      { mcpExecutor: () => this.mcpExecutor, logSinks: () => this.logSinks },
+      {
+        mcpExecutor: () => this.mcpExecutor,
+        logSinks: () => this.logSinks,
+        keyState: this.keyStates,
+        load: this.targetLoad,
+        ...(this.options.publicHostGuard ? { guard: this.options.publicHostGuard } : {}),
+      },
       previous,
     );
     for (const provider of this.extraProviders.values()) parts.registry.register(provider);
@@ -113,6 +134,8 @@ export class Gateway {
     const parts = this.assemble(config, current.parts);
     const next: RuntimeSnapshot = { version: current.version + 1, config, parts, createdAt: new Date() };
     this.snapshot = next;
+    // Keys no longer configured lose their state (requests on the old snapshot keep their own references).
+    this.keyStates.retain(parts.keyStateIds);
     for (const listener of this.reloadListeners) {
       try {
         listener(next);
@@ -121,6 +144,26 @@ export class Gateway {
       }
     }
     return next;
+  }
+
+  /**
+   * Upstream key events (a key cooled down after a 429, or was disabled
+   * after a 401/402). Listeners must be quick; the config store persists
+   * disables asynchronously from here.
+   */
+  onKeyEvent(listener: (event: KeyEvent) => void): () => void {
+    return this.keyStates.onEvent(listener);
+  }
+
+  /** Forget the runtime state of a key (an operator re-enabled it). */
+  resetKeyState(channel: string, keyId: string): void {
+    this.keyStates.reset(channel, keyId);
+  }
+
+  /** Runtime state of a channel's keys (cooldown / auto-disabled), by key id. */
+  keyRuntimeState(channel: string): ReadonlyArray<{ id: string; cooldownUntil?: string; disabled?: unknown }> {
+    const provider = this.snapshot.parts.registry.get(channel) as { keyPool?: KeyPool } | undefined;
+    return provider?.keyPool?.snapshot() ?? [];
   }
 
   /** The current runtime generation (version, config, parts). */

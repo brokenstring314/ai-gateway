@@ -25,7 +25,10 @@ import { toGatewayError } from "./errors.js";
 import { TargetExecutor } from "./executor.js";
 import { mcpLoop } from "./mcp-loop.js";
 import { Pipeline, type RequestLogSink } from "./pipeline.js";
-import { createProviderFromTarget } from "./provider-presets.js";
+import { createProviderFromTarget, targetKeyEntries } from "./provider-presets.js";
+import { TargetLoad } from "../routing/balancer.js";
+import { type KeyPool, KeyStateRegistry } from "../routing/key-pool.js";
+import type { PublicHostGuard } from "../security/url-guard.js";
 import { buildStrategyConfig } from "./strategy-config.js";
 
 export interface GatewayParts {
@@ -46,6 +49,8 @@ export interface GatewayParts {
    * is unchanged: breaker state, in-flight limiter slots, rate-limit windows.
    */
   readonly carry: CarryState;
+  /** Key-state ids of every configured upstream key (KeyStateRegistry.retain after a reload). */
+  readonly keyStateIds: ReadonlySet<string>;
 }
 
 /** Stateful parts a reload reuses when the config that built them is unchanged. */
@@ -65,6 +70,12 @@ export interface AssemblyHooks {
   readonly mcpExecutor: () => McpExecutor | null;
   /** Request-log sinks at request time. */
   readonly logSinks: () => Iterable<RequestLogSink>;
+  /** Upstream key health across reloads (default: a fresh registry). */
+  readonly keyState?: KeyStateRegistry;
+  /** Requests in flight per target across reloads (least_inflight). */
+  readonly load?: TargetLoad;
+  /** SSRF guard for publicNetworkOnly targets (default: the shared one). */
+  readonly guard?: PublicHostGuard;
 }
 
 /**
@@ -99,8 +110,24 @@ export function assembleGateway(config: GatewayConfig, hooks: AssemblyHooks, pre
   const carriedLimiters = new Map<string, readonly [string, ConcurrencyLimiter]>();
   // Per-target retry, honored for every strategy (a target without one gets a single attempt).
   const retryConfigs = new Map<string, RetryConfig>();
+  const keyState = hooks.keyState ?? new KeyStateRegistry();
+  const load = hooks.load ?? new TargetLoad();
+  const keyStateIds = new Set<string>();
+  const pools = new Map<string, KeyPool>();
   for (const target of config.targets) {
-    registry.register(createProviderFromTarget(target, config.compatibility?.onUnsupportedParam));
+    // A disabled target is not registered: no traffic, bindings to it are skipped.
+    if (target.enabled === false) continue;
+    const provider = createProviderFromTarget(target, config.compatibility?.onUnsupportedParam, {
+      keyState,
+      ...(hooks.guard ? { guard: hooks.guard } : {}),
+    });
+    registry.register(provider);
+    if (provider.keyPool) pools.set(target.name, provider.keyPool);
+    for (const k of targetKeyEntries(target)) {
+      keyStateIds.add(
+        KeyStateRegistry.stateId(target.name, { id: k.id, key: "", weight: k.weight, revision: k.revision }),
+      );
+    }
     if (target.circuitBreaker) {
       const key = stableKey(target.circuitBreaker);
       const prev = previous?.carry.breakers.get(target.name);
@@ -132,10 +159,21 @@ export function assembleGateway(config: GatewayConfig, hooks: AssemblyHooks, pre
     retryConfig: (name) => retryConfigs.get(name),
     onAttemptFailure: (name, err) => metrics.recordProviderError(name, toGatewayError(err).kind),
     onBreakerSettled: (name, breaker: CircuitBreaker) => metrics.setCircuitBreakerState(name, breaker.getState()),
+    unavailable: (name) => {
+      const pool = pools.get(name);
+      if (!pool || pool.available()) return undefined;
+      try {
+        pool.acquire();
+        return undefined;
+      } catch (err) {
+        return err;
+      }
+    },
+    load,
   });
 
   const targets = new Map(config.targets.map((t) => [t.name, t]));
-  const catalog = new ModelCatalog(config, strategy, registry);
+  const catalog = new ModelCatalog(config, strategy, registry, load);
   const pipeline = new Pipeline({
     plugins,
     strategy,
@@ -162,6 +200,7 @@ export function assembleGateway(config: GatewayConfig, hooks: AssemblyHooks, pre
     pipeline,
     catalog,
     carry: { breakers: carriedBreakers, limiters: carriedLimiters, plugins: carriedPlugins },
+    keyStateIds,
   };
 }
 

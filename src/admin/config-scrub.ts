@@ -7,7 +7,7 @@
  * `"${A}sk-literal${B}"` is redacted too.
  *
  * Redacted:
- *   - targets[].apiKey, adminSecret, auth.keys[]
+ *   - targets[].apiKey, targets[].apiKeys[] (key text), adminSecret, auth.keys[]
  *   - URL credentials everywhere a URL appears (targets[].baseURL,
  *     observability.tracing.otlpEndpoint, URL strings inside plugin config):
  *     userinfo (`https://user:pass@host`) and the values of sensitive query
@@ -99,6 +99,13 @@ export function scrubConfig(config: GatewayConfig): GatewayConfig {
   for (const target of copy.targets ?? []) {
     if (typeof target.apiKey === "string" && target.apiKey !== "") {
       target.apiKey = redactString(target.apiKey);
+    }
+    if (Array.isArray(target.apiKeys)) {
+      target.apiKeys = target.apiKeys.map((k) =>
+        typeof k === "string"
+          ? redactString(k)
+          : { ...k, key: typeof k.key === "string" ? redactString(k.key) : REDACTED },
+      );
     }
     if (typeof target.baseURL === "string") {
       target.baseURL = scrubUrl(target.baseURL);

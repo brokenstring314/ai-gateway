@@ -175,6 +175,7 @@ export function adminAuthMiddleware(opts: AdminAuthMiddlewareOptions): Middlewar
     ) {
       c.set("apiKey", headerSecret);
       c.set("keyScopes", [SCOPE_ADMIN]);
+      setActor(c, "admin-secret");
       await next();
       return;
     }
@@ -195,6 +196,7 @@ export function adminAuthMiddleware(opts: AdminAuthMiddlewareOptions): Middlewar
     if (opts.adminSecret !== undefined && timingSafeEqual(token, opts.adminSecret)) {
       c.set("apiKey", token);
       c.set("keyScopes", [SCOPE_ADMIN]);
+      setActor(c, "admin-secret");
       await next();
       return;
     }
@@ -206,6 +208,7 @@ export function adminAuthMiddleware(opts: AdminAuthMiddlewareOptions): Middlewar
       // Key-store writes under a bootstrap credential re-check the latch in
       // their transaction (admin/key-handlers.ts).
       c.set("authMethod", "bootstrap");
+      setActor(c, "bootstrap-key");
       await next();
       return;
     }
@@ -216,6 +219,7 @@ export function adminAuthMiddleware(opts: AdminAuthMiddlewareOptions): Middlewar
     if (apiKey !== null && (apiKey.scopes.includes(SCOPE_ADMIN) || apiKey.scopes.includes(SCOPE_READ_ONLY))) {
       c.set("apiKey", token);
       c.set("keyScopes", apiKey.scopes);
+      setActor(c, `key:${apiKey.id}`);
       await next();
       return;
     }
@@ -237,6 +241,11 @@ export function adminAuthMiddleware(opts: AdminAuthMiddlewareOptions): Middlewar
 
     return adminUnauthorized(c);
   };
+}
+
+/** Who is acting, for audit logs: a label or key id, never the credential. */
+function setActor(c: Context, actor: string): void {
+  (c.set as unknown as (k: string, v: unknown) => void)("actor", actor);
 }
 
 function extractBearerToken(header: string | undefined): string | undefined {

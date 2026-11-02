@@ -16,11 +16,13 @@ import { scrubConfig } from "./config-scrub.js";
 export interface ConfigState {
   config: GatewayConfig;
   configPath?: string;
+  /** The live config (after runtime changes); default: `config`. */
+  current?: () => Readonly<GatewayConfig>;
 }
 
 /** GET /admin/config — current config with secrets scrubbed. */
 export function getConfigHandler(state: ConfigState) {
-  return (c: Context) => c.json({ config: scrubConfig(state.config) });
+  return (c: Context) => c.json({ config: scrubConfig((state.current?.() ?? state.config) as GatewayConfig) });
 }
 
 /** Removed write endpoints answer 410 with a migration hint instead of a bare 404. */

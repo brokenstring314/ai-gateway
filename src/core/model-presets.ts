@@ -46,3 +46,8 @@ const KNOWN: Readonly<Record<string, Readonly<Record<string, Known>>>> = {
 export function knownUpstreamModel(provider: string, model: string): Known | undefined {
   return KNOWN[presetId(provider)]?.[model];
 }
+
+/** Every documented upstream model of a provider preset (Admin API GET /presets). */
+export function knownUpstreamModels(provider: string): Readonly<Record<string, Known>> {
+  return KNOWN[presetId(provider)] ?? {};
+}

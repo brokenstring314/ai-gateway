@@ -32,10 +32,17 @@ import {
   addKeyHandler,
 } from "./key-handlers.js";
 import { getStatusHandler } from "./status-handlers.js";
+import type { ConfigStore } from "../persistence/config-store.js";
+import { registerRuntimeConfigApi, type RuntimeConfigApiOptions } from "./config-api.js";
+import { csrfGuard } from "./guards.js";
 import { type LogHandlerState, getLogsHandler, getLogsStatsHandler, deleteLogsHandler } from "./log-handlers.js";
 
 export interface AdminAppOptions {
   keyStore?: KeyStore;
+  /** Runtime config store (runtimeConfig.source: database); without it the config API is read-only. */
+  configStore?: ConfigStore;
+  /** Runtime-config API tuning (tests: DNS resolver, probe limits, backups). */
+  configApi?: Omit<RuntimeConfigApiOptions, "gateway" | "store" | "allowedOrigins">;
   logStore?: RequestLogStore;
   adminSecret?: string;
   bootstrapKey?: string;
@@ -100,17 +107,29 @@ export function createAdminApp(
       }
       c.set("apiKey", headerSecret);
       c.set("keyScopes", ["admin"]);
+      (c.set as unknown as (k: string, v: unknown) => void)("actor", "admin-secret");
       await next();
     });
   }
 
+  // Every state-changing admin request: no cross-site origin, JSON bodies only (admin/guards.ts).
+  app.use("*", csrfGuard({ allowedOrigins: () => config.cors?.origins }));
+
   const logState: LogHandlerState = { logStore: options?.logStore ?? null };
-  const configState: ConfigState = { config, configPath };
+  const configState: ConfigState = { config, configPath, current: () => gateway.getConfig() };
 
   // Console overview (scopes, breakers, MCP, request summary)
   app.get("/status", getStatusHandler(gateway));
 
-  // Config (read-only; the write API was removed in 0.2.0)
+  // Runtime config API (0.3.0 P4): channels, keys, models, settings, versions, audit, presets.
+  registerRuntimeConfigApi(app as never, {
+    ...(options?.configApi ?? {}),
+    gateway,
+    ...(options?.configStore ? { store: options.configStore } : {}),
+    allowedOrigins: () => config.cors?.origins,
+  });
+
+  // The whole running config (secrets scrubbed); the 0.2.0 write endpoints below stay removed.
   app.get("/config", getConfigHandler(configState));
   app.put("/config", removedConfigWriteHandler());
   app.delete("/config", removedConfigWriteHandler());
