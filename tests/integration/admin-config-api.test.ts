@@ -344,6 +344,8 @@ describe("SSRF: Admin API base URLs are public internet only", () => {
       const { r, body } = await createChannel(h, { baseURL: url });
       expect(r.status).toBe(422);
       expect(body.error.code).toBe("unsafe_base_url");
+      // P7 regression: the console places the refusal on the Base URL field.
+      expect(body.error.fields).toEqual([{ path: "baseURL", message: body.error.message }]);
     });
   }
 

@@ -1684,8 +1684,9 @@ tests/
 ├── integration/             # 进程内完整请求流程
 ├── regressions/             # 导入的 bug 复现，现为回归测试
 ├── types/                   # 测试用类型声明
-└── e2e/                     # 真实服务器 + mock 上游 + openai SDK（bun run test:e2e）
-scripts/                     # docker-smoke.sh, binary-smoke.sh, build-binaries.sh, release-notes.sh
+├── e2e/                     # 真实服务器 + mock 上游 + openai SDK（bun run test:e2e）
+└── browser/                 # Playwright：在 Chromium 里对真实服务器操作管理控制台（bun run test:browser）
+scripts/                     # smoke-real-deepseek.ts, docker-smoke.sh, binary-smoke.sh, build-binaries.sh, release-notes.sh
 ```
 
 ---
@@ -1699,6 +1700,8 @@ bun run dev              # 启动（文件监视，bun run --watch src/index.ts�
 bun run start            # 启动（无监视）
 bun run test             # 单元 + 集成 + 回归测试（bun test）
 bun run test:e2e         # E2E 契约测试：真实服务器、mock 上游、openai SDK
+bun run test:browser     # 浏览器 e2e：Playwright 在 Chromium 里操作管理控制台
+bun run smoke:real       # 可选：对真实 DeepSeek API 的冒烟测试（需要 DEEPSEEK_API_KEY）
 bun run test:watch       # 监视模式运行测试
 bun run typecheck        # tsc 类型检查（src）
 bun run typecheck:tests  # tsc 类型检查（tests）
@@ -1720,7 +1723,32 @@ bun test tests/unit/routing/fallback.test.ts
 
 # 监视模式
 bun run test:watch
+
+# 浏览器 e2e（Playwright + Chromium，仅开发依赖）
+bunx playwright install --with-deps chromium   # 首次
+bun run test:browser
+# arm64 Linux 没有 Playwright 的 Chromium 下载，改用系统 Chromium
+PLAYWRIGHT_CHROMIUM_EXECUTABLE=/usr/bin/chromium bun run test:browser
+
+# 真实 DeepSeek 冒烟（可选，约 6 次真实请求；没有 key 时跳过）
+DEEPSEEK_API_KEY=sk-... bun run smoke:real
 ```
+
+**浏览器 e2e**（`tests/browser/*.browser.ts`，`playwright.config.ts`）。每个测试文件启动自己的网关
+（`tests/browser/support/server.ts`：真实的 `bootstrap()`，临时数据目录和 `GATEWAY_SECRET_KEY`），以及进程内的假
+OpenAI 兼容上游（主机名在 `.upstream.test` 下）。渠道通过控制台创建，生产环境的 SSRF 防护不变：测试只通过仅供嵌入方使用的
+`hostResolver` 覆盖项把这些假主机名解析成公网地址，并在进程内应答。覆盖：登录（错误 key、权限不足、锁定、退出、会话失效 →
+回到登录页）、中英切换并保持、所有页面无控制台错误且**无 CSP 违规**（监听 `securitypolicyviolation`，有就失败）、渠道向导
+（选预设 → 填 key → 测试 → 拉模型 → 发布）后模型可在 `/v1` 调用、模型抽屉（元数据、用箭头和拖拽调整绑定顺序 →
+“已生效 · 版本 #N”，新顺序立即生效）、创建密钥（明文只显示一次）→ 调 `/v1` → 显示用量 → 额度用完（`403 quota_exhausted`）
+→ 调高 / 清零 / 吊销、两个页面同时编辑的 `409`“已被修改，请刷新”、服务端校验错误显示在字段上、用量图表、日志、Playground
+流式与停止、流进行中改配置（流照常结束）、版本对比与回滚（立即生效）、审计、会话列表与吊销（另一个浏览器被登出）、CSRF
+（Cookie 写请求不带 token → `403`）。CI 单独一个 job 运行，失败时上传 trace 和截图；release 复用 CI，所以发版需要它通过。
+
+**真实 DeepSeek 冒烟**（`scripts/smoke-real-deepseek.ts`，不在 CI 中运行）：通过 Admin API 创建 DeepSeek 渠道（公网 SSRF
+策略），测试连通、拉模型列表、发布一个模型（`SMOKE_MODEL`，默认 `deepseek-v4-flash`，没有则取列表中第一个 `flash`
+模型），检查未发布 → `404`、超限 `max_tokens` → `400`，用带额度的 key 做非流式和流式调用，检查用量计入、已放行的流结束时超出额度、
+下一次请求得到 `403 quota_exhausted`，并读取 `GET /admin/channels/:id/balance`。
 
 ---
 

@@ -4,6 +4,22 @@
 
 ### Added
 
+- Browser e2e (0.3.0 P7): `bun run test:browser` runs Playwright (`@playwright/test`, devDependency only, Chromium)
+  against the real server, one gateway per suite with a temporary data dir and an in-process fake upstream
+  (`tests/browser/`, `playwright.config.ts`). Covers sign-in / lockout / sign-out / session end, zh / en, no console
+  error and no CSP violation on any page, the channel wizard through to a served model, model drawer edit and binding
+  reorder (buttons and drag) live as “版本 #N”, key create → plaintext once → `/v1` → usage → quota exhausted → raise /
+  reset / revoke, `409` from two pages, field-level validation errors, usage charts, logs, Playground streaming and
+  stop, a config change during a running stream, versions diff and rollback, audit, session revoke, CSRF. New CI job
+  `browser` (uploads traces / screenshots on failure); releases reuse CI and so require it.
+  `PLAYWRIGHT_CHROMIUM_EXECUTABLE` selects a system Chromium (arm64 Linux has no Playwright download).
+- `bun run smoke:real` (`scripts/smoke-real-deepseek.ts`): opt-in smoke test against the real DeepSeek API (skipped
+  without `DEEPSEEK_API_KEY`, never run in CI): Admin API channel, test, fetch models, publish, non-stream and stream
+  chat through a key with a quota, usage counted, `403 quota_exhausted` after the admitted request finished,
+  unpublished → `404`, over-limit `max_tokens` → `400`, account balance.
+- `ServeOverrides.hostResolver` (embedders and test harnesses only; not reachable from the CLI, config file or
+  environment): the DNS resolver behind the Admin API channels' SSRF guard. The guard's address rules are unchanged.
+
 - Admin console rewrite (0.3.0 P6, plan §5, §9.3, §9.4): a Preact + Vite single-page app at `/admin/dashboard`,
   built at build time and embedded into the server (`src/dashboard/assets.generated.ts`), so binaries and the Docker
   image serve it with no files on disk and no new runtime dependency (preact, vite, @preact/preset-vite and happy-dom
@@ -174,6 +190,8 @@ now fail `ai-gateway validate` and startup with a migration hint:
 
 ### Fixed
 
+- A base URL refused by the SSRF guard (`422 unsafe_base_url`) now carries `fields: [{ path: "baseURL" }]`, so the
+  console shows the refusal on the Base URL field instead of only in a toast (found by the P7 browser e2e).
 - **Chat content parts `input_audio`, `file` and assistant `refusal` are accepted** and forwarded verbatim (they were rejected with 400 although valid OpenAI input). Other unknown part types are still rejected, so text cannot bypass word-filter or the PII/secret guard.
 - **SIGTERM cut every in-flight stream.** The drain counted a request as
   finished when its handler returned the SSE `Response`, before the body was

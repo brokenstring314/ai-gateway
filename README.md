@@ -1790,8 +1790,9 @@ tests/
 ├── integration/             # Full request flows in-process
 ├── regressions/             # Imported bug-hunt repros, now regression tests
 ├── types/                   # Type declarations used by tests
-└── e2e/                     # Real server + mock upstream + openai SDK (bun run test:e2e)
-scripts/                     # docker-smoke.sh, binary-smoke.sh, build-binaries.sh, release-notes.sh
+├── e2e/                     # Real server + mock upstream + openai SDK (bun run test:e2e)
+└── browser/                 # Playwright: the admin console in Chromium against the real server (bun run test:browser)
+scripts/                     # smoke-real-deepseek.ts, docker-smoke.sh, binary-smoke.sh, build-binaries.sh, release-notes.sh
 ```
 
 ---
@@ -1805,6 +1806,8 @@ bun run dev              # Start with file watching (bun run --watch src/index.t
 bun run start            # Start without watching
 bun run test             # Unit + integration + regression tests (bun test)
 bun run test:e2e         # E2E contract tests: real server, mock upstream, openai SDK
+bun run test:browser     # Browser e2e: Playwright drives the admin console in Chromium
+bun run smoke:real       # Opt-in smoke test against the real DeepSeek API (needs DEEPSEEK_API_KEY)
 bun run test:watch       # Run tests in watch mode
 bun run typecheck        # Type-check src with tsc
 bun run typecheck:tests  # Type-check tests
@@ -1826,7 +1829,37 @@ bun test tests/unit/routing/fallback.test.ts
 
 # Watch mode
 bun run test:watch
+
+# Browser e2e (Playwright, Chromium; devDependency only)
+bunx playwright install --with-deps chromium   # once
+bun run test:browser
+# arm64 Linux has no Playwright Chromium download: use the distro's Chromium instead
+PLAYWRIGHT_CHROMIUM_EXECUTABLE=/usr/bin/chromium bun run test:browser
+
+# Real DeepSeek smoke test (opt-in, ~6 real requests, skipped without the key)
+DEEPSEEK_API_KEY=sk-... bun run smoke:real
 ```
+
+**Browser e2e** (`tests/browser/*.browser.ts`, `playwright.config.ts`). Each suite starts its own gateway
+(`tests/browser/support/server.ts`: the real `bootstrap()` with a temporary data dir and `GATEWAY_SECRET_KEY`) and an
+in-process fake OpenAI-compatible upstream on host names under `.upstream.test`. Channels are created through the
+console with the production SSRF guard unchanged: the harness only passes the embedder-only `hostResolver` override so
+those fake names resolve to a public address, and answers them in-process. The suites click through sign-in (bad key,
+scope refusal, lockout, sign-out, session ended → sign-in page), the language switch, every page with no console error
+and **no CSP violation** (a `securitypolicyviolation` listener fails the test), the channel wizard (preset → key → test
+→ fetch models → publish) with the model then served on `/v1`, the model drawer (metadata, binding reorder by arrow
+buttons and by drag → “已生效 · 版本 #N” and the new order live), key creation (plaintext shown once) → `/v1` calls →
+usage shown → quota exhausted (`403 quota_exhausted`) → raise / reset / revoke, `409` “已被修改，请刷新” from two pages,
+server validation errors on their fields, usage charts, logs, Playground streaming with stop, a config change during a
+running stream (the stream finishes), versions diff + rollback (live), audit, session list + revoke (the other browser
+is signed out) and CSRF (a cookie write without the token is `403`). CI runs it in its own job and uploads traces and
+screenshots on failure; the release workflow reuses CI, so a release needs it green.
+
+**Real DeepSeek smoke** (`scripts/smoke-real-deepseek.ts`, never in CI): creates a DeepSeek channel through the Admin
+API (public SSRF policy), tests it, fetches the model list, publishes one model (`SMOKE_MODEL`, default
+`deepseek-v4-flash`, else the first `flash` model listed), checks unpublished → `404` and an over-limit `max_tokens` →
+`400`, chats non-stream and stream through a key with a quota, checks the usage counted, that the admitted stream ends
+past the quota and the next request gets `403 quota_exhausted`, and reads `GET /admin/channels/:id/balance`.
 
 ---
 

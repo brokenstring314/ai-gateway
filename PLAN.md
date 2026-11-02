@@ -19,9 +19,9 @@
 | **运行时** | Bun ≥ 1.4.3（`.bun-version`；1.3.x 的 fake timer 会让测试失败） |
 | **框架** | Hono |
 | **验证** | Zod（schema 即验证即类型；配置 schema 严格，未知键报错） |
-| **测试** | `bun test`（单元 + 集成 + 回归）与 `bun run test:e2e`（真实服务器 + mock 上游 + openai SDK） |
+| **测试** | `bun test`（单元 + 集成 + 回归）、`bun run test:e2e`（真实服务器 + mock 上游 + openai SDK）、`bun run test:browser`（Playwright 在 Chromium 里点通控制台，0.3.0 P7）；可选 `bun run smoke:real`（真实 DeepSeek 冒烟，不进 CI） |
 | **语言** | TypeScript strict mode（`strict: true`, `noUncheckedIndexedAccess`, `noImplicitOverride`） |
-| **CI** | `.github/workflows/ci.yml`：biome ci、typecheck（src + tests）、bun test、test:e2e、Docker 构建 + 冒烟；`release.yml`：打 tag 发布 GHCR 多架构镜像与 5 个平台的编译二进制 |
+| **CI** | `.github/workflows/ci.yml`：biome ci、typecheck（src + tests + console）、控制台构建是否过期、bun test、test:e2e、browser job（Playwright，失败上传 trace/截图）、Docker 构建 + 冒烟；`release.yml`：打 tag 发布 GHCR 多架构镜像与 5 个平台的编译二进制 |
 
 ## 2. 核心约束（不可违反）
 

@@ -99,7 +99,7 @@ with `422 unsafe_base_url`: loopback, private (10/8, 172.16/12, 192.168/16), lin
 `::`, `::1`, `fc00::/7`, `fe80::/10`, `fec0::/10`, multicast, documentation, and IPv4 embedded in IPv6
 (`::ffff:a.b.c.d`, NAT64, 6to4, Teredo); `localhost`, `*.local`, `*.internal`, `*.home.arpa`, single-label names;
 names resolving to any such address (every address must be public) or not resolving; credentials in the URL or
-its query. The check runs again before every upstream call of such a channel (DNS answers cached 30 s), so a name
+its query (the error carries `fields: [{ "path": "baseURL", … }]` so the console shows it on the field). The check runs again before every upstream call of such a channel (DNS answers cached 30 s), so a name
 re-pointed at a private address later (DNS rebinding) is refused at request time, and redirects are never
 followed. There is no switch for private networks yet; local model servers (Ollama, vLLM) can still be configured
 in the config file, which is trusted. An explicit opt-in for local/LAN services is on the roadmap.

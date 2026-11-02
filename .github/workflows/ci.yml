@@ -43,6 +43,32 @@ jobs:
       - name: e2e contract tests (real server + mock upstream + openai SDK)
         run: bun run test:e2e
 
+  browser:
+    # Playwright: the admin console in a real Chromium against the real server (tests/browser).
+    # release.yml reuses this workflow, so a release also needs this job green.
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+      - uses: oven-sh/setup-bun@v2
+        with:
+          bun-version-file: .bun-version
+      - run: bun install --frozen-lockfile
+      - name: install Chromium (with system deps)
+        run: bunx playwright install --with-deps chromium
+      - name: browser e2e (bun run test:browser)
+        run: bun run test:browser
+      - name: upload traces and screenshots
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: playwright-${{ github.run_id }}
+          path: |
+            test-results/
+            playwright-report/
+          retention-days: 7
+          if-no-files-found: ignore
+
   docker:
     runs-on: ubuntu-latest
     needs: check

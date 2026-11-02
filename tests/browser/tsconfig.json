@@ -1,0 +1,12 @@
+{
+  "extends": "../../tsconfig.json",
+  "compilerOptions": {
+    "rootDir": "../..",
+    "lib": ["ESNext", "DOM", "DOM.Iterable"],
+    "types": ["bun"],
+    "noUnusedLocals": false,
+    "noUnusedParameters": false
+  },
+  "include": ["./*.browser.ts", "./support/gateway.ts", "../../playwright.config.ts"],
+  "exclude": []
+}

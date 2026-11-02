@@ -211,7 +211,10 @@ function errorResponse(c: Context, err: unknown) {
   if (err instanceof BuildError) {
     return adminError(c, 422, "config_invalid", `The change was not applied: ${err.message}`);
   }
-  if (err instanceof UnsafeUrlError) return adminError(c, 422, "unsafe_base_url", err.message);
+  if (err instanceof UnsafeUrlError) {
+    // Placed on the form field by the console (it only ever comes from a base URL).
+    return adminError(c, 422, "unsafe_base_url", err.message, { fields: [{ path: "baseURL", message: err.message }] });
+  }
   if (err instanceof ConfigStoreError) return adminError(c, 422, "config_invalid", err.message);
   console.error(`[admin] config write failed: ${err instanceof Error ? err.stack : String(err)}`);
   return adminError(c, 500, "internal_error", "Internal error; the change was not applied");
@@ -227,11 +230,8 @@ function assertNoQueryCredential(url: string): void {
   }
   for (const name of parsed.searchParams.keys()) {
     if (isSensitiveConfigKey(name) || /^(sig|signature|code|pwd|pass|session|jwt|bearer)$/i.test(name)) {
-      throw new HttpError(
-        422,
-        "unsafe_base_url",
-        `baseURL must not carry a credential in its query ("${name}"); add the key as a channel key`,
-      );
+      const message = `baseURL must not carry a credential in its query ("${name}"); add the key as a channel key`;
+      throw new HttpError(422, "unsafe_base_url", message, { fields: [{ path: "baseURL", message }] });
     }
   }
 }

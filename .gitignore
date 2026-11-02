@@ -40,3 +40,7 @@ config.test.json
 # runtime data (SQLite databases)
 .data/
 console/dist/
+
+# playwright (browser e2e)
+test-results/
+playwright-report/

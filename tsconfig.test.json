@@ -5,6 +5,15 @@
     "noUnusedLocals": false,
     "noUnusedParameters": false
   },
-  "include": ["src/**/*.ts", "tests/**/*.ts"],
-  "exclude": ["node_modules", "tests/console"]
+  "include": [
+    "src/**/*.ts",
+    "tests/**/*.ts",
+    "scripts/smoke-real-deepseek.ts"
+  ],
+  "exclude": [
+    "node_modules",
+    "tests/console",
+    "tests/browser/*.browser.ts",
+    "tests/browser/support/gateway.ts"
+  ]
 }

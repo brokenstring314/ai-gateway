@@ -23,6 +23,7 @@ import {
   isClientAuthEnabled,
   authExposureWarning,
 } from "../config/production-safety.js";
+import { PublicHostGuard, type HostResolver } from "../security/url-guard.js";
 import { ShutdownManager } from "./shutdown.js";
 import { getRequestLogger, initRequestLogger } from "../observability/request-log.js";
 import { initOtel } from "../observability/otel.js";
@@ -38,6 +39,13 @@ export interface ServeOverrides {
   dataDir?: string;
   /** Install SIGTERM/SIGINT/SIGHUP handlers (default true; tests pass false). */
   installSignalHandlers?: boolean;
+  /**
+   * DNS resolver behind the SSRF guard of Admin API channels (embedders and
+   * test harnesses only: the browser e2e suite maps its fake upstream host
+   * names to a public address). Not reachable from the CLI, the config file
+   * or the environment; the guard's address rules are unchanged.
+   */
+  hostResolver?: HostResolver;
 }
 
 /** A started gateway server (see bootstrap()). */
@@ -122,7 +130,10 @@ export async function bootstrap(configPath: string, overrides: ServeOverrides = 
   // process's life (reloads included), persisted asynchronously by the recorder.
   const keyMeter = new KeyMeter();
   keyMeter.restore(keyStore.usedTokensByKey());
-  const gateway = new Gateway(config, { keyMeter });
+  const gateway = new Gateway(config, {
+    keyMeter,
+    ...(overrides.hostResolver ? { publicHostGuard: new PublicHostGuard(overrides.hostResolver) } : {}),
+  });
   const usageRecorder = new UsageRecorder({
     store: usageStore,
     meter: keyMeter,
@@ -177,6 +188,7 @@ export async function bootstrap(configPath: string, overrides: ServeOverrides = 
     ...(runtime.store ? { configStore: runtime.store } : {}),
     configApi: {
       backups: { keep: 5, minIntervalMs: parseEnvNumber(process.env["CONFIG_BACKUP_MIN_INTERVAL_MS"]) ?? 0 },
+      ...(overrides.hostResolver ? { resolver: overrides.hostResolver } : {}),
     },
     adminSecret: config.adminSecret,
     bootstrapKey: process.env["ADMIN_BOOTSTRAP_KEY"],
