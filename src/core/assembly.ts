@@ -15,7 +15,7 @@ import {
   type PluginRegistration,
 } from "../plugins/builtins/from-config.js";
 import { RateLimitPluginConfigSchema } from "../plugins/builtins/config-schemas.js";
-import type { KeyMeter } from "../usage/key-meter.js";
+import { type KeyMeter, reservationTtlMs } from "../usage/key-meter.js";
 import { PluginManager } from "../plugins/manager.js";
 import { ProviderRegistry } from "../providers/registry.js";
 import { CircuitBreaker, CircuitBreakerRegistry } from "../routing/circuit-breaker.js";
@@ -32,6 +32,8 @@ import { TargetLoad } from "../routing/balancer.js";
 import { type KeyPool, KeyStateRegistry } from "../routing/key-pool.js";
 import type { PublicHostGuard } from "../security/url-guard.js";
 import { buildStrategyConfig } from "./strategy-config.js";
+import { requestTimeoutMs } from "../middleware/request-timeout.js";
+import { streamMaxDurationMs } from "./stream-runner.js";
 
 export interface GatewayParts {
   readonly registry: ProviderRegistry;
@@ -204,6 +206,10 @@ export function assembleGateway(config: GatewayConfig, hooks: AssemblyHooks, pre
     ...(hooks.keyMeter ? { keyMeter: hooks.keyMeter } : {}),
     ...(globalTpm !== undefined ? { globalTpm } : {}),
     maxOutputTokens: config.limits?.maxOutputTokens ?? DEFAULT_MAX_OUTPUT_TOKENS,
+    reservationTtlMs: reservationTtlMs(
+      requestTimeoutMs(config.requestTimeout),
+      streamMaxDurationMs(config.server?.streamMaxDurationSeconds),
+    ),
   });
 
   return {

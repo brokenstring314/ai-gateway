@@ -68,6 +68,8 @@ export interface PipelineDeps {
   readonly globalTpm?: number;
   /** limits.maxOutputTokens: output ceiling for models without published metadata.maxOutputTokens (RB6). */
   readonly maxOutputTokens?: number;
+  /** TTL of an unsettled key-meter reservation: the request lifetime bound (usage/key-meter.ts reservationTtlMs). */
+  readonly reservationTtlMs?: number;
 }
 
 /** begin(): either a run to send upstream, or the request is already answered by a plugin. */
@@ -173,6 +175,7 @@ export class Pipeline {
       const unmetered = surface.name === "passthrough" || surface.name === "images";
       run.reservation = this.deps.keyMeter?.admit(ctx?.client, {
         ...(this.deps.globalTpm !== undefined ? { globalTpm: this.deps.globalTpm } : {}),
+        ...(this.deps.reservationTtlMs !== undefined ? { reservationTtlMs: this.deps.reservationTtlMs } : {}),
         // Routes whose usage is not in tokens: a key with a token quota cannot be metered there.
         unmetered,
         reserve: () => (unmetered ? 0 : this.reservationFor(surface, resolved)),

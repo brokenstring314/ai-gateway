@@ -21,6 +21,13 @@
  *    counts toward TPM (minute tokens + reserved < TPM). A reservation is
  *    released exactly once when the request settles (success, error, client
  *    cancel, failover): Pipeline.finalize;
+ *  - safety net for reservation leaks (RB3 follow-up): a reservation that is
+ *    never settled (a code path that skips finalize) expires on its own after
+ *    a TTL bound to the request lifetime — the longest a request can run
+ *    (requestTimeout / server.streamMaxDurationSeconds) plus a minute, or 1 h
+ *    when streams are unbounded. Expired reservations are swept lazily the
+ *    next time the key is admitted (no timer, no DB read); a late settle of
+ *    an expired reservation still counts its tokens and releases nothing twice;
  *  - a request that was admitted always finishes — a stream is never cut
  *    for quota. Its tokens (estimated when the upstream sends no usage) are
  *    counted when it completes, so the last request(s), and requests that
@@ -66,9 +73,16 @@ interface KeyCounters {
   minuteStart: number;
   minuteRequests: number;
   minuteTokens: number;
-  /** Tokens reserved by admitted requests still in flight (RB3). */
+  /** Tokens reserved by admitted requests still in flight (RB3): the sum of `open`. */
   reserved: number;
+  /** Reservations not yet released, for the lazy TTL sweep. */
+  open: Set<Reservation>;
+  /** Earliest expiresAt in `open` (Infinity when empty): the sweep is skipped until then. */
+  nextExpiry: number;
 }
+
+/** Reservation TTL when the request lifetime is unbounded (streams without streamMaxDurationSeconds). */
+export const DEFAULT_RESERVATION_TTL_MS = 3_600_000;
 
 /** Tokens an admitted request holds until it settles (KeyMeter.settle). */
 export interface Reservation {
@@ -76,6 +90,10 @@ export interface Reservation {
   readonly tokens: number;
   /** Set once settled: a second settle is a no-op. */
   settled: boolean;
+  /** When the leak sweep releases it if it was never settled (epoch ms). */
+  readonly expiresAt: number;
+  /** Set once its tokens left the key's reserved total (settled or expired). */
+  released: boolean;
 }
 
 export interface AdmitOptions {
@@ -88,6 +106,12 @@ export interface AdmitOptions {
    * output cap). Only called for a key with a quota or a TPM.
    */
   readonly reserve?: () => number;
+  /**
+   * How long an unsettled reservation may hold tokens before the leak sweep
+   * releases it (ms; default DEFAULT_RESERVATION_TTL_MS). Pipeline passes the
+   * request lifetime bound (see reservationTtlMs()).
+   */
+  readonly reservationTtlMs?: number;
   readonly now?: number;
 }
 
@@ -95,6 +119,8 @@ export class KeyMeter {
   private readonly keys = new Map<string, KeyCounters>();
   /** Keys whose used tokens changed since the last drain (persisted by the recorder). */
   private readonly dirty = new Set<string>();
+  /** Reservations released by the leak sweep since start (observability, tests). */
+  private expiredCount = 0;
 
   /**
    * Restore persisted used-token counters (startup). Keys the meter already
@@ -123,6 +149,7 @@ export class KeyMeter {
     if (quota === null && (limits?.rpm ?? null) === null && tpm === undefined) return undefined;
     const now = opts.now ?? Date.now();
     const c = this.counters(id, key?.persistedUsed, now);
+    this.sweep(id, c, now);
 
     if (quota !== null) {
       if (opts.unmetered === true) {
@@ -164,8 +191,15 @@ export class KeyMeter {
     if (quota === null && !hasTpm) return undefined;
     const want = opts.reserve?.() ?? 0;
     const tokens = Number.isFinite(want) && want > 0 ? Math.ceil(want) : 0;
-    c.reserved += tokens;
-    return { id, tokens, settled: false };
+    const ttl = opts.reservationTtlMs;
+    const ttlMs = ttl !== undefined && Number.isFinite(ttl) && ttl > 0 ? ttl : DEFAULT_RESERVATION_TTL_MS;
+    const r: Reservation = { id, tokens, settled: false, expiresAt: now + ttlMs, released: tokens === 0 };
+    if (tokens > 0) {
+      c.reserved += tokens;
+      c.open.add(r);
+      if (r.expiresAt < c.nextExpiry) c.nextExpiry = r.expiresAt;
+    }
+    return r;
   }
 
   /**
@@ -176,15 +210,66 @@ export class KeyMeter {
     if (reservation) {
       if (reservation.settled) return;
       reservation.settled = true;
-      const c = this.keys.get(reservation.id);
-      if (c) c.reserved = Math.max(0, c.reserved - reservation.tokens);
+      this.release(reservation);
     }
     this.record(key, tokens, now);
   }
 
-  /** Tokens currently reserved by a key's in-flight requests (0 when unknown). */
-  reserved(id: string): number {
-    return this.keys.get(id)?.reserved ?? 0;
+  /** Tokens currently reserved by a key's in-flight requests (0 when unknown); sweeps expired ones first. */
+  reserved(id: string, now: number = Date.now()): number {
+    const c = this.keys.get(id);
+    if (!c) return 0;
+    this.sweep(id, c, now);
+    return c.reserved;
+  }
+
+  /** Reservations the leak sweep released because they were never settled (since start). */
+  expiredReservations(): number {
+    return this.expiredCount;
+  }
+
+  /** Take a reservation's tokens out of its key's reserved total, once (settle or sweep). */
+  private release(r: Reservation): void {
+    if (r.released) return;
+    r.released = true;
+    const c = this.keys.get(r.id);
+    if (!c || !c.open.delete(r)) return;
+    c.reserved = Math.max(0, c.reserved - r.tokens);
+    if (c.open.size === 0) {
+      c.reserved = 0;
+      c.nextExpiry = Number.POSITIVE_INFINITY;
+    }
+  }
+
+  /**
+   * Release reservations past their TTL (leak safety net). O(1) until the
+   * earliest one expires, then one pass over the key's open reservations.
+   */
+  private sweep(id: string, c: KeyCounters, now: number): void {
+    if (now < c.nextExpiry) return;
+    let next = Number.POSITIVE_INFINITY;
+    let expired = 0;
+    let tokens = 0;
+    for (const r of c.open) {
+      if (r.expiresAt <= now) {
+        c.open.delete(r);
+        r.released = true;
+        c.reserved = Math.max(0, c.reserved - r.tokens);
+        expired++;
+        tokens += r.tokens;
+      } else if (r.expiresAt < next) {
+        next = r.expiresAt;
+      }
+    }
+    if (c.open.size === 0) c.reserved = 0;
+    c.nextExpiry = next;
+    if (expired > 0) {
+      this.expiredCount += expired;
+      console.warn(
+        `[key-meter] released ${expired} reservation(s) (${tokens} tokens) of key ${id || "(none)"} ` +
+          "that were never settled (TTL expired)",
+      );
+    }
   }
 
   /**
@@ -211,9 +296,13 @@ export class KeyMeter {
 
   /** Forget a key's usage (operator reset): used tokens and the current minute window (in-flight reservations stay). */
   reset(id: string): void {
-    const reserved = this.keys.get(id)?.reserved ?? 0;
+    const old = this.keys.get(id);
     const c = newCounters(0);
-    c.reserved = reserved;
+    if (old) {
+      c.reserved = old.reserved;
+      c.open = old.open;
+      c.nextExpiry = old.nextExpiry;
+    }
     this.keys.set(id, c);
     this.dirty.delete(id);
   }
@@ -251,7 +340,15 @@ export class KeyMeter {
 }
 
 function newCounters(used: number, now = 0): KeyCounters {
-  return { used: Math.max(0, used), minuteStart: now, minuteRequests: 0, minuteTokens: 0, reserved: 0 };
+  return {
+    used: Math.max(0, used),
+    minuteStart: now,
+    minuteRequests: 0,
+    minuteTokens: 0,
+    reserved: 0,
+    open: new Set(),
+    nextExpiry: Number.POSITIVE_INFINITY,
+  };
 }
 
 function roll(c: KeyCounters, now: number): void {
@@ -260,4 +357,15 @@ function roll(c: KeyCounters, now: number): void {
     c.minuteRequests = 0;
     c.minuteTokens = 0;
   }
+}
+
+/**
+ * TTL of an unsettled reservation from the request lifetime bounds: the
+ * longest a request may legitimately run (non-streaming: requestTimeout;
+ * streaming: server.streamMaxDurationSeconds) plus a one-minute grace, or
+ * DEFAULT_RESERVATION_TTL_MS (1 h) when streams are unbounded (0 / unset).
+ */
+export function reservationTtlMs(requestTimeoutMs: number, streamMaxDurationMs: number): number {
+  if (!(streamMaxDurationMs > 0)) return DEFAULT_RESERVATION_TTL_MS;
+  return Math.max(requestTimeoutMs > 0 ? requestTimeoutMs : 0, streamMaxDurationMs) + 60_000;
 }

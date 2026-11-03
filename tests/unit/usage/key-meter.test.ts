@@ -2,7 +2,7 @@ import { describe, expect, it } from "bun:test";
 import { Database } from "bun:sqlite";
 import { GatewayError } from "@/core/errors";
 import { KeyStore } from "@/persistence/key-store";
-import { KeyMeter, type MeteredKey } from "@/usage/key-meter";
+import { DEFAULT_RESERVATION_TTL_MS, KeyMeter, type MeteredKey, reservationTtlMs } from "@/usage/key-meter";
 import { UsageRecorder } from "@/usage/recorder";
 import { UsageStore } from "@/usage/usage-store";
 
@@ -214,5 +214,66 @@ describe("KeyMeter: in-flight reservations (RB3)", () => {
     const e = refused(() => m.admit(k, { reserve: () => 1 }));
     expect(e.status).toBe(429);
     expect(e.code).toBe("rate_limit_exceeded");
+  });
+});
+
+describe("KeyMeter: reservation leak safety net (RB3 follow-up)", () => {
+  it("a reservation never settled expires after its TTL; the sweep runs lazily on the next admit", () => {
+    const m = new KeyMeter();
+    const k = key("leak1", { quotaTokens: 1000 });
+    const t0 = 1_000_000;
+    m.admit(k, { reserve: () => 1000, reservationTtlMs: 5_000, now: t0 }); // never settled (leaked)
+    expect(m.reserved("leak1", t0)).toBe(1000);
+    // Still inside the TTL: the leaked reservation holds the rest of the quota.
+    expect(refused(() => m.admit(k, { reserve: () => 100, reservationTtlMs: 5_000, now: t0 + 4_999 })).code).toBe(
+      "quota_in_flight",
+    );
+    // TTL passed: released on the next admit, which is admitted.
+    const r = m.admit(k, { reserve: () => 100, reservationTtlMs: 5_000, now: t0 + 5_000 });
+    expect(r?.tokens).toBe(100);
+    expect(m.reserved("leak1", t0 + 5_000)).toBe(100);
+    expect(m.expiredReservations()).toBe(1);
+    expect(m.used("leak1")).toBe(0);
+  });
+
+  it("a late settle of an expired reservation counts its tokens and releases nothing twice", () => {
+    const m = new KeyMeter();
+    const k = key("leak2", { quotaTokens: 10_000 });
+    const t0 = 2_000_000;
+    const old = m.admit(k, { reserve: () => 500, reservationTtlMs: 1_000, now: t0 });
+    const live = m.admit(k, { reserve: () => 300, reservationTtlMs: 60_000, now: t0 });
+    expect(m.reserved("leak2", t0 + 1_000)).toBe(300); // old swept, live kept
+    m.settle(k, old, 42, t0 + 1_500);
+    expect(m.reserved("leak2", t0 + 1_500)).toBe(300);
+    expect(m.used("leak2")).toBe(42);
+    m.settle(k, live, 8, t0 + 1_600);
+    expect(m.reserved("leak2", t0 + 1_600)).toBe(0);
+    expect(m.used("leak2")).toBe(50);
+    expect(m.expiredReservations()).toBe(1);
+  });
+
+  it("reset keeps open reservations and their TTL; TPM reservations expire too", () => {
+    const m = new KeyMeter();
+    const t0 = 3_000_000;
+    const q = key("leak3", { quotaTokens: 10_000 });
+    m.admit(q, { reserve: () => 700, reservationTtlMs: 1_000, now: t0 });
+    m.reset("leak3");
+    expect(m.reserved("leak3", t0 + 999)).toBe(700);
+    expect(m.reserved("leak3", t0 + 1_000)).toBe(0);
+    const t = key("leak4", { tpm: 1000 });
+    m.admit(t, { reserve: () => 1000, reservationTtlMs: 1_000, now: t0 });
+    expect(refused(() => m.admit(t, { reserve: () => 1, now: t0 + 10 })).code).toBe("rate_limit_exceeded");
+    expect(m.admit(t, { reserve: () => 1, now: t0 + 1_000 })?.tokens).toBe(1);
+  });
+
+  it("default TTL is 1 h; reservationTtlMs() bounds it by the request lifetime", () => {
+    const m = new KeyMeter();
+    const k = key("leak5", { quotaTokens: 1000 });
+    const r = m.admit(k, { reserve: () => 10, now: 0 });
+    expect(r?.expiresAt).toBe(DEFAULT_RESERVATION_TTL_MS);
+    expect(DEFAULT_RESERVATION_TTL_MS).toBe(3_600_000);
+    expect(reservationTtlMs(30_000, 0)).toBe(3_600_000); // unbounded streams
+    expect(reservationTtlMs(30_000, 600_000)).toBe(660_000);
+    expect(reservationTtlMs(900_000, 600_000)).toBe(960_000);
   });
 });

@@ -10,8 +10,13 @@ import { createTimeoutReason } from "../core/outcome.js";
 
 const DEFAULT_TIMEOUT_MS = 30_000; // 30 seconds
 
+/** The request timeout in ms (`requestTimeout`, default 30 s); an invalid string throws. */
+export function requestTimeoutMs(timeout?: string): number {
+  return timeout ? parseDurationOrThrow("requestTimeout", timeout) : DEFAULT_TIMEOUT_MS;
+}
+
 export function requestTimeoutMiddleware(timeout?: string): MiddlewareHandler {
-  const timeoutMs = timeout ? parseDurationOrThrow("requestTimeout", timeout) : DEFAULT_TIMEOUT_MS;
+  const timeoutMs = requestTimeoutMs(timeout);
 
   return async function requestTimeout(c, next) {
     const controller = new AbortController();

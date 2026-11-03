@@ -8,8 +8,14 @@
  * is admitted only while used + reserved < quota (429 quota_in_flight
  * otherwise); reservations are released on success, error, client cancel and
  * failover. The same reservation counts toward TPM.
+ *
+ * Safety net (follow-up): a reservation that is never settled — a stream
+ * iterator dropped without return(), so finalize never runs — expires after
+ * the request lifetime bound (max(requestTimeout, streamMaxDurationSeconds)
+ * + 60 s, or 1 h when streams are unbounded) and is swept on the key's next
+ * admit, instead of holding the quota forever.
  */
-import { afterEach, describe, expect, it } from "bun:test";
+import { afterEach, describe, expect, it, setSystemTime } from "bun:test";
 import type { StreamChunk } from "@/providers/types";
 import { chatJson, chunk, fakeFetch, makeGateway, meteredClient, sse, target } from "./_review";
 
@@ -125,5 +131,43 @@ describe("RB3 quota reservations", () => {
     expect(results.filter((r) => r === "200")).toHaveLength(4);
     expect(results.filter((r) => r === "429 rate_limit_exceeded")).toHaveLength(6);
     expect(gw.keyMeter().reserved("rb3t")).toBe(0);
+  });
+
+  it("a reservation whose request never finalizes is released after the request-lifetime TTL", async () => {
+    const f = fakeFetch((_u, _i, body) =>
+      body?.stream === true
+        ? new Response(sse([chunk("hello"), chunk(" world", "stop")]), {
+            headers: { "content-type": "text/event-stream" },
+          })
+        : chatJson("ok", { prompt_tokens: 5, completion_tokens: 1, total_tokens: 6 }),
+    );
+    restore = f.restore;
+    try {
+      const { gw } = makeGateway({
+        strategy: { mode: "single" },
+        targets: [target("a")],
+        requestTimeout: "30s",
+        server: { streamMaxDurationSeconds: 120 },
+      });
+      const ctx = { metadata: {}, client: meteredClient("rb3leak", 1000) };
+      // Admitted, first chunk read, then the iterator is abandoned: finalize never runs.
+      const leaked = gw.routeStream(ctx as never, { model: "m", messages: msg, maxTokens: 995, stream: true });
+      expect(((await leaked.next()).value as StreamChunk).choices[0]?.delta?.content).toBe("hello");
+      expect(gw.keyMeter().reserved("rb3leak")).toBeGreaterThanOrEqual(1000);
+      const req = { model: "m", messages: msg, maxTokens: 50 };
+      expect(await outcome(gw.route(ctx as never, req))).toBe("429 quota_in_flight");
+
+      // TTL = max(30 s, 120 s) + 60 s = 180 s. Just before: still held.
+      const t0 = Date.now();
+      setSystemTime(new Date(t0 + 179_000));
+      expect(gw.keyMeter().reserved("rb3leak")).toBeGreaterThanOrEqual(1000);
+      setSystemTime(new Date(t0 + 181_000));
+      expect(gw.keyMeter().reserved("rb3leak")).toBe(0);
+      expect(gw.keyMeter().expiredReservations()).toBe(1);
+      expect(await outcome(gw.route(ctx as never, req))).toBe("200");
+      expect(gw.keyMeter().reserved("rb3leak")).toBe(0);
+    } finally {
+      setSystemTime();
+    }
   });
 });
