@@ -224,6 +224,12 @@ const D = {
   "s.aliasTo": ["指向模型", "Model"],
   "s.plugins": ["插件（JSON）", "Plugins (JSON)"],
   "s.rateLimit": ["全局限流", "Global rate limit"],
+  "s.limits": ["请求上限", "Request limits"],
+  "s.maxOutputTokens": ["最大输出 token（全局）", "Max output tokens (global)"],
+  "s.maxOutputTokensHint": [
+    "适用于未在元数据中声明 maxOutputTokens 的模型；超过即 400 拒绝，不截断。留空 = 默认 65536。",
+    "For models whose metadata has no maxOutputTokens; a larger max_tokens is rejected with 400, never clamped. Empty = default 65536.",
+  ],
   "s.rpm": ["每 key 每分钟请求数", "Requests per minute per key"],
   "s.tpm": ["每 key 每分钟 token", "Tokens per minute per key"],
   "s.modelSource": ["模型来源", "Model source"],

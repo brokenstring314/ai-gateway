@@ -65,6 +65,8 @@ export interface PipelineDeps {
   readonly keyMeter?: KeyMeter;
   /** TPM for keys without their own: the rate-limit plugin's maxTokensPerMinute. */
   readonly globalTpm?: number;
+  /** limits.maxOutputTokens: output ceiling for models without published metadata.maxOutputTokens (RB6). */
+  readonly maxOutputTokens?: number;
 }
 
 /** begin(): either a run to send upstream, or the request is already answered by a plugin. */
@@ -266,9 +268,16 @@ export class Pipeline {
     const entry = this.deps.catalog.lookup(model);
     if (!entry) return req;
     if (surface.name === "chat") {
-      return enforceChatPolicy(req as unknown as ChatCompletionRequest, entry.metadata, model) as unknown as Req;
+      return enforceChatPolicy(
+        req as unknown as ChatCompletionRequest,
+        entry.metadata,
+        model,
+        this.deps.maxOutputTokens,
+      ) as unknown as Req;
     }
-    if (surface.name === "completions") checkLimits(surface.toPluginView(req), entry.metadata, model);
+    if (surface.name === "completions") {
+      checkLimits(surface.toPluginView(req), entry.metadata, model, this.deps.maxOutputTokens);
+    }
     return req;
   }
 

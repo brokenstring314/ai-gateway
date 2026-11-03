@@ -4,7 +4,7 @@
  * (src/gateway.ts) owns the result; nothing here runs a request.
  */
 
-import type { GatewayConfig, RetryConfig } from "../config/types.js";
+import { DEFAULT_MAX_OUTPUT_TOKENS, type GatewayConfig, type RetryConfig } from "../config/types.js";
 import { assertConfigReferences } from "../config/validate.js";
 import type { McpExecutor } from "../mcp/executor.js";
 import { getMetrics } from "../metrics/metrics.js";
@@ -203,6 +203,7 @@ export function assembleGateway(config: GatewayConfig, hooks: AssemblyHooks, pre
     logSinks: hooks.logSinks,
     ...(hooks.keyMeter ? { keyMeter: hooks.keyMeter } : {}),
     ...(globalTpm !== undefined ? { globalTpm } : {}),
+    maxOutputTokens: config.limits?.maxOutputTokens ?? DEFAULT_MAX_OUTPUT_TOKENS,
   });
 
   return {

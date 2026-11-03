@@ -263,10 +263,15 @@ describe("known upstream models", () => {
     expect(bad({ contextWindow: 128_000, maxOutputTokens: 8192 })).not.toThrow();
   });
 
-  it("an unknown upstream stays unchecked", async () => {
+  it("an unknown upstream has no metadata checks but the global output limit (RB6)", async () => {
     const g = new Gateway(config());
     expect(g.modelCatalog().lookup("plain")?.metadata).toBeUndefined();
-    await g.route(ctx(), chat("plain", { maxTokens: 10_000_000 }));
+    await expect(g.route(ctx(), chat("plain", { maxTokens: 10_000_000 }))).rejects.toMatchObject({
+      status: 400,
+      code: "max_tokens_exceeded",
+    });
+    expect(bodies.length).toBe(0);
+    await g.route(ctx(), chat("plain", { maxTokens: 65_536 }));
     expect(bodies.length).toBe(1);
   });
 });

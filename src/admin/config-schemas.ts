@@ -10,6 +10,7 @@ import {
   CompatibilityConfigSchema,
   ConcurrencyConfigSchema,
   KEY_STRATEGIES,
+  LimitsConfigSchema,
   ModelMetadataSchema,
   PluginConfigSchema,
   RetryConfigSchema,
@@ -144,6 +145,7 @@ export const SettingsPatchSchema = strictObject({
   aliases: z.record(z.string().min(1).max(200), z.string().min(1).max(200)).optional(),
   plugins: z.array(PluginConfigSchema).max(100).optional(),
   compatibility: CompatibilityConfigSchema.nullable().optional(),
+  limits: LimitsConfigSchema.nullable().optional(),
   modelSource: z.enum(["explicit", "derived"]).optional(),
 });
 

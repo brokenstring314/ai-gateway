@@ -48,19 +48,34 @@ const MODALITY_LABEL: Record<Modality, string> = {
   pdf: "file/PDF",
 };
 
-/** Output-token limit and context window checks; shared by chat and legacy completions. */
-export function checkLimits(req: ChatCompletionRequest, meta: ModelMetadata | undefined, model: string): void {
-  if (!meta) return;
+/**
+ * Output-token limit and context window checks; shared by chat and legacy
+ * completions. A model without a published maxOutputTokens is held to the
+ * gateway-wide `globalMaxOutputTokens` (limits.maxOutputTokens, review
+ * 2026-11-02 RB6): over it is a 400, never clamped.
+ */
+export function checkLimits(
+  req: ChatCompletionRequest,
+  meta: ModelMetadata | undefined,
+  model: string,
+  globalMaxOutputTokens?: number,
+): void {
   const requested = req.maxCompletionTokens ?? req.maxTokens;
   const param = req.maxCompletionTokens !== undefined ? "max_completion_tokens" : "max_tokens";
-  if (meta.maxOutputTokens !== undefined && requested !== undefined && requested > meta.maxOutputTokens) {
+  const own = meta?.maxOutputTokens;
+  const limit = own ?? globalMaxOutputTokens;
+  if (limit !== undefined && requested !== undefined && requested > limit) {
     throw invalidRequest(
-      `${param} is ${requested}, but the model "${model}" outputs at most ${meta.maxOutputTokens} tokens. ` +
-        `Set ${param} to ${meta.maxOutputTokens} or less.`,
+      own !== undefined
+        ? `${param} is ${requested}, but the model "${model}" outputs at most ${own} tokens. ` +
+            `Set ${param} to ${own} or less.`
+        : `${param} is ${requested}, but this gateway allows at most ${limit} output tokens per request ` +
+            `for the model "${model}" (limits.maxOutputTokens). Set ${param} to ${limit} or less.`,
       "max_tokens_exceeded",
       param,
     );
   }
+  if (!meta) return;
   if (meta.contextWindow !== undefined) {
     const input = estimatePromptTokens(req);
     const total = input + (requested ?? 0);
@@ -92,6 +107,7 @@ export function enforceChatPolicy(
   req: ChatCompletionRequest,
   meta: ModelMetadata | undefined,
   model: string,
+  globalMaxOutputTokens?: number,
 ): ChatCompletionRequest {
   let out = req;
   const m = meta ?? {};
@@ -103,9 +119,8 @@ export function enforceChatPolicy(
       messages: out.messages.map((msg) => (msg.role === "developer" ? { ...msg, role: "system" } : msg)),
     };
   }
+  checkLimits(out, meta, model, globalMaxOutputTokens);
   if (!meta) return out;
-
-  checkLimits(out, meta, model);
 
   // Input types.
   if (meta.inputModalities !== undefined) {

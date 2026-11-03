@@ -189,6 +189,13 @@ export interface McpServerConfig {
   required?: boolean;
 }
 
+export interface LimitsConfig {
+  maxOutputTokens?: number;
+}
+
+/** Output-token ceiling for models without published metadata.maxOutputTokens (limits.maxOutputTokens). */
+export const DEFAULT_MAX_OUTPUT_TOKENS = 65_536;
+
 export interface GatewayConfig {
   apiVersion?: string;
   strategy: StrategyConfig;
@@ -207,6 +214,16 @@ export interface GatewayConfig {
   mcpServers?: McpServerConfig[];
   observability?: ObservabilityConfig;
   compatibility?: CompatibilityConfig;
+  /**
+   * Request limits that apply to every published model (review 2026-11-02
+   * RB6). maxOutputTokens: the largest max_tokens / max_completion_tokens a
+   * request may ask for on a model whose metadata publishes no
+   * maxOutputTokens (default DEFAULT_MAX_OUTPUT_TOKENS = 65536); a larger
+   * value is rejected with 400 max_tokens_exceeded, never clamped. A model's
+   * own metadata.maxOutputTokens always wins. A runtime section (database
+   * mode: imported once, then PATCH /admin/settings).
+   */
+  limits?: LimitsConfig;
   server?: {
     port?: number;
     host?: string;

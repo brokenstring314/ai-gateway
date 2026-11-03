@@ -271,6 +271,10 @@ export const CompatibilityConfigSchema = strictObject({
 const MCP_HTTP_REMOVED =
   "MCP http transport is not supported (removed in 0.2.0; it was never implemented): use a stdio server (command/args)";
 
+export const LimitsConfigSchema = strictObject({
+  maxOutputTokens: z.number().int().positive().max(100_000_000).optional(),
+});
+
 export const McpServerConfigSchema = strictObject({
   name: z.string().min(1),
   type: z.string().optional(),
@@ -323,6 +327,8 @@ export const GatewayConfigSchema = strictObject({
   mcpServers: z.array(McpServerConfigSchema).optional(),
   observability: ObservabilityConfigSchema.optional(),
   compatibility: CompatibilityConfigSchema.optional(),
+  // Request limits for models without their own metadata (RB6): max output tokens.
+  limits: LimitsConfigSchema.optional(),
   server: strictObject({
     port: z.number().int().positive().optional().default(3000),
     host: z.string().optional().default("0.0.0.0"),

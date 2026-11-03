@@ -37,9 +37,19 @@ import { type MigrationStep, runMigrations } from "./migrations.js";
 const LEDGER = "config_schema_migrations";
 
 /** Top-level config sections that live in the store (everything else is startup config). */
-export const RUNTIME_SECTIONS = ["targets", "models", "strategy", "aliases", "plugins", "compatibility"] as const;
-export type SettingKey = "strategy" | "aliases" | "plugins" | "compatibility";
-const SETTING_KEYS: readonly SettingKey[] = ["strategy", "aliases", "plugins", "compatibility"];
+export const RUNTIME_SECTIONS = [
+  "targets",
+  "models",
+  "strategy",
+  "aliases",
+  "plugins",
+  "compatibility",
+  "limits",
+] as const;
+export type SettingKey = "strategy" | "aliases" | "plugins" | "compatibility" | "limits";
+const SETTING_KEYS: readonly SettingKey[] = ["strategy", "aliases", "plugins", "compatibility", "limits"];
+/** Runtime sections added later: hashed only when set, so an older import's hash still matches. */
+const HASH_WHEN_SET: ReadonlySet<string> = new Set(["limits"]);
 
 const ENV_REF_ONLY = /^\$\{[A-Za-z_][A-Za-z0-9_]*\}$/;
 
@@ -294,6 +304,8 @@ export interface SettingsView {
   readonly aliases: Readonly<Record<string, string>>;
   readonly plugins: readonly unknown[];
   readonly compatibility: unknown | null;
+  /** Request limits for models without their own metadata ({} = defaults). */
+  readonly limits: Readonly<Record<string, unknown>>;
   /** explicit: the models section is the published list; derived: targets[].models are published. */
   readonly modelSource: "explicit" | "derived";
   readonly revision: number;
@@ -405,7 +417,11 @@ async function sha256Hex(text: string): Promise<string> {
 /** Hash of a config's runtime sections, to tell whether the YAML changed since it was imported. */
 export async function runtimeSectionsHash(config: GatewayConfig): Promise<string> {
   const sections: Record<string, unknown> = {};
-  for (const key of RUNTIME_SECTIONS) sections[key] = (config as unknown as Record<string, unknown>)[key] ?? null;
+  for (const key of RUNTIME_SECTIONS) {
+    const value = (config as unknown as Record<string, unknown>)[key];
+    if (value === undefined && HASH_WHEN_SET.has(key)) continue;
+    sections[key] = value ?? null;
+  }
   return sha256Hex(stableKey(sections));
 }
 
@@ -799,6 +815,7 @@ export class ConfigStore {
       aliases: (settings.get("aliases") as Record<string, string> | undefined) ?? {},
       plugins: (settings.get("plugins") as unknown[] | undefined) ?? [],
       compatibility: settings.get("compatibility") ?? null,
+      limits: (settings.get("limits") as Record<string, unknown> | undefined) ?? {},
       modelSource: this.getMeta("models_explicit") === "1" ? "explicit" : "derived",
       revision: Number(this.getMeta("settings_revision") ?? "1"),
     };

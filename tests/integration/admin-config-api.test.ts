@@ -535,6 +535,33 @@ describe("settings, versions, rollback", () => {
     expect(stale.status).toBe(409);
   });
 
+  it("limits.maxOutputTokens via PATCH /settings applies at once (RB6); null restores the default", async () => {
+    const h = await adminHarness(explicitFile());
+    const send = (maxTokens: number) =>
+      h.app.request("/v1/chat/completions", {
+        method: "POST",
+        headers: { authorization: `Bearer ${h.keys.inference}`, "content-type": "application/json" },
+        body: JSON.stringify({ model: "gpt-x", messages: [{ role: "user", content: "hi" }], max_tokens: maxTokens }),
+      });
+    const s = await json(await h.admin("GET", "/settings"));
+    expect(s.limits).toEqual({});
+    expect((await send(9_999_999)).status).toBe(400);
+    const r = await h.admin("PATCH", "/settings", { limits: { maxOutputTokens: 500 } }, { ifMatch: s.revision });
+    expect(r.status).toBe(200);
+    const after = await json(r);
+    expect(after.limits).toEqual({ maxOutputTokens: 500 });
+    const over = await send(501);
+    expect(over.status).toBe(400);
+    expect((await json(over)).error).toMatchObject({ code: "max_tokens_exceeded", param: "max_tokens" });
+    expect((await send(500)).status).toBe(200);
+    expect(
+      (await h.admin("PATCH", "/settings", { limits: { maxOutputTokens: 0 } }, { ifMatch: after.revision })).status,
+    ).toBe(400);
+    const reset = await h.admin("PATCH", "/settings", { limits: null }, { ifMatch: after.revision });
+    expect((await json(reset)).limits).toEqual({});
+    expect((await send(65_536)).status).toBe(200);
+  });
+
   it("rollback restores an earlier version (If-Match = head), revisions keep growing", async () => {
     const h = await adminHarness(explicitFile());
     const head0 = (await json(await h.admin("GET", "/config/versions"))).head;

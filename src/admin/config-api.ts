@@ -1187,6 +1187,7 @@ export function registerRuntimeConfigApi(app: Hono<never>, opts: RuntimeConfigAp
         aliases: config.aliases ?? {},
         plugins: config.plugins ?? [],
         compatibility: config.compatibility ?? null,
+        limits: config.limits ?? {},
         modelSource: config.models !== undefined ? "explicit" : "derived",
         revision: 0,
       };
@@ -1230,6 +1231,10 @@ export function registerRuntimeConfigApi(app: Hono<never>, opts: RuntimeConfigAp
           if (body.plugins !== undefined)
             s.writeSetting("plugins", body.plugins.length > 0 ? body.plugins : null, v, now);
           if (body.compatibility !== undefined) s.writeSetting("compatibility", body.compatibility, v, now);
+          if (body.limits !== undefined) {
+            const limits = body.limits === null ? {} : body.limits;
+            s.writeSetting("limits", Object.keys(limits).length > 0 ? limits : null, v, now);
+          }
           if (body.modelSource !== undefined && body.modelSource !== s.getSettings().modelSource) {
             if (body.modelSource === "explicit") s.materializeDerivedModels(v, now);
             else s.setModelSource("derived");

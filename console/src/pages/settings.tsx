@@ -10,6 +10,7 @@ interface Settings {
   aliases: Record<string, string>;
   plugins: Array<{ name: string; stage?: string; enabled?: boolean; config?: Record<string, unknown> }>;
   compatibility: unknown;
+  limits?: { maxOutputTokens?: number };
   modelSource: "explicit" | "derived";
   revision: number;
   readOnly?: boolean;
@@ -67,6 +68,7 @@ export function SettingsPage(props: PageProps) {
   const [pluginsText, setPluginsText] = useState("");
   const [rpm, setRpm] = useState("");
   const [tpm, setTpm] = useState("");
+  const [maxOut, setMaxOut] = useState("");
   const [errors, setErrors] = useState<FieldErrors>({});
   const ro = !props.canWrite || s.data?.readOnly === true;
 
@@ -79,6 +81,8 @@ export function SettingsPage(props: PageProps) {
     const tk = rl["maxTokensPerMinute"] ?? rl["tpm"];
     setRpm(typeof r === "number" ? String(r) : "");
     setTpm(typeof tk === "number" ? String(tk) : "");
+    const mo = s.data.limits?.maxOutputTokens;
+    setMaxOut(typeof mo === "number" ? String(mo) : "");
   }, [s.data]);
 
   const patch = async (body: Record<string, unknown>) => {
@@ -212,6 +216,34 @@ export function SettingsPage(props: PageProps) {
                     plugins: withRateLimit(s.data?.plugins ?? [], rpm ? Number(rpm) : null, tpm ? Number(tpm) : null),
                   })
                 }
+              >
+                {t("save")}
+              </button>
+            ) : null}
+          </section>
+
+          <section class="card">
+            <h2>{t("s.limits")}</h2>
+            <Field
+              label={t("s.maxOutputTokens")}
+              error={errors["limits.maxOutputTokens"] ?? errors["limits"]}
+              hint={t("s.maxOutputTokensHint")}
+            >
+              <input
+                type="number"
+                min="1"
+                data-testid="max-output-tokens"
+                value={maxOut}
+                disabled={ro}
+                placeholder="65536"
+                onInput={(e) => setMaxOut((e.currentTarget as HTMLInputElement).value)}
+              />
+            </Field>
+            {!ro ? (
+              <button
+                type="button"
+                class="primary"
+                onClick={() => void patch({ limits: maxOut ? { maxOutputTokens: Number(maxOut) } : null })}
               >
                 {t("save")}
               </button>
