@@ -256,7 +256,17 @@ describe("config file: model balancing", () => {
         { name: "m", strategy: "loadbalance", balance: "least_inflight", bindings: [{ target: "a" }, { target: "b" }] },
       ],
     });
-    await Promise.all(Array.from({ length: 10 }, () => g.route(ctx(), chat("m"))));
+    // Requests must really overlap in flight, and each must be routed after the previous one
+    // is counted: a burst started in one tick picks its order before any attempt is counted
+    // (all ties, i.e. random), and an instant fake upstream let a slow CI runner finish them
+    // one by one (CI flake). Hold every answer 200 ms and start them 5 ms apart.
+    up.delayMs = 200;
+    const runs: Promise<unknown>[] = [];
+    for (let i = 0; i < 10; i++) {
+      runs.push(g.route(ctx(), chat("m")));
+      await Bun.sleep(5);
+    }
+    await Promise.all(runs);
     const a = up.hits("a.upstream.test").length;
     expect(a).toBeGreaterThanOrEqual(3);
     expect(a).toBeLessThanOrEqual(7);

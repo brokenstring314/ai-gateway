@@ -350,7 +350,12 @@ test("versions: diff with previous, rollback → live; audit list shows the writ
   await headRow.getByRole("button", { name: "与上一版对比" }).click();
   const diff = page.getByRole("dialog", { name: `#${head - 1} → #${head}` });
   await expect(diff.locator(".diff > div").first()).toBeVisible();
-  await page.keyboard.press("Escape");
+  // The dialog may not have its key handler yet on a slow runner: press until it is gone
+  // (CI flake: the still-open diff dialog intercepted the rollback click until the timeout).
+  await expect(async () => {
+    await page.keyboard.press("Escape");
+    await expect(diff).toBeHidden({ timeout: 1000 });
+  }).toPass({ timeout: 10_000 });
 
   // Find the version before beta's binding moved to the top (description "edited in B" came later):
   // roll back to the version right after the wizard created beta → fake-chat served by alpha, no display name.

@@ -35,6 +35,8 @@ export class FakeUpstreams {
   private readonly queues = new Map<string, Reply[]>();
   /** Per host: answer by Authorization header (e.g. a revoked key). */
   readonly byAuth = new Map<string, (auth: string | null) => Reply | undefined>();
+  /** Answer every call after this many ms (requests overlap in flight); reset() clears it. */
+  delayMs = 0;
   private original: typeof fetch | undefined;
 
   enqueue(host: string, ...replies: Reply[]): void {
@@ -45,6 +47,7 @@ export class FakeUpstreams {
     this.calls.length = 0;
     this.queues.clear();
     this.byAuth.clear();
+    this.delayMs = 0;
   }
 
   hits(host: string): UpstreamCall[] {
@@ -76,6 +79,7 @@ export class FakeUpstreams {
     }
     const call: UpstreamCall = { host: url.hostname, path: url.pathname, auth: headers.get("authorization"), body };
     this.calls.push(call);
+    if (this.delayMs > 0) await Bun.sleep(this.delayMs);
     const reply = this.byAuth.get(url.hostname)?.(call.auth) ?? this.queues.get(url.hostname)?.shift() ?? 200;
     const r = typeof reply === "number" ? { status: reply } : reply;
     if (r.status !== 200 || r.body !== undefined || r.text !== undefined) {
