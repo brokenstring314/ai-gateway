@@ -242,6 +242,16 @@ function presetOrThrow(preset: string, baseURL: string | null | undefined, name:
 }
 
 /** The URL a channel will call: its own, else its preset's default. */
+/** Scheme + host + port of a URL (the raw text when it does not parse; undefined stays undefined). */
+function originOf(url: string | undefined): string | undefined {
+  if (url === undefined) return undefined;
+  try {
+    return new URL(url).origin.toLowerCase();
+  } catch {
+    return url;
+  }
+}
+
 function effectiveBaseURL(preset: string, baseURL: string | null | undefined): string | undefined {
   if (baseURL) return baseURL;
   return getPreset(preset)?.baseURL;
@@ -546,13 +556,30 @@ export function registerRuntimeConfigApi(app: Hono<never>, opts: RuntimeConfigAp
       const preset = body.preset ?? current.preset;
       const baseURL = body.baseURL !== undefined ? body.baseURL : (current.baseURL ?? null);
       const urlChanged = body.preset !== undefined || body.baseURL !== undefined;
+      const oldOrigin = originOf(effectiveBaseURL(current.preset, current.baseURL));
+      let newOrigin = oldOrigin;
       if (urlChanged) {
         presetOrThrow(preset, baseURL, body.name ?? current.name);
         const url = effectiveBaseURL(preset, baseURL);
         if (url === undefined) throw new HttpError(422, "config_invalid", "the channel needs a baseURL");
         assertNoQueryCredential(url);
         await assertPublicUrl(url, resolver);
+        newOrigin = originOf(url);
       }
+      // RC1 / RC2 (red team 2026-11-02): the stored keys (encrypted, or an
+      // env reference resolved on use) were sent to whatever origin the base
+      // URL was changed to, e.g. by channel test / fetch-models / balance.
+      // Moving a channel to another origin now requires its keys again.
+      const originChanged = newOrigin !== oldOrigin;
+      if (originChanged && current.keys.length > 0 && body.apiKeys === undefined) {
+        const message =
+          `Changing the channel's base URL to another origin (${scrubOptional(newOrigin) ?? "?"}) requires its API key(s) ` +
+          'again in the same request ("apiKeys": [{"key": "…"}]): stored keys are never sent to a new origin.';
+        throw new HttpError(400, "api_keys_required_on_base_url_change", message, {
+          fields: [{ path: "apiKeys", message }],
+        });
+      }
+      const replacedKeys = body.apiKeys !== undefined ? await prepareKeys(s, id, body.apiKeys) : undefined;
       let settings: Record<string, unknown> | undefined;
       if (body.settings !== undefined || body.keyStrategy !== undefined || body.keyCooldownSeconds !== undefined) {
         const base: Record<string, unknown> =
@@ -577,10 +604,30 @@ export function registerRuntimeConfigApi(app: Hono<never>, opts: RuntimeConfigAp
           resourceType: "channel",
           resourceId: id,
           summary: `Update channel "${current.name}" (${fields.join(", ") || "no fields"})`,
-          detail: { fields, ...(urlChanged ? { baseURL: scrubOptional(baseURL), preset } : {}) },
+          detail: {
+            fields,
+            ...(urlChanged ? { baseURL: scrubOptional(baseURL), preset } : {}),
+            ...(originChanged
+              ? { originChange: { from: scrubOptional(oldOrigin) ?? null, to: scrubOptional(newOrigin) ?? null } }
+              : {}),
+            ...(replacedKeys
+              ? {
+                  keysReplaced: {
+                    removed: current.keys.map((k) => ({ id: k.id, hint: k.hint })),
+                    added: replacedKeys.map((k) => ({ id: k.id, hint: k.hint })),
+                  },
+                }
+              : {}),
+          },
         },
         (v, now) => {
           s.expectRevision("channels", id, expected, "channel");
+          if (replacedKeys) {
+            s.deleteChannelKeyRows(id);
+            replacedKeys.forEach((k, i) => {
+              s.insertKeyRow(id, k, i, v, now);
+            });
+          }
           s.updateChannelRow(
             id,
             {
@@ -597,6 +644,7 @@ export function registerRuntimeConfigApi(app: Hono<never>, opts: RuntimeConfigAp
             now,
           );
         },
+        replacedKeys ?? [],
       );
       return respondChannel(c, s, id, version);
     }),

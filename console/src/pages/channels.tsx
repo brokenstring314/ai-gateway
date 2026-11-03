@@ -228,12 +228,36 @@ export function ChannelsPage(props: PageProps) {
 
 // ── Edit drawer: settings and keys ──
 
+/** Scheme + host + port of a base URL ("" = the preset default; unparsable text as typed). */
+export function originOf(url: string): string {
+  if (url.trim() === "") return "";
+  try {
+    return new URL(url.trim()).origin.toLowerCase();
+  } catch {
+    return url.trim();
+  }
+}
+
+/**
+ * Whether saving `next` as the base URL moves a channel with stored keys to
+ * another origin: then the API requires the key(s) again (RC1), since stored
+ * keys are never sent to a new origin.
+ */
+export function needsKeysForBaseURL(current: string | null, next: string, storedKeys: number): boolean {
+  if (storedKeys === 0) return false;
+  const before = current ?? "";
+  if (next.trim() === before.trim()) return false;
+  return originOf(next) !== originOf(before);
+}
+
 function ChannelDrawer(props: { id: string; canWrite: boolean; onClose: () => void }) {
   const ch = useLoad(() => get<Channel>(`/channels/${encodeURIComponent(props.id)}`), [props.id]);
   const [form, setForm] = useState<Record<string, string | boolean>>({});
   const [errors, setErrors] = useState<FieldErrors>({});
   const [newKeys, setNewKeys] = useState("");
+  const [reKeys, setReKeys] = useState("");
   const c = ch.data;
+  const needKeys = c ? needsKeysForBaseURL(c.baseURL, String(form["baseURL"] ?? ""), c.keys.length) : false;
   useEffect(() => {
     if (!c) return;
     setForm({
@@ -278,6 +302,15 @@ function ChannelDrawer(props: { id: string; canWrite: boolean; onClose: () => vo
             onSubmit={async (e) => {
               e.preventDefault();
               const cd = String(form["keyCooldownSeconds"] ?? "");
+              const apiKeys = reKeys
+                .split("\n")
+                .map((s) => s.trim())
+                .filter(Boolean)
+                .map((key) => ({ key }));
+              if (needKeys && apiKeys.length === 0) {
+                setErrors({ apiKeys: t("ch.rekeyRequired") });
+                return;
+              }
               const body = {
                 name: form["name"],
                 baseURL: String(form["baseURL"] ?? "") === "" ? null : form["baseURL"],
@@ -288,6 +321,7 @@ function ChannelDrawer(props: { id: string; canWrite: boolean; onClose: () => vo
                 models: String(form["models"] ?? "")
                   .split(/\s*[\n,]\s*/)
                   .filter(Boolean),
+                ...(needKeys ? { apiKeys } : {}),
               };
               try {
                 const r = await api(`/channels/${encodeURIComponent(c.id)}`, {
@@ -296,10 +330,15 @@ function ChannelDrawer(props: { id: string; canWrite: boolean; onClose: () => vo
                   revision: c.revision,
                 });
                 setErrors({});
+                setReKeys("");
                 savedToast(r);
                 ch.reload();
               } catch (err) {
-                setErrors(failed(err));
+                const fe = failed(err);
+                if (err instanceof ApiError && err.code === "api_keys_required_on_base_url_change") {
+                  fe["apiKeys"] = t("ch.rekeyRequired");
+                }
+                setErrors(fe);
               }
             }}
           >
@@ -314,6 +353,24 @@ function ChannelDrawer(props: { id: string; canWrite: boolean; onClose: () => vo
                 placeholder={c.effectiveBaseURL ?? ""}
               />
             </Field>
+            {needKeys || errors["apiKeys"] ? (
+              <div class="rekey" data-testid="rekey">
+                <p class="error-box" role="note">
+                  {t("ch.rekeyNotice", { n: String(c.keys.length) })}
+                </p>
+                <Field label={t("ch.rekeyLabel")} error={errors["apiKeys"]} hint={t("ch.keysHint")}>
+                  <textarea
+                    rows={2}
+                    name="apiKeys"
+                    value={reKeys}
+                    autocomplete="off"
+                    spellcheck={false}
+                    disabled={!props.canWrite}
+                    onInput={(e) => setReKeys((e.currentTarget as HTMLTextAreaElement).value)}
+                  />
+                </Field>
+              </div>
+            ) : null}
             <Field label={t("ch.priority")} error={errors["priority"]}>
               <input
                 type="number"

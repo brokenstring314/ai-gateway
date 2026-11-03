@@ -377,7 +377,13 @@ describe("SSRF: Admin API base URLs are public internet only", () => {
     const a = (await json(await h.admin("GET", "/channels"))).data.find((c: { name: string }) => c.name === "a");
     expect(a.urlPolicy).toBe("trusted");
     const r = await json(
-      await h.admin("PATCH", `/channels/${a.id}`, { baseURL: "https://a2.upstream.test/v1" }, { ifMatch: a.revision }),
+      await h.admin(
+        "PATCH",
+        `/channels/${a.id}`,
+        // A new origin needs its key(s) again (RC1).
+        { baseURL: "https://a2.upstream.test/v1", apiKeys: [{ key: NEW_KEY_1 }] },
+        { ifMatch: a.revision },
+      ),
     );
     expect(r.urlPolicy).toBe("public");
   });
@@ -395,7 +401,7 @@ describe("SSRF: Admin API base URLs are public internet only", () => {
     await h.admin(
       "PATCH",
       `/channels/${c.id}`,
-      { baseURL: "https://rebind.upstream.test/v1" },
+      { baseURL: "https://rebind.upstream.test/v1", apiKeys: [{ key: NEW_KEY_1 }] },
       { ifMatch: c.revision },
     );
     expect((await h.chat("gpt-x")).status).toBe(200);

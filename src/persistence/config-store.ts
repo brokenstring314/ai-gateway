@@ -1212,6 +1212,15 @@ export class ConfigStore {
     this.db.query(`UPDATE channel_keys SET ${sets.join(", ")} WHERE id = ?`).run(...args, keyId);
   }
 
+  /**
+   * Delete every key row of a channel (keys replaced on an origin change,
+   * RC1). The decrypted cache entries are kept: they are keyed by random id,
+   * and a rolled-back transaction still needs them.
+   */
+  deleteChannelKeyRows(channelId: string): void {
+    this.db.query("DELETE FROM channel_keys WHERE channel_id = ?").run(channelId);
+  }
+
   deleteKeyRow(keyId: string): void {
     this.db.query("DELETE FROM channel_keys WHERE id = ?").run(keyId);
     this.keyCache.delete(keyId);

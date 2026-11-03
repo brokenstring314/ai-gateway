@@ -86,6 +86,12 @@ export const ChannelPatchSchema = strictObject({
   keyStrategy: channelFields.keyStrategy.nullable(),
   keyCooldownSeconds: channelFields.keyCooldownSeconds.nullable(),
   settings: channelFields.settings,
+  /**
+   * Replace every upstream key of the channel (RC1). Required when the
+   * change moves the channel to another origin (scheme, host, port) and the
+   * channel has stored keys: stored keys are never sent to a new origin.
+   */
+  apiKeys: z.array(NewKeySchema).max(100).optional(),
 });
 
 export const KeysAddSchema = strictObject({

@@ -97,6 +97,15 @@ const D = {
   "ch.balance": ["余额", "Balance"],
   "ch.balanceHint": ["上游账户余额，仅供参考，便于及时充值", "Upstream account balance, informational only"],
   "ch.addKeys": ["添加 key", "Add keys"],
+  "ch.rekeyNotice": [
+    "Base URL 改到了另一个地址（协议/域名/端口不同）。出于安全考虑，已保存的 {n} 个 key 不会发往新地址：请在下方重新输入新地址使用的 key，保存后将替换全部旧 key。",
+    "The base URL moves to another origin (scheme, host or port). For safety the {n} saved key(s) are never sent to a new origin: enter the key(s) for the new address below; saving replaces all old keys.",
+  ],
+  "ch.rekeyLabel": ["新地址的 key（必填）", "Keys for the new address (required)"],
+  "ch.rekeyRequired": [
+    "更换到新地址时必须重新输入至少一个 key",
+    "Enter at least one key: a new origin needs its key(s) again",
+  ],
   "ch.enable": ["启用", "Enable"],
   "ch.disable": ["停用", "Disable"],
   "ch.weight": ["权重", "Weight"],
