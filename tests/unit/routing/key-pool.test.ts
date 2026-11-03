@@ -61,7 +61,7 @@ describe("KeyPool selection", () => {
 });
 
 describe("KeyPool health", () => {
-  it("429 cools the key down for Retry-After seconds (capped at 1h), else the channel default", () => {
+  it("429 cools the key down for Retry-After seconds (capped at keyCooldownSeconds), else the channel default", () => {
     let t = 1_000_000;
     const { p, events } = pool("round_robin", keys(1, 1), () => t);
     expect(p.report("k0", 429, "7", "429: rate limited")).toBe(true);
@@ -71,18 +71,20 @@ describe("KeyPool health", () => {
     expect(new Set([1, 2, 3, 4].map(() => p.acquire().id))).toEqual(new Set(["k0", "k1"]));
     p.report("k1", 429, null, "429");
     expect(events.at(-1)).toMatchObject({ kind: "cooldown", keyId: "k1", seconds: 30 });
+    // RB5: an upstream Retry-After never parks a key longer than keyCooldownSeconds.
     p.report("k0", 429, "999999", "429");
-    expect(events.at(-1)).toMatchObject({ kind: "cooldown", keyId: "k0", seconds: 3600 });
+    expect(events.at(-1)).toMatchObject({ kind: "cooldown", keyId: "k0", seconds: 30 });
   });
 
-  it("every key cooling: NoUsableKeyError carries the shortest wait", () => {
+  it("every key cooling: still usable (soft, RB5); excluded ones give NoUsableKeyError with the shortest wait", () => {
     const t = 1_000_000;
     const { p } = pool("round_robin", keys(1, 1), () => t);
     p.report("k0", 429, "20", "429");
     p.report("k1", 429, "5", "429");
-    expect(p.available()).toBe(false);
+    expect(p.available()).toBe(true);
+    expect(["k0", "k1"]).toContain(p.acquire().id);
     try {
-      p.acquire();
+      p.acquire(new Set(["k0", "k1"]));
       throw new Error("expected NoUsableKeyError");
     } catch (err) {
       expect(err).toBeInstanceOf(NoUsableKeyError);

@@ -10,9 +10,13 @@
  *
  * Key health, all in memory (the hot path never reads the database):
  *  - upstream 429: the key cools down for Retry-After seconds when the
- *    upstream sent one (capped at one hour), else the channel's
- *    keyCooldownSeconds (default 30), and the request moves on to the
- *    channel's next usable key;
+ *    upstream sent one, else the channel's keyCooldownSeconds (default 30),
+ *    and never longer than keyCooldownSeconds; the request moves on to the
+ *    channel's next usable key. The cooldown is SOFT (review 2026-11-02
+ *    RB5): any client can make a shared key hit an upstream rate limit, so
+ *    a channel whose other keys are all unusable still uses a cooling key
+ *    rather than answering 503 no_upstream_key to everyone — one 429 never
+ *    takes a channel down. A success on the key ends its cooldown;
  *  - upstream 402: NOT a permanent disable (review 2026-11-02 C7: some
  *    upstreams answer 402 for a property of the request — OpenRouter's
  *    "requires more credits, or fewer max_tokens", or credit held by
@@ -69,7 +73,7 @@ export interface PoolKey {
 export interface KeyState {
   /** Epoch ms until which the key is cooling down after a 429 / 402. */
   cooldownUntil: number;
-  /** The cooldown is a 402's: soft (used when no other key is usable). */
+  /** The cooldown is soft (used when no other key is usable): every 429 / 402 cooldown. */
   softCooldown?: boolean;
   /** Consecutive account-level 402s since the last success. */
   paymentFailures?: { count: number; since: number };
@@ -287,7 +291,7 @@ export class KeyPool {
       // DISABLE_AFTER_402 consecutive account-level 402s: out of credit.
     }
     if (httpStatus === 429) {
-      const capped = this.cooldown(s, retryAfter, error, false);
+      const capped = this.cooldown(s, retryAfter, error, true);
       this.registry.emit({ kind: "cooldown", channel: this.channel, keyId: id, seconds: capped, at, httpStatus });
       return true;
     }
@@ -311,11 +315,16 @@ export class KeyPool {
     return false;
   }
 
-  /** Cool a key down for Retry-After (else the channel's default), capped; returns the seconds. */
+  /**
+   * Cool a key down for Retry-After (else the channel's keyCooldownSeconds),
+   * never longer than keyCooldownSeconds (RB5: an upstream's Retry-After of
+   * minutes or an hour no longer parks a shared key); returns the seconds.
+   */
   private cooldown(s: KeyState, retryAfter: string | null | undefined, error: string, soft: boolean): number {
     const t = this.now();
-    const seconds = parseRetryAfter(retryAfter, t) ?? this.cooldownSeconds;
-    const capped = Math.min(MAX_KEY_COOLDOWN_SECONDS, Math.max(1, seconds));
+    const limit = Math.min(MAX_KEY_COOLDOWN_SECONDS, Math.max(1, this.cooldownSeconds));
+    const seconds = parseRetryAfter(retryAfter, t) ?? limit;
+    const capped = Math.min(limit, Math.max(1, seconds));
     const until = t + capped * 1000;
     // A soft (402) cooldown never shortens or softens a running 429 cooldown.
     if (soft && s.cooldownUntil > t && !s.softCooldown) {

@@ -78,17 +78,16 @@ describe("errors", () => {
   });
 
   // round-2 / B3-7 (fixed in 2.1).
-  it("upstream 429 -> 429 with Retry-After; the key then cools down (0.3.0 P4)", async () => {
+  it("upstream 429 -> 429 with Retry-After; the cooldown is soft, the next request is still served (RB5)", async () => {
     up.enqueue("429");
     const r = await postJson(gw, "/v1/chat/completions", { model: "gpt-4o", messages });
     expect(r.status).toBe(429);
     expect(r.headers.get("retry-after")).toBe("7");
-    // The channel's only key respects Retry-After: the next request is answered
-    // 429 without reaching the upstream.
+    // The channel's only key is cooling down, but softly: one client's 429
+    // never answers everyone else 429 / 503, the next request reaches the upstream.
     const again = await postJson(gw, "/v1/chat/completions", { model: "gpt-4o", messages });
-    expect(again.status).toBe(429);
-    expect(Number(again.headers.get("retry-after"))).toBeGreaterThan(0);
-    expect(up.requests).toHaveLength(1);
+    expect(again.status).toBe(200);
+    expect(up.requests).toHaveLength(2);
     // Fresh process for the following tests (no cooling key).
     await gw.stop();
     gw = await startGateway({

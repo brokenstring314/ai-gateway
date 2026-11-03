@@ -65,10 +65,11 @@ describe("402 handling (C7)", () => {
     expect(new Set([1, 2].map(() => p.acquire().id))).toEqual(new Set(["k0", "k1"]));
   });
 
-  it("honours Retry-After, capped at one hour", () => {
+  it("honours Retry-After, capped at the channel's keyCooldownSeconds (RB5)", () => {
     const { p, events } = pool(1);
     p.report("k0", 402, "999999", ACCOUNT);
-    expect(events[0]).toMatchObject({ seconds: MAX_KEY_COOLDOWN_SECONDS });
+    expect(events[0]).toMatchObject({ seconds: 30 });
+    expect(30).toBeLessThan(MAX_KEY_COOLDOWN_SECONDS);
   });
 
   it(`${DISABLE_AFTER_402} consecutive account-level 402s disable the key (quota)`, () => {
@@ -105,12 +106,14 @@ describe("402 handling (C7)", () => {
     expect(p.available()).toBe(true);
   });
 
-  it("a 402 does not soften a running 429 cooldown", () => {
+  it("429 and 402 cooldowns are both soft: the only key stays usable as a last resort (RB5)", () => {
     const { p } = pool(1);
     p.report("k0", 429, "60", "429: slow down");
     p.report("k0", 402, "1", ACCOUNT);
-    expect(p.available()).toBe(false);
-    expect(() => p.acquire()).toThrow(NoUsableKeyError);
+    expect(p.available()).toBe(true);
+    expect(p.acquire().id).toBe("k0");
+    // Excluded (already tried by this request): no key left.
+    expect(() => p.acquire(new Set(["k0"]))).toThrow(NoUsableKeyError);
   });
 
   it("401 still disables at once", () => {

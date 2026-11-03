@@ -90,7 +90,8 @@ describe("config file: apiKeys", () => {
       "Bearer sk-k2-bbbb", // same request, next key
       "Bearer sk-k2-bbbb", // k1 still cooling down
     ]);
-    expect(events).toEqual([expect.objectContaining({ kind: "cooldown", channel: "a", seconds: 60 })]);
+    // Retry-After 60 is capped at keyCooldownSeconds (default 30, RB5).
+    expect(events).toEqual([expect.objectContaining({ kind: "cooldown", channel: "a", seconds: 30 })]);
   });
 
   it("402 cools a key, 401 disables one; the channel fails only when every key is out, then the next channel serves", async () => {
@@ -132,18 +133,19 @@ describe("config file: apiKeys", () => {
     expect((await g.route(ctx(), chat("m"))).choices[0]?.message?.content).toBe("a:m");
   });
 
-  it("every key cooling down on the only channel: 429 with the remaining Retry-After, no upstream call", async () => {
+  it("429 on the only key of the only channel: the next request still reaches the upstream (soft cooldown, RB5)", async () => {
     const { g } = gateway({
       strategy: { mode: "single" },
       targets: [target("a", { apiKey: "sk-only-0000", keyCooldownSeconds: 45 })],
     });
-    up.enqueue("a.upstream.test", 429);
-    await expect(g.route(ctx(), chat("m"))).rejects.toMatchObject({ statusCode: 429 });
+    up.enqueue("a.upstream.test", { status: 429, headers: { "Retry-After": "120" } });
+    const first = toGatewayError(await g.route(ctx(), chat("m")).catch((e: unknown) => e));
+    expect(first).toMatchObject({ status: 429 });
     up.reset();
-    const err = toGatewayError(await g.route(ctx(), chat("m")).catch((e: unknown) => e));
-    expect(err).toMatchObject({ status: 429, code: "upstream_rate_limited" });
-    expect(Number((err as { retryAfter: string }).retryAfter)).toBeGreaterThan(40);
-    expect(up.calls).toHaveLength(0);
+    // Never 503 no_upstream_key, and no gateway-made 429 for everyone else.
+    const r = await g.route(ctx(), chat("m"));
+    expect(r.choices[0]?.message?.content).toBe("a:m");
+    expect(up.calls).toHaveLength(1);
   });
 
   it("a channel whose keys are all disabled answers 503 no_upstream_key", async () => {

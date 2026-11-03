@@ -54,20 +54,24 @@ const TARGET_CAUSED_4XX: ReadonlySet<number> = new Set([401, 403, 404]);
 
 /**
  * Whether an upstream error reflects target health and should count as a
- * breaker failure. Transport errors (status 0 / non-HTTP errors), 5xx, 408,
- * 429 and target credential/permission errors (401, 403) count: a target
+ * breaker failure. Transport errors (status 0 / non-HTTP errors), 5xx, 408
+ * and target credential/permission errors (401, 403) count: a target
  * with a revoked key keeps failing until an operator fixes it, so it must
  * be routed around. 404 does not count: it is usually model-specific (one
  * model missing at that target), so it must not take the target down for
  * every other model. Other 4xx (400, 409, 413, 422, ...) are caused by the
- * caller's request and must not let one tenant open the circuit for everyone.
+ * caller's request and must not let one tenant open the circuit for everyone;
+ * so is 429 (review 2026-11-02 RB5): any client can push a shared upstream
+ * key into its rate limit, and the key pool's soft cooldown handles it.
  */
 export function isBreakerFailure(err: unknown): boolean {
   if (err !== null && typeof err === "object" && "statusCode" in err) {
     const status = (err as { statusCode: unknown }).statusCode;
     if (typeof status !== "number" || status === 0) return true;
     if (status >= 500) return true;
-    if (status === 408 || status === 429) return true;
+    // 429 is not a target failure (RB5): any client can drive a shared key
+    // into an upstream rate limit, which must not open the breaker for all.
+    if (status === 408) return true;
     if (status === 401 || status === 403) return true;
     return status < 400; // unexpected 1xx-3xx surfaced as an error: count it
   }
@@ -130,8 +134,8 @@ export interface AttemptClassification {
  *  - gateway deadline before output: failure (upstream too slow), reported as a timeout;
  *  - gateway deadline after output started: release (says little about upstream health);
  *  - client abort: success if output had started, else release;
- *  - caller-caused 4xx, upstream 404: release (see isBreakerFailure);
- *  - anything else (network, 5xx, 408, 429, 401/403, broken stream): failure.
+ *  - caller-caused 4xx, upstream 404 and 429: release (see isBreakerFailure);
+ *  - anything else (network, 5xx, 408, 401/403, broken stream): failure.
  * Failover eligibility is decided separately by isFailoverEligible().
  */
 export function classifyAttemptError(err: unknown, facts: AttemptFacts): AttemptClassification {
