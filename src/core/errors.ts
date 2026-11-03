@@ -117,6 +117,20 @@ export function quotaNotMetered(message: string): GatewayError {
   });
 }
 
+/**
+ * 429 quota_in_flight (RB3): the key has quota left, but requests already in
+ * flight hold reservations for the rest of it. Retry shortly.
+ */
+export function quotaInFlight(message: string): GatewayError {
+  return new GatewayError("key_limit", {
+    status: 429,
+    message,
+    type: "rate_limit_error",
+    code: "quota_in_flight",
+    retryAfter: "1",
+  });
+}
+
 /** 429 for a key's own RPM / TPM (or the global TPM): retry after the window ends. */
 export function keyRateLimited(message: string, retryAfterSeconds: number): GatewayError {
   return new GatewayError("key_limit", {

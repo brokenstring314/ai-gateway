@@ -11,6 +11,16 @@
  * Quota semantics (user decision, 2026-11-02):
  *  - a request is refused before it starts when the key has already used
  *    its quota (used ≥ quota): 403 quota_exhausted;
+ *  - in-flight reservations (review 2026-11-02 RB3): an admitted request
+ *    holds a reservation (its estimated prompt + its output cap) until it
+ *    settles, and a new request is admitted only while used + reserved <
+ *    quota; otherwise 429 quota_in_flight (Retry-After 1 s) — the in-flight
+ *    requests may use the rest. Concurrent requests can therefore no longer
+ *    all pass the check before any of them is counted: the overshoot is
+ *    bounded by roughly one request instead of N. The same reservation
+ *    counts toward TPM (minute tokens + reserved < TPM). A reservation is
+ *    released exactly once when the request settles (success, error, client
+ *    cancel, failover): Pipeline.finalize;
  *  - a request that was admitted always finishes — a stream is never cut
  *    for quota. Its tokens (estimated when the upstream sends no usage) are
  *    counted when it completes, so the last request(s), and requests that
@@ -27,7 +37,7 @@
  * maxTokensPerMinute, if set.
  */
 
-import { keyRateLimited, quotaExhausted, quotaNotMetered } from "../core/errors.js";
+import { keyRateLimited, quotaExhausted, quotaInFlight, quotaNotMetered } from "../core/errors.js";
 
 const MINUTE_MS = 60_000;
 
@@ -56,6 +66,16 @@ interface KeyCounters {
   minuteStart: number;
   minuteRequests: number;
   minuteTokens: number;
+  /** Tokens reserved by admitted requests still in flight (RB3). */
+  reserved: number;
+}
+
+/** Tokens an admitted request holds until it settles (KeyMeter.settle). */
+export interface Reservation {
+  readonly id: string;
+  readonly tokens: number;
+  /** Set once settled: a second settle is a no-op. */
+  settled: boolean;
 }
 
 export interface AdmitOptions {
@@ -63,6 +83,11 @@ export interface AdmitOptions {
   readonly globalTpm?: number;
   /** The route cannot count tokens (pass-through proxy): keys with a quota are refused. */
   readonly unmetered?: boolean;
+  /**
+   * Tokens to reserve for this request while it runs (estimated prompt +
+   * output cap). Only called for a key with a quota or a TPM.
+   */
+  readonly reserve?: () => number;
   readonly now?: number;
 }
 
@@ -83,16 +108,19 @@ export class KeyMeter {
 
   /**
    * Admit a request or throw: 403 quota_exhausted (quota used up), 403
-   * quota_not_metered (unmetered route with a quota), 429 rate_limit_exceeded
-   * with Retry-After (RPM / TPM). An admitted request counts toward RPM.
+   * quota_not_metered (unmetered route with a quota), 429 quota_in_flight
+   * (in-flight reservations hold the rest of the quota), 429
+   * rate_limit_exceeded with Retry-After (RPM / TPM). An admitted request
+   * counts toward RPM and, for a key with a quota or TPM, holds a
+   * reservation that the caller must settle() exactly once.
    */
-  admit(key: MeteredKey | undefined, opts: AdmitOptions = {}): void {
+  admit(key: MeteredKey | undefined, opts: AdmitOptions = {}): Reservation | undefined {
     const id = key?.id ?? "";
     const limits = key?.limits;
     const tpm = limits?.tpm ?? opts.globalTpm;
     const quota = limits?.quotaTokens ?? null;
     // Nothing to check: do not even allocate counters.
-    if (quota === null && (limits?.rpm ?? null) === null && tpm === undefined) return;
+    if (quota === null && (limits?.rpm ?? null) === null && tpm === undefined) return undefined;
     const now = opts.now ?? Date.now();
     const c = this.counters(id, key?.persistedUsed, now);
 
@@ -109,6 +137,12 @@ export class KeyMeter {
             "The quota does not refill by itself: ask the gateway owner to raise it or reset the usage.",
         );
       }
+      if (c.reserved > 0 && c.used + c.reserved >= quota) {
+        throw quotaInFlight(
+          `This API key's requests in flight may use the rest of its token quota (${c.used} of ${quota} tokens used, ` +
+            `up to ${c.reserved} more reserved). Retry when they have finished.`,
+        );
+      }
     }
     roll(c, now);
     const retryAfter = (c.minuteStart + MINUTE_MS - now) / 1000;
@@ -116,10 +150,41 @@ export class KeyMeter {
     if (rpm !== null && c.minuteRequests >= rpm) {
       throw keyRateLimited(`Rate limit exceeded for this API key: ${rpm} requests per minute`, retryAfter);
     }
-    if (tpm !== undefined && tpm !== null && c.minuteTokens >= tpm) {
+    const hasTpm = tpm !== undefined && tpm !== null;
+    if (hasTpm && c.minuteTokens >= tpm) {
       throw keyRateLimited(`Rate limit exceeded for this API key: ${tpm} tokens per minute`, retryAfter);
     }
+    if (hasTpm && c.reserved > 0 && c.minuteTokens + c.reserved >= tpm) {
+      throw keyRateLimited(
+        `Rate limit exceeded for this API key: ${tpm} tokens per minute (including requests in flight)`,
+        1,
+      );
+    }
     c.minuteRequests++;
+    if (quota === null && !hasTpm) return undefined;
+    const want = opts.reserve?.() ?? 0;
+    const tokens = Number.isFinite(want) && want > 0 ? Math.ceil(want) : 0;
+    c.reserved += tokens;
+    return { id, tokens, settled: false };
+  }
+
+  /**
+   * Release an admitted request's reservation and count its actual tokens
+   * (record()). Exactly once per reservation: later calls are no-ops.
+   */
+  settle(key: MeteredKey | undefined, reservation: Reservation | undefined, tokens: number, now = Date.now()): void {
+    if (reservation) {
+      if (reservation.settled) return;
+      reservation.settled = true;
+      const c = this.keys.get(reservation.id);
+      if (c) c.reserved = Math.max(0, c.reserved - reservation.tokens);
+    }
+    this.record(key, tokens, now);
+  }
+
+  /** Tokens currently reserved by a key's in-flight requests (0 when unknown). */
+  reserved(id: string): number {
+    return this.keys.get(id)?.reserved ?? 0;
   }
 
   /**
@@ -144,9 +209,12 @@ export class KeyMeter {
     return this.keys.get(id)?.used;
   }
 
-  /** Forget a key's usage (operator reset): used tokens and the current minute window. */
+  /** Forget a key's usage (operator reset): used tokens and the current minute window (in-flight reservations stay). */
   reset(id: string): void {
-    this.keys.set(id, newCounters(0));
+    const reserved = this.keys.get(id)?.reserved ?? 0;
+    const c = newCounters(0);
+    c.reserved = reserved;
+    this.keys.set(id, c);
     this.dirty.delete(id);
   }
 
@@ -183,7 +251,7 @@ export class KeyMeter {
 }
 
 function newCounters(used: number, now = 0): KeyCounters {
-  return { used: Math.max(0, used), minuteStart: now, minuteRequests: 0, minuteTokens: 0 };
+  return { used: Math.max(0, used), minuteStart: now, minuteRequests: 0, minuteTokens: 0, reserved: 0 };
 }
 
 function roll(c: KeyCounters, now: number): void {

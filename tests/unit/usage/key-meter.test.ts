@@ -173,3 +173,46 @@ describe("KeyMeter persistence", () => {
     expect(saved).toEqual([["x", 5]]);
   });
 });
+
+describe("KeyMeter: in-flight reservations (RB3)", () => {
+  it("admits while used + reserved < quota, then 429 quota_in_flight; settle releases exactly once", () => {
+    const m = new KeyMeter();
+    const k = key("r1", { quotaTokens: 1000 });
+    const a = m.admit(k, { reserve: () => 400 });
+    const b = m.admit(k, { reserve: () => 400 });
+    m.admit(k, { reserve: () => 400 }); // 800 < 1000: admitted (overshoot bounded by one request)
+    expect(m.reserved("r1")).toBe(1200);
+    const e = refused(() => m.admit(k, { reserve: () => 400 }));
+    expect(e.status).toBe(429);
+    expect(e.code).toBe("quota_in_flight");
+    expect(e.retryAfter).toBe("1");
+    m.settle(k, a, 300);
+    m.settle(k, a, 300); // no-op
+    expect(m.reserved("r1")).toBe(800);
+    expect(m.used("r1")).toBe(300);
+    m.settle(k, b, 0);
+    expect(m.reserved("r1")).toBe(400);
+  });
+
+  it("a key without quota or TPM holds no reservation; reset keeps in-flight reservations", () => {
+    const m = new KeyMeter();
+    expect(m.admit(key("r2", { rpm: 10 }), { reserve: () => 999 })).toBeUndefined();
+    const k = key("r3", { quotaTokens: 10_000 });
+    const r = m.admit(k, { reserve: () => 500 });
+    m.reset("r3");
+    expect(m.reserved("r3")).toBe(500);
+    m.settle(k, r, 10);
+    expect(m.reserved("r3")).toBe(0);
+    expect(m.used("r3")).toBe(10);
+  });
+
+  it("TPM: minute tokens + reserved ≥ TPM → 429", () => {
+    const m = new KeyMeter();
+    const k = key("r4", { tpm: 1000 });
+    m.admit(k, { reserve: () => 600 });
+    m.admit(k, { reserve: () => 600 });
+    const e = refused(() => m.admit(k, { reserve: () => 1 }));
+    expect(e.status).toBe(429);
+    expect(e.code).toBe("rate_limit_exceeded");
+  });
+});

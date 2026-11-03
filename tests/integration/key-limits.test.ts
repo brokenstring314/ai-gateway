@@ -108,19 +108,26 @@ describe("token quota", () => {
     expect(up.hits(HOST)).toHaveLength(1);
   });
 
-  it("concurrent streams admitted before exhaustion all finish; the one after is refused", async () => {
+  it("concurrent streams: in-flight reservations admit one, an admitted stream always finishes (RB3)", async () => {
     const h = await adminHarness(file());
     const k = await createKey(h, { quotaTokens: 50 });
-    for (let i = 0; i < 3; i++) {
+    for (let i = 0; i < 2; i++) {
       up.enqueue(HOST, { status: 200, headers: { "content-type": "text/event-stream" }, text: sseWithUsage(40) });
     }
-    // All three are admitted (their first chunk is primed) before any finishes.
+    // The first stream reserves its prompt + the output cap (no max_tokens:
+    // limits.maxOutputTokens), so the others are refused while it runs.
     const open = await Promise.all([0, 1, 2].map(() => chat(h, k.key, { stream: true })));
-    expect(open.map((r) => r.status)).toEqual([200, 200, 200]);
-    const bodies = [];
-    for (const r of open) bodies.push(await r.text());
-    for (const b of bodies) expect(b.trimEnd().endsWith("data: [DONE]")).toBe(true);
-    expect((await getKey(h, k.id)).usedTokens).toBe(120);
+    expect(open.map((r) => r.status)).toEqual([200, 429, 429]);
+    expect(((await open[1]!.json()) as any).error.code).toBe("quota_in_flight");
+    expect(open[1]!.headers.get("retry-after")).toBe("1");
+    expect((await open[0]!.text()).trimEnd().endsWith("data: [DONE]")).toBe(true);
+    await open[2]!.text();
+    expect((await getKey(h, k.id)).usedTokens).toBe(40);
+    // 40 < 50 and nothing in flight: admitted, and it finishes past the quota.
+    const next = await chat(h, k.key, { stream: true });
+    expect(next.status).toBe(200);
+    expect((await next.text()).trimEnd().endsWith("data: [DONE]")).toBe(true);
+    expect((await getKey(h, k.id)).usedTokens).toBe(80);
     expect((await chat(h, k.key)).status).toBe(403);
   });
 

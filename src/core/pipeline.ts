@@ -36,8 +36,9 @@ import { strategyRunOptions, type TargetExecutor } from "./executor.js";
 import type { McpLoop } from "./mcp-loop.js";
 import { runChatStream, type ChatShapedSurface } from "./chat-stream.js";
 import type { FinalizeOutcome, RequestRun, Result, Surface } from "./types.js";
-import { addUsage, resolveUsage } from "./usage.js";
-import type { KeyMeter } from "../usage/key-meter.js";
+import { addUsage, estimatePromptTokens, resolveUsage } from "./usage.js";
+import type { KeyMeter, Reservation } from "../usage/key-meter.js";
+import { DEFAULT_MAX_OUTPUT_TOKENS } from "../config/types.js";
 import { KEY_RPM_METADATA } from "../plugins/builtins/rate-limit.js";
 
 /** Provider label for requests that never reached an upstream target. */
@@ -167,11 +168,14 @@ export class Pipeline {
     try {
       this.checkModelAccess(surface, requestedModel, ctx);
       // Key limits (0.3.0 P5): in-memory counters only. An admitted request
-      // always runs to the end; its tokens are counted in finalize.
-      this.deps.keyMeter?.admit(ctx?.client, {
+      // always runs to the end; it holds a reservation (estimated prompt +
+      // output cap, RB3) that finalize releases when its tokens are counted.
+      const unmetered = surface.name === "passthrough" || surface.name === "images";
+      run.reservation = this.deps.keyMeter?.admit(ctx?.client, {
         ...(this.deps.globalTpm !== undefined ? { globalTpm: this.deps.globalTpm } : {}),
         // Routes whose usage is not in tokens: a key with a token quota cannot be metered there.
-        unmetered: surface.name === "passthrough" || surface.name === "images",
+        unmetered,
+        reserve: () => (unmetered ? 0 : this.reservationFor(surface, resolved)),
       });
     } catch (err) {
       await this.finalize(run, { kind: "error", error: err });
@@ -218,6 +222,27 @@ export class Pipeline {
       throw err;
     }
     return { kind: "proceed", run };
+  }
+
+  /**
+   * Tokens a request reserves in the key meter while it runs (RB3): the
+   * estimated prompt plus its output cap — max_completion_tokens /
+   * max_tokens, else the model's published maxOutputTokens, else
+   * limits.maxOutputTokens — times n. Embeddings reserve the input only.
+   */
+  reservationFor<Req, Res, Chunk>(surface: Surface<Req, Res, Chunk>, req: Req): number {
+    const view = surface.toPluginView(req);
+    const prompt = estimatePromptTokens(view);
+    if (surface.name === "embeddings") return prompt;
+    const meta = this.deps.catalog.lookup(surface.model(req))?.metadata;
+    const cap =
+      view.maxCompletionTokens ??
+      view.maxTokens ??
+      meta?.maxOutputTokens ??
+      this.deps.maxOutputTokens ??
+      DEFAULT_MAX_OUTPUT_TOKENS;
+    const n = typeof view.n === "number" && Number.isFinite(view.n) && view.n > 1 ? Math.min(view.n, 128) : 1;
+    return prompt + cap * n;
   }
 
   /**
@@ -407,7 +432,17 @@ export class Pipeline {
       pluginError = err;
       error ??= err;
     } finally {
-      settlePluginContext(pc);
+      try {
+        settlePluginContext(pc);
+      } finally {
+        // Release the key meter reservation and count the tokens (toward the
+        // quota and TPM window), whatever happened above: exactly once (RB3).
+        this.deps.keyMeter?.settle(
+          ctx?.client,
+          run.reservation as Reservation | undefined,
+          usage ? quotaTokensOf(usage) : 0,
+        );
+      }
     }
 
     const durationMs = Date.now() - run.startTime;
@@ -428,8 +463,6 @@ export class Pipeline {
       if (cacheHit > 0) entry.tokens.cacheHit = cacheHit;
       const reasoning = usage.completionTokensDetails?.["reasoning_tokens"];
       if (typeof reasoning === "number" && reasoning > 0) entry.tokens.reasoning = reasoning;
-      // Count the tokens toward the key's quota and TPM window (never refuses: the request ran).
-      this.deps.keyMeter?.record(ctx?.client, quotaTokensOf(usage));
     }
     if (usageEstimated) entry.usageEstimated = true;
     // Guardrail detections: plugin, direction, action and entity TYPES only (never values).
