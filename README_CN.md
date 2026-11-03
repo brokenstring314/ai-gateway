@@ -231,7 +231,7 @@ targets:
       - "${DEEPSEEK_KEY_1}"
       - { key: "${DEEPSEEK_KEY_2}", weight: 2, enabled: true }
     keyStrategy: round_robin                # round_robin（默认）| weighted | fill_first
-    keyCooldownSeconds: 30                  # 429 且没有 Retry-After 时，该 key 暂停的秒数（默认 30）
+    keyCooldownSeconds: 30                  # 上游 429 / 402：key 软冷却，Retry-After 最长不超过此秒数（默认 30）
     # enabled: false                        # 关闭这个 target（绑定到它的会被跳过）
     models: ["deepseek-chat"]
 
@@ -612,14 +612,14 @@ Prometheus 格式的指标，包括：
 | 方法 | 路径 | 作用域 | 说明 |
 | ---- | ---- | ------ | ---- |
 | GET / POST | `/admin/channels` | read_only / admin | 列出 / 新建渠道（上游 target）及其 key（只显示尾号） |
-| GET / PATCH / DELETE | `/admin/channels/:id` | read_only / admin | 单个渠道 |
+| GET / PATCH / DELETE | `/admin/channels/:id` | read_only / admin | 单个渠道；`PATCH` 带 `apiKeys` 会替换全部 key，改到另一个源（origin）时必须带 `apiKeys`（否则 `400 api_keys_required_on_base_url_change`） |
 | POST | `/admin/channels/:id/keys` | admin | 添加上游 key（加密存储） |
 | PATCH / DELETE | `/admin/channels/:id/keys/:keyId` | admin | 改权重 / 启停、删除；另有 `POST …/enable`、`…/disable` |
 | POST | `/admin/channels/:id/test`、`/fetch-models` | admin | 探测上游（限流、10 秒超时、2 MiB 上限、不跟随重定向） |
 | GET / POST | `/admin/models` | read_only / admin | 已发布模型（含绑定、`available`） |
 | GET / PATCH / DELETE | `/admin/models/:id` | read_only / admin | 单个模型（`PATCH` 也可带 `bindings`：字段和绑定在同一事务里一起生效或一起失败） |
 | PUT | `/admin/models/:id/bindings` | admin | 整体替换绑定（渠道、上游模型名、优先级、权重、启停、参数） |
-| GET / PATCH | `/admin/settings` | read_only / admin | 全局策略、别名、插件、兼容性、`modelSource` |
+| GET / PATCH | `/admin/settings` | read_only / admin | 全局策略、别名、插件、兼容性、`modelSource`、`limits`（`maxOutputTokens`） |
 | GET | `/admin/config/versions`、`/admin/config/versions/:v` | read_only | 配置历史（快照不含 key 材料） |
 | POST | `/admin/config/versions/:v/rollback` | admin | 把版本 `v` 恢复为一个新版本 |
 | GET | `/admin/audit` | read_only | 谁在何时改了什么（从不含密钥） |
@@ -703,6 +703,8 @@ ai-gateway keys revoke <id> -c config.yaml
 
 **额度语义。** key 的已用 token 达到额度后，新请求在开始前即被拒绝：**403 `quota_exhausted`**（type `insufficient_quota`；用 403 而不是 429，因为等待没有用——额度不会自动恢复）。已经放行的请求**一定完整结束**，流不会因为额度被中途切断；其 token 在结束时计入，所以最后一个请求（以及当时已在进行中的请求）可能让 key 超出额度。调高额度（`PATCH`）或 `POST /admin/keys/:id/reset-usage` 后可继续使用。图片生成和透传路由无法按 token 计量，因此设了额度的 key 在这些路由上返回 **403 `quota_not_metered`**。RPM / TPM 超限返回 **429 `rate_limit_exceeded`** 并带 `Retry-After`。
 
+**在途预留。** 为了不让并发请求在任何一个被计入之前全部通过额度检查，带额度或 TPM 的 key，每个被放行的请求在结束前会预留“估算的 prompt + 输出上限”（`max_tokens` / `max_completion_tokens`，否则模型的 `maxOutputTokens`，否则 `limits.maxOutputTokens`）。只有 已用 + 已预留 < 额度 时才放行新请求，否则返回 **429 `quota_in_flight`** 并带 `Retry-After: 1`（剩余额度可能被在途请求用掉）；预留同样计入 TPM。超出额度的部分因此最多约一个请求。请求结束时（成功、出错、取消、故障转移）预留恰好释放一次，并改为计入真实 token；万一某个预留始终没有释放（程序缺陷），它会在 max(`requestTimeout`, `server.streamMaxDurationSeconds`) + 60 秒后过期，流式时长不设上限时为 1 小时。上游不返回或返回不可信的 `usage`（非流式响应也一样）时，按估算（考虑中日韩字符）计入，而不是记 0。
+
 **性能。** 额度、RPM、TPM 只检查内存计数器：请求路径上不读也不写数据库。已用 token 大约每秒（以及关闭时）异步写回密钥库，启动时恢复；在线改配置（重载）不会清零任何计数。进程崩溃最多丢失约 1 秒的计量。
 
 **用量统计。** 每个结束的请求（包括被拒绝的，计为错误）都会累加到 `<数据目录>/usage.sqlite` 的按小时汇总表（批量写入、WAL）：请求数、错误数、输入 / 输出 / 缓存命中 / 推理 token、延迟，按 key × 模型 × 渠道。`GET /admin/usage?groupBy=key|model|channel&from=YYYY-MM-DD&to=YYYY-MM-DD[&tz=Asia/Shanghai][&daily=true]`（`read_only` 即可）按需汇总；日期是 `tz` 时区（默认 UTC）里的自然日，存储按整点 UTC 小时分桶，因此半小时偏移的时区精确到小时；单次最多 366 天，默认最近 7 天。每个 key 的响应里还带 `usedTokens`、`remainingTokens`、`quotaExhausted`、`usageResetAt`。详见 [docs/admin-api.md](docs/admin-api.md#key-limits-and-usage)。
@@ -785,10 +787,12 @@ script-src 'self'; style-src 'self'; connect-src 'self'; frame-ancestors 'none'`
 | `pii-secret-guard` 拦截（请求 / 响应） | 400 / 422 | `secret_detected` / `pii_detected` |
 | `rate-limit` 插件拒绝 | 429 + `Retry-After` | `plugin_rejected` |
 | key 的 token 额度用完 | 403 | `quota_exhausted` |
+| key 的在途请求已预留了剩余额度 | 429 + `Retry-After: 1` | `quota_in_flight` |
+| `max_tokens` 超过模型的 `maxOutputTokens` / `limits.maxOutputTokens`（65536） | 400 | `max_tokens_exceeded` |
 | 有额度的 key 调用图片 / 透传路由 | 403 | `quota_not_metered` |
 | key 自己的 RPM / TPM（或插件的 TPM）超限 | 429 + `Retry-After` | `rate_limit_exceeded` |
 | 上游 4xx（400、404、413、422 等） | 原状态码 | 上游 `code`；上游 `message`/`type`/`param` 原样保留 |
-| 上游 429 | 429，透传上游 `Retry-After` | 上游 `code`（默认 `rate_limit_exceeded`） |
+| 上游 429（没有其他 key / 渠道可用） | 429，透传上游 `Retry-After` | 上游 `code`（默认 `rate_limit_exceeded`） |
 | 上游 401/403（切换后仍失败） | 502 | `upstream_auth_failed` |
 | 上游 5xx | 502 | 上游 `code`（默认 `upstream_error`） |
 | 网络错误 / 连接重置 / 200 但 body 不是 JSON | 502 | `upstream_unavailable` / `upstream_invalid_response` |
@@ -1335,7 +1339,7 @@ models:
       - { target: relay, priority: 1 }        # 只有 ds-a 和 ds-b 都不可用时才用
 ```
 
-**每个渠道多个 key。** `apiKeys`（配合 `keyStrategy`：`round_robin`、`weighted`、`fill_first`）把请求分摊到渠道的多个上游 key。上游返回 `429` 时该 key 暂停（按 Retry-After，上限 1 小时；没有则用 `keyCooldownSeconds`），同一请求立即换下一个 key 重试；`401` 会禁用该 key（状态 `invalid` 并记录错误，在配置库中持久化并写审计）然后换下一个 key。`402` 像 `429` 一样让该 key 冷却，但只是“软冷却”（渠道没有其他可用 key 时仍会用它，所以单个 `402`——例如 OpenRouter 针对请求的 “requires more credits, or fewer max_tokens”——不会让渠道下线），然后换下一个 key；只有同一个 key 在一小时内连续 3 次账户级 `402`、中间没有任何成功，才会被禁用（状态 `quota`）。`402` 不计入熔断，所有渠道都失败时原样以 `402` 返回给客户端。只有渠道的 key 全部用尽，才算该渠道失败并降级到下一个渠道；若全部 key 都在冷却，返回 `429` 和剩余的 `Retry-After`，若全部被禁用，返回 `503 no_upstream_key`。key 状态在内存中（每个请求零数据库读取），改配置不会清零。
+**每个渠道多个 key。** `apiKeys`（配合 `keyStrategy`：`round_robin`、`weighted`、`fill_first`）把请求分摊到渠道的多个上游 key。上游返回 `429` 时该 key 进入软冷却（按上游的 Retry-After，但最长不超过 `keyCooldownSeconds`，默认 30），同一请求立即换下一个 key 重试——渠道没有其他可用 key 时仍会用这个冷却中的 key，所以某个调用方触发的 429 不会让共享 key 下线，一次成功即结束冷却，429 也不计入熔断；`401` 会禁用该 key（状态 `invalid` 并记录错误，在配置库中持久化并写审计）然后换下一个 key。`402` 像 `429` 一样让该 key 冷却，但只是“软冷却”（渠道没有其他可用 key 时仍会用它，所以单个 `402`——例如 OpenRouter 针对请求的 “requires more credits, or fewer max_tokens”——不会让渠道下线），然后换下一个 key；只有同一个 key 在一小时内连续 3 次账户级 `402`、中间没有任何成功，才会被禁用（状态 `quota`）。`402` 不计入熔断，所有渠道都失败时原样以 `402` 返回给客户端。只有渠道的 key 全部用尽，才算该渠道失败并降级到下一个渠道；若全部被禁用，返回 `503 no_upstream_key`。key 状态在内存中（每个请求零数据库读取），改配置不会清零。
 
 如果一个模型的所有绑定都被关闭、摘除或指向已关闭的 target，它仍然保持发布：请求（包括它的别名）返回 `503 model_unavailable`，`/v1/models` 中以 `"available": false` 列出。每个模型对同一个 target 只能绑定一次。`metadata` 会显示在 `/v1/models` 中，并被强制执行（见下文）。使用配置库（`runtimeConfig.source: database`）时，模型和绑定与 target 一样入库、导入。
 
@@ -1354,12 +1358,16 @@ models:
 | `web_search_options` | `webSearch: false` | `web_search_not_supported` |
 | `reasoning_effort` | `reasoning: false`，或不在 `reasoning.efforts` 中 | `reasoning_not_supported` / `unsupported_reasoning_effort` |
 
+**全局输出上限。** 元数据里没有 `maxOutputTokens` 的已发布模型（派生模型、未写元数据的模型、未知上游）受 `limits.maxOutputTokens` 限制（默认 **65536**；配置文件顶层 `limits:`，数据库模式下用 `PATCH /admin/settings` 或控制台 设置 → 请求上限）：更大的 `max_tokens` / `max_completion_tokens` 返回 `400 max_tokens_exceeded`，不会被压低。模型自己的 `maxOutputTokens` 始终优先。
+
 不改变含义的改写会自动进行：`developer` 消息按 `system` 发送（设 `developerRole: passthrough` 可保留原样）；`systemMessage: merge_into_user` 会把 system 内容并入第一条 user 消息；`reasoning.map` 把某个 `reasoning_effort` 值换成上游自己的参数。绑定上的 `params` 只给该渠道追加上游请求体字段：
 
 ```yaml
 strategy: { mode: single, targets: [deepseek] }
 targets:
   - { name: deepseek, provider: deepseek, apiKey: "${DEEPSEEK_API_KEY}" }
+limits:
+  maxOutputTokens: 65536               # 未声明 metadata.maxOutputTokens 的模型的上限（默认 65536）
 models:
   - name: chat
     bindings: [{ target: deepseek, model: deepseek-flash, params: { user_id: "gateway" } }]

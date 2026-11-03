@@ -117,6 +117,22 @@
 
 ### Breaking changes
 
+- **Red team 2026-11-02 fixes** (`docs/admin-api.md`):
+  - **RC1 / RC2:** `PATCH /admin/channels/:id` that moves a channel with stored keys to another origin (scheme, host
+    or port; also via `preset` or `baseURL: null`) must carry `apiKeys` for the new address, else
+    `400 api_keys_required_on_base_url_change`; `apiKeys` replaces every stored key. *Migration:* scripts that only
+    PATCH `baseURL` to a new host send the key(s) in the same request.
+  - **RB6:** new runtime section `limits.maxOutputTokens` (default **65536**; config file `limits:`,
+    `PATCH /admin/settings`, console 设置 → 请求上限). On a published model without `metadata.maxOutputTokens` a
+    larger `max_tokens` / `max_completion_tokens` is now `400 max_tokens_exceeded` (was forwarded as is).
+    *Migration:* raise `limits.maxOutputTokens` or give the model its own `maxOutputTokens`.
+  - **RB3:** a key with a quota or TPM may now get `429 quota_in_flight` (`Retry-After: 1`) while its requests in
+    flight reserve the rest of the quota; TPM also counts in-flight reservations (`429 rate_limit_exceeded`,
+    `Retry-After: 1`). Clients should retry on 429 as usual.
+  - **RB5:** an upstream `Retry-After` no longer cools a key for longer than the channel's `keyCooldownSeconds`
+    (default 30; was up to 1 h), the cooldown is soft (a channel without another usable key still uses the cooling
+    key instead of answering `429` locally), and `429` is no longer a circuit-breaker failure.
+
 - **P5: no prices or money anywhere (user decision 2026-11-02).** The `budget` plugin is deleted: any `budget` entry in
   `plugins` (enabled or not, also in the config store's settings) fails validation with "the budget plugin was removed
   in 0.3.0 …" — *migration:* remove it and give client keys a `quotaTokens`. `targets[].costPer1kInputTokens` /
@@ -190,6 +206,27 @@ now fail `ai-gateway validate` and startup with a migration hint:
 
 ### Fixed
 
+- **A response without usage was counted as 0 tokens: unlimited quota** (red team 2026-11-02 RB1, 严重). PoC: quota
+  1000, 30 non-streaming requests to an upstream that omits `usage` → all 200, 30,240 tokens billed upstream, 0
+  counted. A missing or implausible usage (absent, all zero, negative / NaN, zero completion with output) on chat,
+  completions and embeddings — per upstream call, every MCP round, and streams with such a usage chunk — is now
+  replaced by the shared CJK-aware estimate, and the request log marks `usageEstimated`.
+- **Quota check-then-act race** (RB3, 高). PoC: quota 1000, 40 concurrent requests of 309 tokens on a slow upstream
+  → all 200, 12,320 tokens (12×). Admitted requests now hold an in-memory reservation (estimated prompt + output
+  cap) until they settle; a request is admitted only while used + reserved < quota (else `429 quota_in_flight`), so
+  the overshoot is bounded by about one request. Released exactly once on success, error, cancel, failover and
+  rejection; a reservation that is never settled (e.g. a stream iterator dropped without `return()`) expires after
+  max(`requestTimeout`, `server.streamMaxDurationSeconds`) + 60 s, or 1 h when streams are unbounded, swept lazily on
+  the key's next request (no timer, no database read).
+- **One client's upstream 429 took the shared key down for everyone** (RB5, 高). PoC: one `429` with
+  `Retry-After: 120` → every client got `429` on the channel for two minutes, repeatably; five 429s also opened the
+  breaker. Now a soft cooldown capped at `keyCooldownSeconds`, ended by a success, and not a breaker failure.
+- **Unbounded `max_tokens` on models without metadata** (RB6, 高). PoC: `max_tokens: 9999999` forwarded, 10,000,007
+  tokens billed by one request. Now `400 max_tokens_exceeded` above `limits.maxOutputTokens` (default 65536).
+- **Admin could exfiltrate stored upstream keys** (RC1 高 / RC2 中). PATCH `baseURL` to any public host, then
+  `test` / `fetch-models` / `balance` sent the decrypted key (or the resolved `${VAR}`) there. A change of origin now
+  requires the keys again (`apiKeys`, replaces all); probes use only the saved base URL and keys; the audit entry
+  records `originChange` / `keysReplaced` (hints only); the console asks for the new key(s).
 - **Streams were metered by an estimate, Chinese text undercounted 2.5–6x** (review 2026-11-02 C4). The gateway
   only asked the upstream for a usage chunk when the client sent `stream_options.include_usage` (the OpenAI SDK
   does not by default), and estimated ~4 characters per token otherwise: 620 real tokens of Chinese output were
@@ -205,7 +242,7 @@ now fail `ai-gateway validate` and startup with a migration hint:
   max_tokens", credit held by in-flight requests), so one guest request with a large `max_tokens` turned a
   single-key channel into `503 no_upstream_key` for everyone until an admin re-enabled the key. This refines the
   0.3.0 “401/402 auto-disable” decision (intent: dead key / exhausted balance): a `402` now cools the key down like
-  a `429` (`Retry-After` capped at 1 h, else `keyCooldownSeconds`) but softly — a channel with no other usable key
+  a `429` (`Retry-After` capped at `keyCooldownSeconds`) but softly — a channel with no other usable key
   still uses it — and is not a breaker failure; it fails over to the next channel, and reaches the client as `402`
   when none is left. The key is disabled (`quota`) only after 3 consecutive account-level `402`s within an hour
   with no success in between; a `402` whose message names the request never counts. `401` still disables at once.

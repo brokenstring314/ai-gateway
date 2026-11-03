@@ -42,7 +42,7 @@ restart. Client keys with token quota / RPM / TPM and usage statistics: [Key lim
 | GET | `/admin/channels` | `{ object, source, readOnly, data: [channel] }` |
 | GET | `/admin/channels/:id` | one channel + `ETag` |
 | POST | `/admin/channels` | create (no If-Match) → 201 |
-| PATCH | `/admin/channels/:id` | any of the create fields except `keys` |
+| PATCH | `/admin/channels/:id` | any of the create fields except `keys`, plus `apiKeys` (replaces **every** stored key); a change of origin needs `apiKeys` ([below](#changing-a-channels-origin-needs-its-keys-again)) |
 | DELETE | `/admin/channels/:id` | `409 channel_in_use` while a model binds it |
 | POST | `/admin/channels/:id/keys` | `{ "keys": [{ "key", "weight"?, "enabled"? }] }` → 201 |
 | PATCH | `/admin/channels/:id/keys/:keyId` | `{ "enabled"?, "weight"? }` |
@@ -76,7 +76,7 @@ Create body:
   "priority": 0,                      // list order of channels (global strategy default order)
   "models": ["deepseek-v4-flash"],    // what the channel serves when models are derived (no models: section)
   "keyStrategy": "round_robin",       // round_robin | weighted | fill_first
-  "keyCooldownSeconds": 30,           // after a 429 without Retry-After
+  "keyCooldownSeconds": 30,           // longest key cooldown after an upstream 429 / 402 (Retry-After honoured up to this)
   "settings": { "weight": 1, "retry": {…}, "circuitBreaker": {…}, "concurrency": {…} },
   "keys": [{ "key": "sk-…", "weight": 1, "enabled": true }]
 }
@@ -103,6 +103,27 @@ its query (the error carries `fields: [{ "path": "baseURL", … }]` so the conso
 re-pointed at a private address later (DNS rebinding) is refused at request time, and redirects are never
 followed. There is no switch for private networks yet; local model servers (Ollama, vLLM) can still be configured
 in the config file, which is trusted. An explicit opt-in for local/LAN services is on the roadmap.
+
+### Changing a channel's origin needs its keys again
+
+Stored keys are only ever sent to the origin they were entered for. A `PATCH /admin/channels/:id` that moves a
+channel **with stored keys** to another origin — scheme, host or port of the effective base URL, also through a
+new `preset` or `baseURL: null` falling back to the preset default — must carry the keys for the new address in
+the same request:
+
+```json
+{ "baseURL": "https://openrouter.ai/api/v1", "apiKeys": [{ "key": "sk-or-…" }] }
+```
+
+- Without `apiKeys` → `400 api_keys_required_on_base_url_change` (`fields: [{ "path": "apiKeys", … }]`), nothing
+  is written. A path-only change on the same origin needs nothing.
+- `apiKeys` (`[{ key, weight?, enabled? }]`, at most 100) **replaces every stored key** of the channel, encrypted
+  ones and `${VAR}` references alike, in the same transaction (one config version). It may also be sent without an
+  origin change to replace all keys at once.
+- `test`, `fetch-models` and `balance` only ever use the saved base URL and keys. The audit entry of the write
+  records `originChange` (old → new origin) and `keysReplaced` (hints only).
+- The console's channel drawer shows a notice and a required key field as soon as the base URL moves to another
+  origin.
 
 ## Models
 
@@ -177,9 +198,18 @@ client key. Usage is recorded under the key id `console-playground` (no limits).
 
 ## Settings
 
-`GET /admin/settings` → `{ strategy, aliases, plugins, compatibility, modelSource, revision }`.
+`GET /admin/settings` → `{ strategy, aliases, plugins, compatibility, modelSource, limits, revision }`.
 `PATCH /admin/settings` (If-Match = settings revision) with any of them; each given field replaces the stored
-one (`aliases: {}` / `plugins: []` / `compatibility: null` clear it). Same schemas as the config file.
+one (`aliases: {}` / `plugins: []` / `compatibility: null` / `limits: null` clear it). Same schemas as the config
+file.
+
+**`limits.maxOutputTokens`** (integer 1 – 100,000,000, default **65536**; `limits: {}` or `null` = the default): the
+largest `max_tokens` / `max_completion_tokens` a request may ask for on a published model whose metadata has no
+`maxOutputTokens` (derived models, models without metadata). A larger value is refused with
+`400 max_tokens_exceeded` (`param` = the field the client sent), never clamped. A model's own
+`metadata.maxOutputTokens` always wins. The same cap is the output part of a key's quota reservation when a
+request sends no `max_tokens` ([below](#what-counts-and-when-a-key-is-refused)). In the config file it is the
+top-level `limits:` section (database mode: imported once, then this endpoint; console: 设置 → 请求上限).
 
 ## Versions, rollback, audit, presets
 
@@ -199,18 +229,22 @@ one (`aliases: {}` / `plugins: []` / `compatibility: null` clear it). Same schem
   Weight 0 drains a binding. Legacy shapes: `strategy: fallback` without priorities = one channel per group
   (ordered fallback, as before); `strategy: loadbalance` = one group by weight.
 - **Keys of a channel:** `keyStrategy` `round_robin` (default), `weighted`, `fill_first` (first usable key until it
-  is out). Upstream `429`: that key cools down for `Retry-After` (capped at 1 h) or `keyCooldownSeconds` and the
-  same request is retried at once with the next key. `401`: the key is disabled (`invalid`, last error recorded,
+  is out). Upstream `429`: that key cools down for the upstream's `Retry-After`, but **never longer than the
+  channel's `keyCooldownSeconds`** (default 30, max 3600; without `Retry-After` exactly that), and the same
+  request is retried at once with the next key. The cooldown is **soft**: a channel whose other keys are all
+  unusable still sends requests to a cooling key instead of answering everyone `429` / `503 no_upstream_key`, so
+  one client's 429 never takes a shared key or channel down; a success on the key ends its cooldown. A `429` is
+  not a circuit-breaker failure (the request still fails over to the next channel when the channel has nothing
+  left). `401`: the key is disabled (`invalid`, last error recorded,
   audit entry `key_auto_disabled`, persisted asynchronously) and the next key is tried. `402`: the key cools down
-  like a `429` (`Retry-After` capped at 1 h, else `keyCooldownSeconds`), but softly — the channel still uses it
+  like a `429` (`Retry-After` capped at `keyCooldownSeconds`), but softly — the channel still uses it
   when no other key is usable, so one `402` never takes a channel down — and the next key is tried; the key is
   disabled (`quota`, audited and persisted as above) only after 3 consecutive account-level `402`s on it within
   an hour with no successful call in between. A `402` that names the request (OpenRouter's "requires more credits,
   or fewer max_tokens", credit held by in-flight requests) never counts toward that. A `402` is not a breaker
   failure; it fails over to the next channel like a key error, and when no channel is left the client gets the
   `402`. Only when no key is left does the channel count as failed and the request fail over to the next channel. A channel
-  whose keys all cool down answers `429` with the remaining `Retry-After` (no upstream call); one whose keys are
-  all disabled answers `503 no_upstream_key` until an operator re-enables or adds a key.
+  whose keys are all disabled answers `503 no_upstream_key` until an operator re-enables or adds a key.
 - None of this reads the database on the request path: routing, key choice and key health are in memory.
 
 ## Key limits and usage
@@ -257,24 +291,50 @@ Key view (added in 0.3.0 P5):
 - **Tokens** = prompt + completion tokens of a finished request as the upstream reports them (cache-hit and
   reasoning tokens are part of those). For streams the gateway always asks the upstream for a usage chunk
   (`stream_options.include_usage`, on every provider that supports it) and keeps usage off a client stream that
-  did not ask for it. Only when the upstream sends no usage (a provider without `stream_options`, a stream the
-  client abandoned) are tokens estimated: CJK characters count one token each, other text UTF-8 bytes / 4. MCP tool rounds are summed. Refused requests count 0.
-- **Quota:** checked once, before the request starts: used ≥ quota → `403 quota_exhausted` (type
-  `insufficient_quota`, no `Retry-After`: the quota never refills by itself). An admitted request always runs to
-  the end — streams are never cut for quota — and its tokens are added when it ends, so the last request and
-  requests already in flight can take the key past its quota. Raise the quota or reset the usage to re-open it.
+  did not ask for it. When the upstream sends no usage, or an implausible one (missing, all zero, negative / not a
+  number, zero completion tokens although there is output) — non-streaming responses included, per upstream call
+  and per MCP round — tokens are estimated: CJK characters count one token each, other text UTF-8 bytes / 4, plus
+  tools, tool calls and reasoning; the request log marks such a request `usageEstimated`. MCP tool rounds are
+  summed. Refused requests count 0.
+- **Quota:** checked before the request starts: used ≥ quota → `403 quota_exhausted` (type `insufficient_quota`, no
+  `Retry-After`: the quota never refills by itself). An admitted request always runs to the end — streams are never
+  cut for quota — and its tokens are added when it ends. Raise the quota or reset the usage to re-open it.
+- **In-flight reservations.** An admitted request of a key with a quota or a TPM **reserves** its estimated prompt
+  plus its output cap (`max_completion_tokens` / `max_tokens`, else the model's `maxOutputTokens`, else
+  `limits.maxOutputTokens`; × `n`; embeddings: the input only) until it settles. A new request is admitted only while
+  used + reserved < quota; otherwise **`429 quota_in_flight`** with `Retry-After: 1` (type `rate_limit_error`): the
+  requests in flight may use the rest, retry when they have finished. Concurrent requests can therefore no longer all
+  pass the check before any is counted — the overshoot is bounded by about one request. The reservation is released
+  exactly once when the request settles (success, error, client cancel, failover, rejection) and the actual tokens are
+  counted instead. Safety net: a reservation that is never settled expires after the request-lifetime bound —
+  max(`requestTimeout`, `server.streamMaxDurationSeconds`) + 60 s, or **1 h** when streams are unbounded — and is
+  released lazily on the key's next request. `reset-usage` keeps the reservations of requests in flight.
 - **Not meterable:** image generation and pass-through proxy routes have no token usage, so a key **with a
   quota** gets `403 quota_not_metered` there (keys without a quota are unaffected).
 - **RPM / TPM:** fixed one-minute windows per key. RPM counts admitted requests; TPM refuses new requests once
-  the tokens of requests completed in the window reach it. Both answer `429 rate_limit_exceeded` with
-  `Retry-After`. A key with its own `rpm` is exempt from the rate-limit plugin's per-minute limit (its daily limit
+  the tokens of requests completed in the window reach it, and also while those tokens plus the reservations of
+  requests in flight reach it (`Retry-After: 1`). Both answer `429 rate_limit_exceeded` with `Retry-After`. A key with its own `rpm` is exempt from the rate-limit plugin's per-minute limit (its daily limit
   still applies); a key without one is limited by the plugin. A key without its own `tpm` uses the plugin's
   `maxTokensPerMinute` when set. Config-file keys (`auth.keys`) have no own limits.
-- **Order:** published model and `allowedModels` (403/404) → quota → RPM → TPM → plugins.
-- **Hot path:** all of this reads in-memory counters only (no database access). Used tokens are persisted
+- **Order:** published model and `allowedModels` (403/404) → quota (403 `quota_exhausted`, 429 `quota_in_flight`)
+  → RPM → TPM → plugins → model metadata / `limits.maxOutputTokens` (400 `max_tokens_exceeded`; the reservation is
+  released).
+- **Hot path:** all of this — reservations and their expiry included — reads in-memory counters only (no database
+  access, no timer). Used tokens are persisted
   asynchronously about once a second (`USAGE_FLUSH_INTERVAL_MS`) and on shutdown, restored at startup, and never
   reset by a config change or rollback. A crash loses at most the last interval of counted tokens. Counters are
   per process (replicas do not share them).
+
+### Error codes of the limits
+
+| Status | `code` | When |
+| ------ | ------ | ---- |
+| 403 | `quota_exhausted` | the key's used tokens reached its quota |
+| 429 + `Retry-After: 1` | `quota_in_flight` | used + tokens reserved by the key's requests in flight reach the quota |
+| 403 | `quota_not_metered` | a key with a quota on image generation / pass-through routes |
+| 429 + `Retry-After` | `rate_limit_exceeded` | the key's RPM / TPM (in-flight reservations count toward TPM) |
+| 400 | `max_tokens_exceeded` | `max_tokens` / `max_completion_tokens` above the model's `maxOutputTokens`, else `limits.maxOutputTokens` |
+| 400 | `api_keys_required_on_base_url_change` | Admin API: `PATCH /admin/channels/:id` moves a channel with keys to another origin without `apiKeys` |
 
 ### `GET /admin/usage`
 

@@ -234,7 +234,7 @@ targets:
       - "${DEEPSEEK_KEY_1}"
       - { key: "${DEEPSEEK_KEY_2}", weight: 2, enabled: true }
     keyStrategy: round_robin                # round_robin (default) | weighted | fill_first
-    keyCooldownSeconds: 30                  # 429 without Retry-After: key paused this long (default 30)
+    keyCooldownSeconds: 30                  # upstream 429 / 402: soft key cooldown, Retry-After capped at this (default 30)
     # enabled: false                        # switch a target off (bindings to it are skipped)
     models: ["deepseek-chat"]
 
@@ -671,14 +671,14 @@ Without a key store, `GET` / `POST` / `DELETE /admin/keys` manage the in-memory 
 | Method | Path | Scope | Description |
 | ------ | ---- | ----- | ----------- |
 | GET / POST | `/admin/channels` | read_only / admin | List / create channels (upstream targets) with their keys (hints only) |
-| GET / PATCH / DELETE | `/admin/channels/:id` | read_only / admin | One channel |
+| GET / PATCH / DELETE | `/admin/channels/:id` | read_only / admin | One channel; `PATCH` with `apiKeys` replaces every key, and moving to another origin requires `apiKeys` (else `400 api_keys_required_on_base_url_change`) |
 | POST | `/admin/channels/:id/keys` | admin | Add upstream keys (stored encrypted) |
 | PATCH / DELETE | `/admin/channels/:id/keys/:keyId` | admin | Weight / enabled, delete; `POST …/enable`, `…/disable` |
 | POST | `/admin/channels/:id/test`, `/fetch-models` | admin | Probe the upstream (rate-limited, 10 s timeout, 2 MiB cap, no redirects) |
 | GET / POST | `/admin/models` | read_only / admin | Published models with bindings, `available` |
 | GET / PATCH / DELETE | `/admin/models/:id` | read_only / admin | One model (`PATCH` may carry `bindings` too: fields and bindings change in one transaction) |
 | PUT | `/admin/models/:id/bindings` | admin | Replace a model's bindings (channel, upstream model, priority, weight, enabled, params) |
-| GET / PATCH | `/admin/settings` | read_only / admin | Global strategy, aliases, plugins, compatibility, `modelSource` |
+| GET / PATCH | `/admin/settings` | read_only / admin | Global strategy, aliases, plugins, compatibility, `modelSource`, `limits` (`maxOutputTokens`) |
 | GET | `/admin/config/versions`, `/admin/config/versions/:v` | read_only | Config history (snapshots without key material) |
 | POST | `/admin/config/versions/:v/rollback` | admin | Restore version `v` as a new version |
 | GET | `/admin/audit` | read_only | Who changed what, when (never secrets) |
@@ -761,6 +761,8 @@ The gateway is a single-owner gateway, not a paid API service: there are no pric
 Set them on create (`POST /admin/keys`, `ai-gateway keys create --quota-tokens N --rpm N --tpm N`) or later with `PATCH /admin/keys/:id` (`If-Match: "<revision>"` from `GET /admin/keys/:id`; `null` clears a limit). Keys in `auth.keys` of the config file are the owner's and have no own limits (the plugin values apply to them).
 
 **Quota semantics.** A request is refused before it starts once the key's used tokens reach the quota: **403 `quota_exhausted`** (type `insufficient_quota`; 403 rather than 429 because waiting does not help — the quota never refills by itself). A request that was admitted **always finishes**, a stream is never cut for quota; its tokens are counted when it ends, so the last request (and requests already in flight) may take the key past its quota. Raise the quota (`PATCH`) or `POST /admin/keys/:id/reset-usage` to re-open it. Image generation and pass-through routes cannot be counted in tokens, so keys with a quota get **403 `quota_not_metered`** there. RPM / TPM refusals are **429 `rate_limit_exceeded`** with `Retry-After`.
+
+**In-flight reservations.** So that concurrent requests cannot all pass the quota check before any of them is counted, an admitted request of a key with a quota or TPM reserves its estimated prompt plus its output cap (`max_tokens` / `max_completion_tokens`, else the model's `maxOutputTokens`, else `limits.maxOutputTokens`) until it ends. A new request is admitted only while used + reserved < quota, else **429 `quota_in_flight`** with `Retry-After: 1` (the requests in flight may use the rest); reservations count toward TPM too. The overshoot past a quota is bounded by about one request. A reservation is released exactly once when its request ends (success, error, cancel, failover) and replaced by the real tokens; one that is never released (a bug) expires after max(`requestTimeout`, `server.streamMaxDurationSeconds`) + 60 s, or 1 h when streams are unbounded. When an upstream sends no or an implausible `usage` (also on non-streaming responses), the tokens are estimated (CJK-aware) instead of counted as 0.
 
 **Performance.** Quota, RPM and TPM are checked against in-memory counters: no database read or write on the request path. Used tokens are written to the key store about once a second (and on shutdown), restored at startup, and kept across live config changes (reloads never reset a counter). A crash can lose up to a second of counted usage.
 
@@ -853,10 +855,12 @@ URLs never appear in the body; the failing target is in the
 | `pii-secret-guard` block (request / response) | 400 / 422 | `secret_detected` / `pii_detected` |
 | `rate-limit` plugin rejection | 429 + `Retry-After` | `plugin_rejected` |
 | Key token quota used up | 403 | `quota_exhausted` |
+| Key's requests in flight hold the rest of its quota | 429 + `Retry-After: 1` | `quota_in_flight` |
+| `max_tokens` above the model's `maxOutputTokens` / `limits.maxOutputTokens` (65536) | 400 | `max_tokens_exceeded` |
 | Key with a quota on images / pass-through | 403 | `quota_not_metered` |
 | Key's own RPM / TPM (or the plugin's TPM) | 429 + `Retry-After` | `rate_limit_exceeded` |
 | Upstream 4xx (400, 404, 413, 422, …) | same status | upstream `code`; upstream `message`/`type`/`param` kept |
-| Upstream 429 | 429 + upstream `Retry-After` | upstream `code` (default `rate_limit_exceeded`) |
+| Upstream 429 (no other key / channel left) | 429 + upstream `Retry-After` | upstream `code` (default `rate_limit_exceeded`) |
 | Upstream 401/403 (after failover) | 502 | `upstream_auth_failed` |
 | Upstream 5xx | 502 | upstream `code` (default `upstream_error`) |
 | Network error / reset / non-JSON 200 body | 502 | `upstream_unavailable` / `upstream_invalid_response` |
@@ -922,7 +926,7 @@ targets:
       - "${DEEPSEEK_KEY_1}"
       - { key: "${DEEPSEEK_KEY_2}", weight: 2, enabled: true }
     keyStrategy: round_robin                # round_robin (default) | weighted | fill_first
-    keyCooldownSeconds: 30                  # 429 without Retry-After: key paused this long (default 30)
+    keyCooldownSeconds: 30                  # upstream 429 / 402: soft key cooldown, Retry-After capped at this (default 30)
     # enabled: false                        # switch a target off (bindings to it are skipped)
     models: ["deepseek-chat"]
   - name: groq-backup
@@ -1436,7 +1440,7 @@ models:
       - { target: relay, priority: 1 }        # only when ds-a and ds-b are both down
 ```
 
-**Several keys per channel.** `apiKeys` (with `keyStrategy`: `round_robin`, `weighted`, `fill_first`) spreads requests over a channel's upstream keys. An upstream `429` pauses that key (Retry-After, capped at 1 h, else `keyCooldownSeconds`) and retries the request at once with the next key; `401` disables the key (status `invalid` with the error, persisted and audited in the config store) and moves on. `402` cools the key down like a `429`, but softly (a channel whose other keys are unusable still uses it, so one `402` — e.g. OpenRouter's request-level "requires more credits, or fewer max_tokens" — never takes a channel down), and moves on; only 3 consecutive account-level `402`s within an hour with no success in between disable it (status `quota`). A `402` is not a breaker failure and reaches the client as `402` when no channel is left. The channel fails over to the next channel only when none of its keys is left; if all its keys are cooling down the answer is `429` with the remaining `Retry-After`, if all are disabled `503 no_upstream_key`. Key health lives in memory (no database read per request) and survives config changes.
+**Several keys per channel.** `apiKeys` (with `keyStrategy`: `round_robin`, `weighted`, `fill_first`) spreads requests over a channel's upstream keys. An upstream `429` cools that key down softly (the upstream's Retry-After, but never longer than `keyCooldownSeconds`, default 30) and retries the request at once with the next key — a channel whose other keys are unusable still uses the cooling key, so one client's 429 never takes a shared key down, a success ends the cooldown, and a 429 is not a circuit-breaker failure; `401` disables the key (status `invalid` with the error, persisted and audited in the config store) and moves on. `402` cools the key down like a `429`, but softly (a channel whose other keys are unusable still uses it, so one `402` — e.g. OpenRouter's request-level "requires more credits, or fewer max_tokens" — never takes a channel down), and moves on; only 3 consecutive account-level `402`s within an hour with no success in between disable it (status `quota`). A `402` is not a breaker failure and reaches the client as `402` when no channel is left. The channel fails over to the next channel only when none of its keys is left; if all are disabled the answer is `503 no_upstream_key`. Key health lives in memory (no database read per request) and survives config changes.
 
 A model whose bindings are all disabled, drained or on disabled targets stays published: requests and its aliases get `503 model_unavailable`, and `/v1/models` lists it with `"available": false`. One binding per target per model. `metadata` is shown on `/v1/models` and enforced (below). In the config store (`runtimeConfig.source: database`) the models and bindings are stored and imported like the targets.
 
@@ -1455,12 +1459,16 @@ Before a request leaves the gateway it is checked against the published model's 
 | `web_search_options` | `webSearch: false` | `web_search_not_supported` |
 | `reasoning_effort` | `reasoning: false`, or not in `reasoning.efforts` | `reasoning_not_supported` / `unsupported_reasoning_effort` |
 
+**Global output cap.** A published model whose metadata has no `maxOutputTokens` (derived models, models without metadata, unknown upstreams) is held to `limits.maxOutputTokens` (default **65536**; top-level `limits:` in the config file, `PATCH /admin/settings` and the console's 设置 → 请求上限 in database mode): a larger `max_tokens` / `max_completion_tokens` is `400 max_tokens_exceeded`, never clamped. A model's own `maxOutputTokens` always wins.
+
 Rewrites that keep the meaning are applied automatically: `developer` messages are sent as `system` (set `developerRole: passthrough` to keep them); `systemMessage: merge_into_user` prepends system text to the first user message; `reasoning.map` replaces a `reasoning_effort` value with the upstream's own parameters. A binding's `params` adds upstream body fields for that channel only:
 
 ```yaml
 strategy: { mode: single, targets: [deepseek] }
 targets:
   - { name: deepseek, provider: deepseek, apiKey: "${DEEPSEEK_API_KEY}" }
+limits:
+  maxOutputTokens: 65536               # cap for models without metadata.maxOutputTokens (default 65536)
 models:
   - name: chat
     bindings: [{ target: deepseek, model: deepseek-flash, params: { user_id: "gateway" } }]
