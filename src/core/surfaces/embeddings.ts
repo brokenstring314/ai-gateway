@@ -2,7 +2,7 @@
 
 import type { PluginContext } from "../../plugins/types.js";
 import type { EmbeddingRequest, EmbeddingResponse, IEmbeddingProvider } from "../../providers/types.js";
-import { messageText } from "../usage.js";
+import { estimateTextTokens, messageText } from "../usage.js";
 import type { Surface } from "../types.js";
 
 function isEmbeddingResponse(v: unknown): v is EmbeddingResponse {
@@ -33,6 +33,13 @@ export const embeddingsSurface: Surface<EmbeddingRequest, EmbeddingResponse> = {
   supports: (p) => "embed" in p,
   call: (p, ctx, req) => (p as unknown as IEmbeddingProvider).embed(ctx, req),
   usage: (res) => res.usage,
+  estimateUsage: (req) => {
+    const items: readonly string[] = typeof req.input === "string" ? [req.input] : req.input;
+    let promptTokens = 0;
+    for (const text of items)
+      promptTokens += estimateTextTokens(typeof text === "string" ? text : JSON.stringify(text));
+    return { promptTokens, completionTokens: 0, totalTokens: promptTokens };
+  },
   exposeResult: (pc, res) => {
     pc.metadata["_embeddingResponse"] = res;
   },

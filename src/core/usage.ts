@@ -3,7 +3,7 @@
  * (refactor plan §1.2 core/usage.ts).
  */
 
-import type { ChatCompletionRequest, StreamChunk, Usage } from "../providers/types.js";
+import type { ChatCompletionRequest, ChatCompletionResponse, StreamChunk, Usage } from "../providers/types.js";
 
 /** Sum two usages (MCP rounds). Token details are not summed: they are kept from the last round only. */
 export function addUsage(a: Usage | undefined, b: Usage | undefined): Usage | undefined {
@@ -139,4 +139,88 @@ export function estimateStreamUsage(
   const completionTokens =
     estimateTextTokens(acc.content) + estimateTextTokens(acc.toolArgText) + estimateTextTokens(acc.reasoningText);
   return { promptTokens, completionTokens, totalTokens: promptTokens + completionTokens };
+}
+
+/**
+ * Completion tokens of a non-streaming chat response, estimated from what
+ * it returned: message content (text parts), tool-call names and
+ * arguments, and reasoning / refusal text, over every choice.
+ */
+export function estimateResponseCompletionTokens(res: Pick<ChatCompletionResponse, "choices"> | undefined): number {
+  let tokens = 0;
+  for (const choice of res?.choices ?? []) {
+    const m = choice?.message;
+    if (!m) continue;
+    tokens += estimateTextTokens(messageText(m.content));
+    for (const tc of m.toolCalls ?? []) {
+      const fn = (tc as { function?: { arguments?: unknown; name?: unknown } }).function;
+      if (typeof fn?.arguments === "string") tokens += estimateTextTokens(fn.arguments);
+      if (typeof fn?.name === "string") tokens += estimateTextTokens(fn.name);
+    }
+    const extra = m.extra;
+    if (extra) {
+      for (const key of ESTIMATED_DELTA_EXTRAS) {
+        const v = extra[key];
+        if (typeof v === "string") tokens += estimateTextTokens(v);
+      }
+    }
+  }
+  return tokens;
+}
+
+/** Estimated usage of a non-streaming chat request and its response (upstream reported none). */
+export function estimateChatUsage(
+  req: Pick<ChatCompletionRequest, "messages"> & Partial<Pick<ChatCompletionRequest, "tools">>,
+  res: Pick<ChatCompletionResponse, "choices"> | undefined,
+): Usage {
+  const promptTokens = estimatePromptTokens(req);
+  const completionTokens = estimateResponseCompletionTokens(res);
+  return { promptTokens, completionTokens, totalTokens: promptTokens + completionTokens };
+}
+
+function validCount(n: unknown): n is number {
+  return typeof n === "number" && Number.isFinite(n) && n >= 0;
+}
+
+/**
+ * The usage a request is metered with (review 2026-11-02 RB1 / C3): the
+ * upstream's when it is plausible, otherwise the shared estimate. Not
+ * plausible: missing; a negative, NaN or non-numeric count; all counts zero
+ * while the request had input or the response had output; or zero
+ * completion tokens although the response returned output. `estimate` is
+ * only called when the reported usage needs checking against it.
+ */
+export function resolveUsage(
+  reported: Usage | undefined,
+  estimate: () => Usage,
+): { readonly usage: Usage; readonly estimated: boolean } {
+  if (
+    reported === undefined ||
+    reported === null ||
+    typeof reported !== "object" ||
+    !validCount(reported.promptTokens) ||
+    !validCount(reported.completionTokens) ||
+    !validCount(reported.totalTokens)
+  ) {
+    return { usage: estimate(), estimated: true };
+  }
+  const total = Math.max(reported.totalTokens, reported.promptTokens + reported.completionTokens);
+  if (total > 0 && reported.completionTokens > 0) return { usage: reported, estimated: false };
+  const est = estimate();
+  if (total === 0) {
+    return est.totalTokens > 0 ? { usage: est, estimated: true } : { usage: reported, estimated: false };
+  }
+  // Prompt counted, completion reported as 0: only plausible when nothing was returned.
+  if (est.completionTokens > 0) {
+    const completionTokens = est.completionTokens;
+    return {
+      usage: {
+        ...reported,
+        completionTokens,
+        totalTokens: reported.promptTokens + completionTokens,
+      },
+      estimated: true,
+    };
+  }
+  return { usage: reported, estimated: false };
 }

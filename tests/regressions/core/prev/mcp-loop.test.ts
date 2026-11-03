@@ -64,4 +64,20 @@ describe("MCP loop", () => {
     expect(up.bodies.length).toBe(2);
     expect(r.usage!.total_tokens).toBe(10); // 2 upstream calls x 5 tokens; gateway reports only the last (5)
   }, 15000);
+
+  it("RB1: a loop round whose upstream omits usage is estimated, not counted as 0", async () => {
+    let n = 0;
+    const up = startUpstream(() => {
+      if (n++ === 0) return Response.json(completion(toolCallMsg("call_1"), { finish_reason: "tool_calls" }));
+      const { usage: _u, ...noUsage } = completion({ role: "assistant", content: "y".repeat(400) });
+      return Response.json(noUsage);
+    });
+    const gw = startGateway(up.url, { mcpServers } as any);
+    cleanup.push(up.stop, gw.stop);
+    await gw.gw.initMcp();
+    const r = await gw.client.chat.completions.create({ model: "gpt-4o", messages: [{ role: "user", content: "x" }] });
+    expect(up.bodies.length).toBe(2);
+    // round 1 reported 5; round 2 (no usage) estimated: its 400-char answer alone is 100 tokens.
+    expect(r.usage!.total_tokens).toBeGreaterThan(5 + 100);
+  }, 15000);
 });

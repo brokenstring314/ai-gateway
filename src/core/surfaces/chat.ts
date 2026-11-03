@@ -9,6 +9,7 @@ import type {
   StreamChunk,
 } from "../../providers/types.js";
 import type { Surface } from "../types.js";
+import { estimateChatUsage } from "../usage.js";
 
 /**
  * A plugin's short-circuit response, completed to a well-formed chat
@@ -41,6 +42,7 @@ export const chatSurface: Surface<ChatCompletionRequest, ChatCompletionResponse,
   call: (p, ctx, req) => p.complete(ctx, req),
   callStream: (p, ctx, req) => (p as IProvider & IStreamProvider).completeStream(ctx, req),
   usage: (res) => res.usage,
+  estimateUsage: (req, res) => estimateChatUsage(req, res),
   toPluginResponse: (res) => res,
   fromPluginResponse: (_res, view) => view,
   fromShortCircuit: (pc: PluginContext) =>

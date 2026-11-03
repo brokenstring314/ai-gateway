@@ -36,7 +36,7 @@ import { strategyRunOptions, type TargetExecutor } from "./executor.js";
 import type { McpLoop } from "./mcp-loop.js";
 import { runChatStream, type ChatShapedSurface } from "./chat-stream.js";
 import type { FinalizeOutcome, RequestRun, Result, Surface } from "./types.js";
-import { addUsage } from "./usage.js";
+import { addUsage, resolveUsage } from "./usage.js";
 import type { KeyMeter } from "../usage/key-meter.js";
 import { KEY_RPM_METADATA } from "../plugins/builtins/rate-limit.js";
 
@@ -93,18 +93,24 @@ export class Pipeline {
       const first = await this.attempt(surface, request, ctx);
       target = first.target;
       let value = first.value;
-      let usage = surface.usage(value);
+      // Metered usage of every upstream call (RB1): an upstream that reports
+      // no or an implausible usage is estimated, round by round.
+      let metered = meteredUsage(surface, request, value);
+      let usage = metered.usage;
+      let usageEstimated = metered.estimated;
       if (mcp) {
         const looped = await mcp.run(ctx, request as never, value as never, async (c, r) => {
           const next = await this.attempt(surface, r as unknown as Req, c);
           target = next.target;
+          metered = meteredUsage(surface, r as unknown as Req, next.value);
+          usage = addUsage(usage, metered.usage);
+          usageEstimated ||= metered.estimated;
           return next.value as never;
         });
         value = looped.response as Res;
-        usage = looped.usage;
       }
       if (ctx) ctx.servedTarget = target;
-      value = await this.finalize(run, { kind: "ok", value, target, usage });
+      value = await this.finalize(run, { kind: "ok", value, target, usage, usageEstimated });
       return { kind: "ok", value, target, usage };
     } catch (err) {
       await this.finalize(run, { kind: "error", error: err, target });
@@ -501,6 +507,18 @@ export function quotaTokensOf(usage: Usage): number {
 
 function nonNegativeNumber(n: unknown): number {
   return typeof n === "number" && Number.isFinite(n) && n > 0 ? n : 0;
+}
+
+/** The usage one upstream result is metered with: reported, or estimated when missing / implausible. */
+function meteredUsage<Req, Res, Chunk>(
+  surface: Surface<Req, Res, Chunk>,
+  req: Req,
+  res: Res,
+): { usage: Usage | undefined; estimated: boolean } {
+  const reported = surface.usage(res);
+  const estimate = surface.estimateUsage;
+  if (!estimate) return { usage: reported, estimated: false };
+  return resolveUsage(reported, () => estimate(req, res));
 }
 
 function unavailableModel(model: string) {

@@ -32,7 +32,7 @@ import { strategyRunOptions, type TargetExecutor } from "./executor.js";
 import type { Pipeline } from "./pipeline.js";
 import { executeStream, iterateStream, type StreamPlan } from "./stream-runner.js";
 import type { StreamEnd, Surface } from "./types.js";
-import { accumulateChunk, estimateStreamUsage, newStreamAccumulator } from "./usage.js";
+import { accumulateChunk, estimateStreamUsage, newStreamAccumulator, resolveUsage } from "./usage.js";
 
 export type ChatShapedSurface = Surface<ChatCompletionRequest, ChatCompletionResponse, StreamChunk>;
 
@@ -98,8 +98,8 @@ export async function* runChatStream(
   const acc = newStreamAccumulator(finalReq.model);
   const finalize = async (end: StreamEnd, target: string | undefined): Promise<void> => {
     const streamError = streamErrorOf(end, acc.chunks);
-    const usage = acc.usage ?? estimateStreamUsage(finalReq, acc);
-    const usageEstimated = acc.usage === undefined;
+    // No usage chunk, or an implausible one (RB1): estimated.
+    const { usage, estimated: usageEstimated } = resolveUsage(acc.usage, () => estimateStreamUsage(finalReq, acc));
     const response: ChatCompletionResponse = {
       id: acc.id,
       object: "chat.completion",

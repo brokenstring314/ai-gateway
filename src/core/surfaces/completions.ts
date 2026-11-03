@@ -25,6 +25,7 @@ import type {
   StreamChunk,
 } from "../../providers/types.js";
 import type { Surface } from "../types.js";
+import { estimateChatUsage } from "../usage.js";
 import { REQUEST_EXTRA_KEYS, applyExtras, isJsonObject, pickExtras } from "../../providers/wire-extras.js";
 import { dropNullFields, toOpenAIWireUsage } from "../../handlers/openai-wire.js";
 
@@ -274,6 +275,7 @@ export const completionsSurface: Surface<ChatCompletionRequest, ChatCompletionRe
     return p.completeStream(ctx, req);
   },
   usage: (res) => res.usage,
+  estimateUsage: (req, res) => estimateChatUsage(req, res),
   toPluginResponse: (res) => res,
   fromPluginResponse: (_res, view) => view,
   // A short-circuit answers with a chat response, which the serializer

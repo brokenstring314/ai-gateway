@@ -56,6 +56,12 @@ export interface Surface<Req, Res, Chunk = never> {
   call(p: IProvider, ctx: RequestCtx, req: Req): Promise<Res>;
   callStream?(p: IProvider, ctx: RequestCtx, req: Req): AsyncIterable<Chunk>;
   usage(res: Res): Usage | undefined;
+  /**
+   * Usage estimated from the request and result, for an upstream that
+   * reported none (or an implausible one): core/usage.ts resolveUsage.
+   * Surfaces without it (images, pass-through) are not token-metered.
+   */
+  estimateUsage?(req: Req, res: Res): Usage;
   /** Chat-shaped view of a result for after-request plugins (undefined: plugins see no response). */
   toPluginResponse(res: Res, target: string): ChatCompletionResponse | undefined;
   /** Expose the raw result to after-request plugins (e.g. metadata._embeddingResponse). */
@@ -138,4 +144,6 @@ export interface RequestRun<Req, Res, Chunk = never> {
   readonly span?: unknown;
   /** Set once finalize() has run. */
   finalized: boolean;
+  /** Tokens held in the key meter while the request runs (released exactly once in finalize). */
+  reservation?: unknown;
 }
