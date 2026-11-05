@@ -21,7 +21,8 @@ afterEach(() => {
   for (const s of stops.splice(0)) s();
 });
 
-function startUpstream() {
+/** Endless SSE upstream: one 8 KiB content chunk every `delayMs` (1 ms: as fast as it is read). */
+function startUpstream(delayMs = 1) {
   const state = { streams: 0, cancelled: 0, produced: 0 };
   const piece = `data: ${JSON.stringify({
     id: "c",
@@ -47,12 +48,12 @@ function startUpstream() {
         });
       }
       state.streams++;
-      // A never-ending, fast answer: 8 KiB content chunks as fast as they are read.
+      // A never-ending answer.
       return new Response(
         new ReadableStream<Uint8Array>(
           {
             async pull(c) {
-              await Bun.sleep(1);
+              await Bun.sleep(delayMs);
               state.produced++;
               c.enqueue(enc.encode(piece));
             },
@@ -145,7 +146,9 @@ it("a client that stops reading is cut after streamIdleTimeoutSeconds: upstream 
 }, 20000);
 
 it("a slow client that keeps reading is never cut, even past streamIdleTimeoutSeconds", async () => {
-  const up = startUpstream();
+  // ~160 KiB/s upstream (an LLM is far slower), a client reading every 400 ms: the client keeps up, so the
+  // gateway is never left with a chunk the client does not take for the 1 s stall limit.
+  const up = startUpstream(50);
   const config = loadConfigFromObject({
     auth: { enabled: false },
     server: { sseHeartbeatSeconds: 0, streamIdleTimeoutSeconds: 1 },
