@@ -2,12 +2,12 @@
 
 > **此文件是所有后续 AI 工作的唯一权威参考。每次开始工作前必读此文件，严格按计划执行，不得偏离。**
 >
-> 当前状态：**v0.2.0 已发布**（tag `v0.2.0`）。第 5 节的初始阶段与 0.2.0 重构均已完成；
-> 后续工作从第 6 节（待办）开始。
+> 当前状态：**v0.3.0 已发布**（tag `v0.3.0`，2026-11-05）。第 5 节的初始阶段、0.2.0 重构与 0.3.0（P0–P8）均已完成；
+> 后续工作从第 6 节（待办 / 已知残留风险）开始。0.2.x 升级说明见 [`docs/migration-0.3.md`](docs/migration-0.3.md)（中文 [`docs/migration-0.3.zh.md`](docs/migration-0.3.zh.md)）。
 >
 > **用户规则（2026-11-02，硬性）：本网关不是收费的 API 服务**——没有价格、费用计算、金额额度、支付、计费或用户账号；单一所有者/管理员，分给别人的 key 只按 token 额度、RPM/TPM、可用模型、过期时间限制（详见 0.3.0 计划 §3.6）。
 >
-> **下一版本 0.3.0：管理控制台 + 实时配置**，计划见 [`docs/plans/0.3.0-console-live-config.md`](docs/plans/0.3.0-console-live-config.md)（2026-10-27 立项，优先级高于第 6 节其余待办）。行为细节以 README.md / README_CN.md 和 CHANGELOG.md 为准，二者与代码不一致时以代码为准并修文档。
+> **0.3.0：管理控制台 + 实时配置**（已发布），计划与各阶段记录见 [`docs/plans/0.3.0-console-live-config.md`](docs/plans/0.3.0-console-live-config.md)。行为细节以 README.md / README_CN.md 和 CHANGELOG.md 为准，二者与代码不一致时以代码为准并修文档。
 
 ## 1. 项目定义
 
@@ -34,7 +34,7 @@
 7. **不卡住** — 遇到解决不了的问题立即降级/简化，记录在案，继续推进，绝不循环
 8. **文档同步** — 改行为必须同时改 README.md、README_CN.md（两者保持一致）和 CHANGELOG.md
 
-## 3. 功能清单（v0.2.0 状态）
+## 3. 功能清单（v0.3.0 状态）
 
 ### 3.1 Provider 系统
 - [x] `IProvider`（`name`, `complete()`, `supportedModels()`, `supportsModel()`, `models()`）、`IStreamProvider`、`IEmbeddingProvider`、`IImageProvider`
@@ -49,7 +49,7 @@
 - [x] Single、Fallback、LoadBalance（权重 0 = 摘除）、Conditional（`model` / `user` / `message` / `prompt` + `pattern` 或 `contains`）
 - [x] 策略只负责排序候选目标（`IStrategy.selectTargets`），统一由 `core/executor.ts` 执行：熔断器 permit → 并发限制队列 → 调用 → 重试 → 按 `core/outcome.ts` 分类决定是否 failover
 - [x] 每目标重试（指数抖动退避）、熔断器（基于 permit 结算）、并发限制（`targets[].concurrency`）
-- [—] ~~LeastLatency、CostOptimized、ContentBased~~：0.2.0 移除（配置会报错并给出迁移提示）；`abtest` 作为 `loadbalance` 的废弃别名保留到 0.3.0
+- [—] ~~LeastLatency、CostOptimized、ContentBased~~：0.2.0 移除（配置会报错并给出迁移提示）；`abtest` 作为 `loadbalance` 的废弃别名仍保留（原计划 0.3.0 删除，已推迟，见 6.1）
 
 ### 3.3 插件系统
 - [x] 生命周期：`before_request` / `after_request` / `on_error`；插件管理器：注册、执行链、短路、拒绝（可带 status / Retry-After / code）
@@ -69,7 +69,6 @@
 - [x] 可选的白名单透传代理（`passthroughProxy`，默认 `POST /v1/responses`、`/v1/moderations`、`/v1/audio/*`）
 - [x] 管理控制台（0.3.0 P6）：Preact + Vite 构建期依赖、内嵌二进制，概览/渠道/模型/密钥/用量/日志/Playground/设置/版本与审计，中英双语；会话 Cookie 登录 + CSRF + 锁定，浏览器不存管理员密钥
 - [x] Admin API：运行时配置（渠道/上游 key/模型/设置/版本回滚/审计/预设，0.3.0 P4，见 docs/admin-api.md）、API key 管理（作用域 inference / read_only / admin，revoke / rotate）、日志查看与清理、状态概览
-- [x] 管理控制台 `/admin/dashboard`（概览、密钥、日志、只读配置）
 
 ### 3.6 中间件
 - [x] recover、请求体大小限制（默认 10MB）、安全头、CORS（可配置）、客户端认证（Bearer，常量时间比较）、按 IP 限流（默认关闭）、请求超时（默认 30s）、关闭时排空
@@ -83,7 +82,8 @@
 - [x] YAML / JSON 配置文件；`AI_GATEWAY_*` 环境变量覆盖（按 schema 解析）；`${VAR}` 引用
 - [x] 严格配置校验（未知键、已移除键、交叉引用、全部内置插件的 `config`），`ai-gateway validate` 与启动共用
 - [x] 模型别名
-- [—] ~~热重载与配置写 API~~：0.2.0 移除；配置只来自文件，改完重启
+- [x] 实时配置（0.3.0）：运行时资源存 `<数据目录>/config.sqlite`，首启从 YAML 导入，Admin API / 控制台在线修改（校验 → 版本 → 审计 → 原子切换，可回滚）；`runtimeConfig.source: file` 只读模式；启动配置仍需改文件重启
+- [x] 发布模型（`models:`）、每 key 可用模型、模型元数据校验（超限 400，不压低）、`limits.maxOutputTokens`（默认 65536）
 
 ### 3.9 持久化与认证
 - [x] SQLite（`GATEWAY_DATA_DIR`）：密钥库（SHA-256 哈希、作用域、WAL、bootstrap 单向闩锁）、请求日志库、版本化迁移
@@ -91,12 +91,13 @@
 
 ### 3.10 嵌入模式与 CLI
 - [x] 可作为包导入：`new Gateway(config)` → `execute(surface)` / `executeStream(surface)`，以及 `route` / `routeStream` / `embed` 等包装；`createApp`、`bootstrap`
-- [x] CLI：`ai-gateway serve | validate | keys (create | list | revoke) | version`
+- [x] CLI：`ai-gateway serve | validate | keys (create | list | revoke) | config (import | status) | version`
 
 ### 3.11 打包与发布
 - [x] Dockerfile（非 root、tini、`/livez` 健康检查）+ CI 冒烟
 - [x] 打 tag `vX.Y.Z` 发布：GHCR 多架构镜像、`bun build --compile` 的 5 平台二进制 + SHA256SUMS
-- [x] 发布流程：同时改 `package.json` 与 `src/version.ts` 的版本号，给 CHANGELOG 的版本节写上日期，推送 tag
+- [x] 发布流程：同时改 `package.json` 与 `src/version.ts` 的版本号，把 CHANGELOG 的 Unreleased 改成 `## [X.Y.Z] - YYYY-MM-DD`（`scripts/release-notes.sh` 也认旧格式 `## X.Y.Z (date)`），CI 绿后在该提交上推送附注 tag `vX.Y.Z`
+- [x] v0.3.0 已发布（2026-11-05）：GHCR `0.3.0` / `0.3` / `latest`，5 平台二进制 + SHA256SUMS，Release 说明含亮点、破坏性变更摘要（指向迁移指南）与 Ferro 致谢
 
 ## 4. 项目结构
 
@@ -134,7 +135,27 @@ config.example.yaml / config.example.json / Dockerfile / README.md / README_CN.m
 - ✅ 0.2.0 收尾：Apache-2.0 LICENSE + NOTICE、真正的管理控制台、pii-secret-guard、bootstrap 闩锁 + `keys` CLI、tag 驱动的发布流水线
 - ✅ `tests/regressions/` 中导入的复现已全部修复，不再有 `it.failing`
 
+### 0.3.0 管理控制台 + 实时配置 — 已完成（2026-11-05 发布，详见 CHANGELOG.md 0.3.0 与 docs/plans/0.3.0-console-live-config.md）
+- ✅ P0 运行时快照原子切换；P1 配置库 + 加密 + YAML 首启导入；P2 按模型路由 + key 可用模型；P3 模型元数据校验
+- ✅ P4 Admin API（乐观并发、审计、版本回滚、SSRF、负载均衡、多上游 key）；P5 key token 额度 / RPM / TPM、用量统计，删除 budget 与一切价格字段
+- ✅ P6 Preact 控制台（内嵌二进制，会话 Cookie + CSRF）；P7 Playwright 浏览器 e2e + 真实 DeepSeek 冒烟（可选）
+- ✅ 两轮红队 + 多轮代码审查 / 控制台实测的严重、高、中危修复（2026-11-02 ~ 11-05）
+- ✅ P8 迁移指南（中英）、README / CHANGELOG / admin-api 文档、发布 v0.3.0
+
 ## 6. 待办 / 已知问题（下一版本）
+
+### 6.1 0.3.0 发布时已知的残留风险（低危或有意推迟，2026-11-05）
+
+- [ ] 审查低危项（`work/review-2026-11-05/SUMMARY.md`）：F6 只用 `X-Real-IP` 的反代后面 `X-Forwarded-For` 可伪造；P5 RA1 残留（多 IP 并发约 68 次/秒仍可猜；超过 1 万个 IP 时清表解锁）；P6 透传请求头用黑名单而非白名单；P7 错误信息中可见渠道名；P8 已吊销的 key 仍可 rotate；P9 `expiresAt` 接受过去的时间；D7 回滚可恢复已删除 / 已禁用的上游 key（B4 只对同一 key 保留当前健康状态）；D8 除配置库外其他 SQLite 文件 0644、目录 0755
+- [ ] 非流式请求被中断 / 超时时按 10 output tok/s 估算，对快模型偏少（有意保守，不按上限扣）
+- [ ] 推理预算类字段（如 `reasoning.max_tokens`、`thinking.budget_tokens`）不受 `maxOutputTokens` / 预留约束
+- [ ] MCP 智能体循环的额度预留只按一轮计算，没有 × `maxCallDepth`（多轮可超出预留，结束后按实计）
+- [ ] 上游重试（`retry.attempts`）的每次尝试若被上游计费，网关只按最终成功那次计 token
+- [ ] 透传路由不计 TPM（无 token 用量；有额度的 key 已被 `quota_not_metered` 拒绝，无额度 key 的 TPM 不生效）
+- [ ] 控制台没有 `circuitBreaker.countTimeouts` 开关（只能用配置文件或 Admin API）
+- [ ] darwin / windows 二进制只在 CI 构建，未实机测试（linux-x64 在 CI、linux-arm64 在沙箱冒烟）
+- [ ] `abtest` 废弃别名与插件 `stage` / `type` 无效字段仍在（原计划 0.3.0 删除，推迟以免再添破坏性变更）
+- [ ] 路线图：本地 / 局域网渠道（Ollama、vLLM）显式开关（见下方与 0.3.0 计划 §10）
 
 以下问题在核对文档与代码时发现（修复时同步更新 README 与 CHANGELOG；已修复项见 CHANGELOG Unreleased，回归测试在 `tests/regressions/config/`）：
 
@@ -145,7 +166,7 @@ config.example.yaml / config.example.json / Dockerfile / README.md / README_CN.m
 - [ ] 插件条目的 `stage` 必填但不起作用（内置插件自行决定阶段），`type` 也不起作用
 - [x] ~~MCP `maxCallDepth` 只取第一个条目~~：已修复，取各服务器所设值的最小值（与 Go 原版一致），都未设置时默认 5
 - [x] ~~`src/dashboard/static/dashboard.js`、`style.css` 遗留文件~~：已删除
-- [ ] `abtest` 废弃别名计划在 0.3.0 删除
+- [ ] `abtest` 废弃别名删除（推迟到 0.3.0 之后，见 6.1）
 - [ ] 本地/局域网模型服务（Ollama、vLLM）的显式开关：0.3.0 P4 起 Admin API 写入的渠道 base_url 只允许公网（2026-11-02 用户决定）；以后加默认关闭的 CIDR/主机名白名单开关，云元数据地址始终拒绝（见 docs/plans/0.3.0-console-live-config.md §10）
 - [ ] 用量汇总（usage.sqlite，按小时）目前不清理（只随小时数 × key/模型/渠道组合增长，不随流量增长）；需要时加保留期
 - [ ] 每个 `/v1` 请求的 key 校验仍同步读一次密钥库并写一次 `usage_count`/`last_used_at`（0.2.0 起就有）；额度/RPM/TPM 不读库，但这次读写可改为缓存 + 批量写

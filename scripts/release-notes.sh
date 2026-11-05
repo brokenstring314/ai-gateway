@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # Print GitHub release notes for <version>: its CHANGELOG.md section, install
 # pointers, and the Ferro Labs acknowledgement.
-# Usage: scripts/release-notes.sh <version>   (e.g. 0.2.0)
+# Usage: scripts/release-notes.sh <version>   (e.g. 0.3.0)
 set -euo pipefail
 
 VERSION="${1:?usage: $0 <version>}"
@@ -10,7 +10,11 @@ REPO="${GITHUB_REPOSITORY:-brokenstring314/ai-gateway}"
 IMAGE="ghcr.io/${REPO,,}"
 
 section="$(awk -v v="$VERSION" '
-  /^## / { if (found) exit; if (index($0, "## " v " ") == 1 || $0 == "## " v) { found = 1; next } }
+  /^## / {
+    if (found) exit
+    # "## 0.2.0 (date)", "## 0.2.0", "## [0.3.0] - date", "## [0.3.0]"
+    if (index($0, "## " v " ") == 1 || $0 == "## " v || index($0, "## [" v "]") == 1) { found = 1; next }
+  }
   found { print }
 ' "$ROOT/CHANGELOG.md")"
 if [ -z "${section//[$'\n\t ']/}" ]; then

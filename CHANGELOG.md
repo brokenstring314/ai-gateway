@@ -2,6 +2,38 @@
 
 ## Unreleased
 
+## [0.3.0] - 2026-11-05
+
+Upgrading from 0.2.x: read the **[migration guide](https://github.com/brokenstring314/ai-gateway/blob/v0.3.0/docs/migration-0.3.md)**
+([中文](https://github.com/brokenstring314/ai-gateway/blob/v0.3.0/docs/migration-0.3.zh.md)) before the first start —
+several defaults change (`TRUSTED_PROXIES`, `GATEWAY_SECRET_KEY`, published models only, output caps).
+
+### Highlights
+
+- **Live configuration**: channels, encrypted upstream keys, published models, routing and settings live in
+  `<data dir>/config.sqlite` (YAML imported on first start, optional read-only file mode) and change without a
+  restart through the runtime-config Admin API — every change validated, versioned, audited, with rollback.
+- **New admin console** at `/admin/dashboard` (Preact, embedded in the binary, Chinese / English): channel wizard,
+  model bindings with drag-to-reorder priority groups, keys, usage charts, logs, Playground, versions and audit.
+  Session-cookie sign-in with CSRF protection and lockout; no admin key is stored in the browser.
+- **Keys for other people**: per-key allowed models, token quota, RPM / TPM, expiry, usage statistics by key /
+  model / channel. No prices or money anywhere (the `budget` plugin and cost fields are gone).
+- **Load balancing**: priority groups per published model (weighted / round_robin / least_inflight), several
+  upstream keys per channel with soft 429 / 402 cooldowns and 401 auto-disable.
+- **Security hardening** from two red-team rounds and reviews: SSRF guard with DNS pinning, quota race and
+  usage-bypass fixes, request shape limits, linear-time redaction, admin credential lockout, trusted-proxy defaults.
+
+### Breaking changes at a glance
+
+Responses carry the published model name (`upstreamModel` in logs); only published models are served (unknown →
+`404`); `TRUSTED_PROXIES` defaults to nobody (same-host proxy: `127.0.0.1,::1`); literal upstream keys need
+`GATEWAY_SECRET_KEY`; the file's runtime sections are imported once, then ignored; `max_tokens` above the model's
+`maxOutputTokens` / `limits.maxOutputTokens` (65536) is `400`, conflicting `max_tokens` / `max_completion_tokens` is
+`400`; quota keys may get `429 quota_in_flight`; `budget` plugin and cost fields removed; gateway timeouts no longer
+trip the breaker (`countTimeouts`); failed admin header credentials lock the IP out; moving a channel to a new origin
+needs its keys again. Every item with its migration is listed below and mapped to an action in the
+[migration guide](https://github.com/brokenstring314/ai-gateway/blob/v0.3.0/docs/migration-0.3.md#every-breaking-change--action).
+
 ### Added
 
 - **Console: rotate a key** (console UI test 2026-11-05 U10): 密钥 → 轮换 asks for confirmation, then shows the new
@@ -124,7 +156,7 @@
   Requests and streams in flight finish on the snapshot they started on; an invalid config throws and the old
   snapshot keeps serving; breakers, concurrency limiters and plugins with unchanged config keep their state;
   `mcpServers` is startup-only (`ReloadRejectedError`). Also `currentSnapshot()`, `onReload(listener)`, and
-  `registerProvider` / `registerPlugin` registrations now survive reloads. Not yet exposed over HTTP.
+  `registerProvider` / `registerPlugin` registrations now survive reloads. Exposed over HTTP by the runtime-config Admin API (P4).
 
 ### Breaking changes
 
@@ -253,7 +285,8 @@ now fail `ai-gateway validate` and startup with a migration hint:
   `strategy.targets`; limit client keys with a token quota (`quotaTokens`, P5 — the `budget` plugin
   this hint used to point to was removed in P5).
 - **Built-in plugin configs are strictly validated** (`rate-limit`, `cache`,
-  `budget`, `word-filter`, `max-token`, like `pii-secret-guard` already was):
+  `word-filter`, `max-token`, like `pii-secret-guard` already was; `budget` was
+  later removed altogether, see P5 above):
   unknown keys (with a did-you-mean hint), wrong types, missing required
   settings, a `word-filter` `mode` other than `reject` / `redact`, two aliases
   of the same option, and non-integer counts are errors. The embedded
@@ -406,10 +439,10 @@ now fail `ai-gateway validate` and startup with a migration hint:
   `/v1/chat/completions`, `/v1/completions`, `/v1/embeddings` and
   `/v1/images/generations` now.
 - **Estimated stream usage ignored reasoning text.** When a stream has no
-  usage chunk, completion tokens are estimated from the streamed text (so the
-  `budget` plugin cannot be bypassed); `delta.reasoning_content` /
+  usage chunk, completion tokens are estimated from the streamed text (so token
+  limits cannot be bypassed); `delta.reasoning_content` /
   `delta.reasoning` / `delta.refusal` were not counted, so a reasoning
-  model's thinking was free for the budget and missing from token metrics.
+  model's thinking was free for the key's limits and missing from token metrics.
 - Upstream errors were written to the request log (`/admin/logs`) with
   provider `unknown`; they carry the failing target, like the
   `X-Gateway-Target` header.
@@ -517,6 +550,10 @@ now fail `ai-gateway validate` and startup with a migration hint:
 
 ### Documentation
 
+- Migration guide from 0.2.x: [docs/migration-0.3.md](docs/migration-0.3.md) (中文:
+  [docs/migration-0.3.zh.md](docs/migration-0.3.zh.md)), linked from both READMEs. `docs/admin-api.md` documents
+  every runtime-config, key, usage, log and session endpoint, including the list envelopes (0.2-era `{ keys }` /
+  `{ entries }` kept, 0.3.0 resource lists `{ object: "list", data }`).
 - README / README_CN: Architecture, Request Flow and Project Structure describe
   the 0.2.0 pipeline (`core/pipeline.ts`, `core/executor.ts`, surfaces) instead
   of the pre-refactor `Gateway.route()` flow; config reference, Admin API,

@@ -6,6 +6,7 @@ import { KeyStore } from "@/persistence/key-store";
 import { RequestLogStore } from "@/persistence/request-log-store";
 import { Metrics, resetMetrics } from "@/metrics/metrics";
 import type { GatewayConfig } from "@/config/types";
+import { VERSION } from "@/version";
 
 function makeConfig(): GatewayConfig {
   return {
@@ -55,7 +56,7 @@ describe("GET /admin/status", () => {
       requests: { total: number; errorRate: number; latencyMs: { p50: number | null } };
     };
     expect(body.scopes).toEqual(["read_only"]);
-    expect(body.version).toBe("0.2.0");
+    expect(body.version).toBe(VERSION);
     expect(body.providers).toBe(2);
     expect(body.upstreamAvailable).toBe(true);
     expect(typeof body.circuitBreakers).toBe("object");
