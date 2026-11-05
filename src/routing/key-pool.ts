@@ -39,6 +39,8 @@
  * through the Admin API bumps its revision and starts it fresh.
  */
 
+import { scrubSecrets } from "../security/secret-scrub.js";
+
 export type KeyStrategy = "round_robin" | "weighted" | "fill_first";
 
 export const DEFAULT_KEY_COOLDOWN_SECONDS = 30;
@@ -191,6 +193,11 @@ export class KeyPool {
     private readonly now: () => number = Date.now,
   ) {
     this.states = keys.map((k) => registry.stateFor(channel, k));
+  }
+
+  /** Every key of the channel (for scrubbing upstream error text, P3). */
+  secretValues(): string[] {
+    return this.keys.map((k) => k.key).filter((k) => k !== "");
   }
 
   get size(): number {
@@ -379,9 +386,7 @@ export function parseRetryAfter(value: string | null | undefined, now: number = 
 
 /** A short, secret-free description of an upstream error for key status / audit. */
 export function keyErrorText(status: number, message: string, key: string): string {
-  let text = `${status}: ${message}`;
-  if (key.length >= 6) text = text.split(key).join("[key]");
-  // Some upstreams echo a masked key ("sk-abc***xyz"); drop anything key-like.
-  text = text.replace(/\b(sk|pk|rk|key)[-_][A-Za-z0-9_*.-]{6,}/gi, "[key]");
+  // The key, and anything key-like (some upstreams echo a masked key "sk-abc***xyz").
+  const text = scrubSecrets(`${status}: ${message}`, [key]);
   return text.length > 300 ? `${text.slice(0, 297)}...` : text;
 }

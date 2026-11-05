@@ -22,6 +22,7 @@
  */
 
 import { inspectJson, looksLikeJsonContainer, MAX_JSON_DEPTH } from "@/security/json-guard";
+import { scrubSecrets } from "@/security/secret-scrub";
 import type { Context, Handler, MiddlewareHandler } from "hono";
 import type { TargetConfig } from "@/config/types";
 import type { KeyStore } from "@/persistence/key-store";
@@ -40,6 +41,8 @@ export interface ProxyTarget {
   authHeaders: Record<string, string>;
   /** fetch for this target (e.g. the SSRF guard of an Admin API channel); default: the handler's. */
   fetchImpl?: typeof fetch;
+  /** Every upstream key of the channel, scrubbed out of upstream error bodies (P3); `apiKey` always is. */
+  secrets?: readonly string[];
 }
 
 /** Resolves a proxy target by provider name or by body model. */
@@ -568,11 +571,56 @@ export function createProxyHandler(options: ProxyHandlerOptions): Handler<ProxyE
     }
     responseHeaders.set("X-Gateway-Provider", provider);
 
+    // Upstream error bodies may echo the operator's key (red team 2026-11-05
+    // P3): read them (bounded) and scrub the channel's keys before passing on.
+    if (upstream.status >= 400 && upstream.body !== null) {
+      const text = await readBounded(upstream, MAX_ERROR_BODY_BYTES);
+      responseHeaders.delete("content-length");
+      responseHeaders.delete("content-encoding");
+      if (text === undefined) {
+        return openAIErrorResponse(
+          upstream.status,
+          "upstream error body too large",
+          upstream.status >= 500 ? "server_error" : "invalid_request_error",
+          "upstream_error",
+        );
+      }
+      return new Response(scrubSecrets(text, [target.apiKey, ...(target.secrets ?? [])]), {
+        status: upstream.status,
+        headers: responseHeaders,
+      });
+    }
+
     return new Response(upstream.body, {
       status: upstream.status,
       headers: responseHeaders,
     });
   };
+}
+
+/** Largest upstream error body passed on (scrubbed) through the pass-through proxy. */
+const MAX_ERROR_BODY_BYTES = 1024 * 1024;
+
+/** The body as text, or undefined when it is longer than `max` bytes (reading stops there). */
+async function readBounded(res: Response, max: number): Promise<string | undefined> {
+  const reader = res.body!.getReader();
+  const parts: Uint8Array[] = [];
+  let total = 0;
+  try {
+    for (;;) {
+      const { done, value } = await reader.read();
+      if (done) break;
+      total += value.byteLength;
+      if (total > max) {
+        await reader.cancel().catch(() => undefined);
+        return undefined;
+      }
+      parts.push(value);
+    }
+  } catch {
+    return parts.length > 0 ? new TextDecoder().decode(Buffer.concat(parts)) : "";
+  }
+  return new TextDecoder().decode(Buffer.concat(parts));
 }
 
 // ── Error responses ──

@@ -282,6 +282,8 @@ export function createApp(
     // The key comes from the target's key pool (several keys rotate; none usable → unavailable).
     let apiKey = expanded.apiKey ?? "";
     const pool = (gateway.getRegistry().get(target.name) as { keyPool?: KeyPool } | undefined)?.keyPool;
+    // Every key of the channel is scrubbed out of upstream error bodies (P3).
+    const secrets = pool ? pool.secretValues() : apiKey !== "" ? [apiKey] : [];
     if (pool) {
       try {
         apiKey = pool.acquire().key;
@@ -290,7 +292,7 @@ export function createApp(
       }
     }
     // A target without baseURL uses its provider preset's default.
-    const resolved = resolveProxyTarget({ ...expanded, apiKey, baseURL: resolveBaseURL(expanded) });
+    const resolved = { ...resolveProxyTarget({ ...expanded, apiKey, baseURL: resolveBaseURL(expanded) }), secrets };
     // Public-policy channel: connect only to the checked address (RA3), with the gateway's guard (tests inject DNS).
     return target.publicNetworkOnly === true
       ? { ...resolved, fetchImpl: (gateway.publicHostGuard() ?? defaultPublicHostGuard).fetch() }

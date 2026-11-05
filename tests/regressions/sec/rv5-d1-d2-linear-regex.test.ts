@@ -29,6 +29,7 @@ import {
   scanPrivateKeys,
 } from "@/plugins/builtins/pii-secret-guard/detectors";
 import { keyErrorText } from "@/routing/key-pool";
+import { scrubSecrets } from "@/security/secret-scrub";
 
 // ── 1. differential ──
 
@@ -169,6 +170,7 @@ const functions: Record<string, (s: string) => unknown> = {
     );
   },
   keyErrorText: (s) => keyErrorText(400, s, "sk-upstream-key-0123456789"),
+  scrubSecrets: (s) => scrubSecrets(s, ["sk-upstream-key-0123456789", "other-key-abcdef"]),
   scrubUrl: (s) => scrubUrl(`https://h.example/v1${s}`),
   estimatePromptTokens: (s) => estimatePromptTokens({ messages: [{ role: "user", content: s }] }),
   clampText: (s) => clampText(s, 4096),

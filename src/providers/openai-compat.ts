@@ -29,6 +29,7 @@ import { type KeyPool, keyErrorText, type Lease, NoUsableKeyError } from "../rou
 import { enforceUnsupportedParams, ProviderCapability, supportsCapability } from "./capabilities.js";
 import { chunkFromJsonResponse, parseSSEStream } from "./sse-parser.js";
 import { extractForwardableHeaders } from "./response-headers.js";
+import { scrubRecord, scrubSecrets } from "../security/secret-scrub.js";
 import {
   CHOICE_EXTRA_KEYS,
   RESPONSE_EXTRA_KEYS,
@@ -100,6 +101,20 @@ export function createOpenAICompatProvider(opts: OpenAiCompatOptions): OpenAICom
    * usable key. Returns the first OK response; throws ProviderError (the last
    * upstream error) or an AbortError.
    */
+  /** Every upstream key of this channel: scrubbed out of upstream error text (red team 2026-11-05 P3). */
+  function channelSecrets(): string[] {
+    return opts.keys ? opts.keys.secretValues() : opts.apiKey ? [opts.apiKey] : [];
+  }
+
+  /** Re-throw stream errors (SSE `error` events, a JSON error body) with the channel's keys scrubbed. */
+  async function* scrubbedStream(source: AsyncIterable<StreamChunk>): AsyncGenerator<StreamChunk> {
+    try {
+      yield* source;
+    } catch (err) {
+      throw err instanceof ProviderError ? scrubProviderError(err, channelSecrets()) : err;
+    }
+  }
+
   async function send(ctx: RequestContext, path: string, payload: string): Promise<Response> {
     const pool = opts.keys;
     const tried = new Set<string>();
@@ -135,7 +150,8 @@ export function createOpenAICompatProvider(opts: OpenAiCompatOptions): OpenAICom
         return response;
       }
       const retryAfter = response.headers.get("Retry-After");
-      const err = await buildErrorFromResponse(opts.name, response, retryAfter);
+      // The channel's own keys never travel on in upstream error text (P3).
+      const err = scrubProviderError(await buildErrorFromResponse(opts.name, response, retryAfter), channelSecrets());
       if (pool && KEY_STATUSES.has(response.status)) {
         pool.report(lease.id, response.status, retryAfter, keyErrorText(response.status, err.detail, lease.key));
         tried.add(lease.id);
@@ -262,11 +278,16 @@ export function createOpenAICompatProvider(opts: OpenAiCompatOptions): OpenAICom
       // A 200 JSON body on a stream request (an error, or an upstream that
       // ignored stream:true) must not become an empty "successful" stream (T3-5).
       if (/\bjson\b/i.test(response.headers.get("content-type") ?? "")) {
-        yield await chunkFromJsonResponse(response, ctx.signal, opts.name);
+        const body = response;
+        yield* scrubbedStream(
+          (async function* () {
+            yield await chunkFromJsonResponse(body, ctx.signal, opts.name);
+          })(),
+        );
         return;
       }
 
-      yield* parseSSEStream(response.body, ctx.signal, opts.name);
+      yield* scrubbedStream(parseSSEStream(response.body, ctx.signal, opts.name));
     },
 
     supportedModels(): string[] {
@@ -589,6 +610,26 @@ async function buildErrorFromResponse(
     err.retryAfter = retryAfter;
   }
   return err;
+}
+
+/**
+ * `err` with the given secrets and anything key-shaped removed from its
+ * message and upstream error body (red team 2026-11-05 P3); the same error
+ * object when nothing changed.
+ */
+export function scrubProviderError(err: ProviderError, secrets: readonly string[]): ProviderError {
+  const detail = scrubSecrets(err.detail, secrets);
+  const upstream = err.upstream ? scrubRecord(err.upstream as Record<string, unknown>, secrets) : undefined;
+  const upstreamChanged =
+    err.upstream !== undefined &&
+    Object.entries(err.upstream).some(([k, v]) => (upstream as Record<string, unknown>)[k] !== v);
+  if (detail === err.detail && !upstreamChanged) return err;
+  const out = new ProviderError(err.provider, err.statusCode, detail, {
+    origin: err.origin,
+    ...(upstream !== undefined ? { upstream } : {}),
+  });
+  if (err.retryAfter !== undefined) out.retryAfter = err.retryAfter;
+  return out;
 }
 
 function isAbortError(err: unknown): boolean {
