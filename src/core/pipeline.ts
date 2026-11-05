@@ -32,6 +32,7 @@ import type { IStrategy } from "../routing/types.js";
 import { type ModelCatalog, type ModelRoute, modelAllowed } from "../routing/model-catalog.js";
 import { invalidRequest, modelNotAllowed, modelNotFound, modelUnavailable, toGatewayError } from "./errors.js";
 import { checkLimits, enforceChatPolicy, outputCapOf } from "./model-policy.js";
+import { boundLogEntry, loggableModelName, modelNameProblem } from "./request-limits.js";
 import { strategyRunOptions, type TargetExecutor } from "./executor.js";
 import type { McpLoop } from "./mcp-loop.js";
 import { runChatStream, type ChatShapedSurface } from "./chat-stream.js";
@@ -52,6 +53,9 @@ export const ABORTED_CALL_OUTPUT_TOKENS_PER_SECOND = 10;
 
 /** Provider label for requests that never reached an upstream target. */
 export const NO_UPSTREAM_PROVIDER = "none";
+
+/** Usage-row model of a failed request whose model is not published (D3). */
+export const UNKNOWN_MODEL = "(unknown)";
 
 /** Root span names (chat keeps its historical names). */
 const SPAN_NAMES: Readonly<Record<string, string>> = { chat: "gateway.route", chat_stream: "gateway.routeStream" };
@@ -216,8 +220,15 @@ export class Pipeline {
     ctx: RequestContext,
   ): Promise<Begun<Req, Res, Chunk>> {
     const startTime = Date.now();
-    const requestedModel = surface.model(req);
-    const resolved = surface.withModel(req, this.deps.aliases[requestedModel] ?? requestedModel);
+    // D3 (red team 2026-11-05): an over-long / control-character model name is
+    // a 400. It is answered after the key meter (so it still counts toward the
+    // key's RPM) but never travels further: from here on the request carries
+    // the name cut to its loggable size (spans, logs, usage rows).
+    const rawModel = surface.model(req);
+    const badModelName = modelNameProblem(rawModel);
+    const requestedModel = badModelName ? loggableModelName(rawModel) : rawModel;
+    if (badModelName) req = surface.withModel(req, requestedModel);
+    const resolved = badModelName ? req : surface.withModel(req, this.deps.aliases[requestedModel] ?? requestedModel);
     const pluginCtx = createPluginContext(surface.toPluginView(resolved), ctx);
     if (surface.pluginSurfaceTag) pluginCtx.metadata["_surface"] = surface.pluginSurfaceTag;
     // Which surface (chat, completions, embeddings, images, passthrough) and
@@ -241,7 +252,6 @@ export class Pipeline {
     };
 
     try {
-      this.checkModelAccess(surface, requestedModel, ctx);
       // Key limits (0.3.0 P5): in-memory counters only. An admitted request
       // always runs to the end; it holds a reservation (estimated prompt +
       // output cap, RB3) that finalize releases when its tokens are counted.
@@ -253,6 +263,10 @@ export class Pipeline {
         unmetered,
         reserve: () => (unmetered ? 0 : this.reservationFor(surface, resolved)),
       });
+      // Model checks after the key meter (D3): a request naming an unknown,
+      // forbidden or malformed model still counts toward the key's RPM.
+      if (badModelName) throw badModelName;
+      this.checkModelAccess(surface, requestedModel, ctx);
     } catch (err) {
       await this.finalize(run, { kind: "error", error: err });
       throw err;
@@ -529,6 +543,10 @@ export class Pipeline {
     };
     if (ctx?.client?.id) entry.keyId = ctx.client.id;
     entry.publishedModel = surface.model(run.request);
+    // A failed request naming no published model is counted under one usage
+    // bucket, not one row per made-up name (D3); request_logs keep the name.
+    if (error !== undefined && entry.publishedModel !== "" && !this.deps.catalog.lookup(entry.publishedModel))
+      entry.publishedModel = UNKNOWN_MODEL;
     if (usage) {
       entry.tokens = { prompt: usage.promptTokens, completion: usage.completionTokens, total: usage.totalTokens };
       const cacheHit = cacheHitTokens(usage);
@@ -571,7 +589,9 @@ export class Pipeline {
   }
 
   /** Request-log entry for a request that never went through begin() (pass-through before plugins). */
-  log(entry: RequestLogEntry): void {
+  log(raw: RequestLogEntry): void {
+    // Every string a caller or upstream shaped is cut to its log size (D3).
+    const entry = boundLogEntry(raw);
     void getRequestLogger().logRequest(entry);
     for (const sink of this.deps.logSinks()) {
       try {

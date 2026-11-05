@@ -14,6 +14,7 @@
  *  - FallbackExhausted / RetryExhausted wrappers are unwrapped.
  */
 
+import { clampText } from "../observability/redact.js";
 import { PluginRejectionError } from "../plugins/error.js";
 import { ProviderError, type UpstreamErrorBody } from "../providers/openai-compat.js";
 import { ReadableStreamError, type StreamErrorCode } from "../providers/sse-parser.js";
@@ -442,10 +443,14 @@ export function errorToSseEvent(e: GatewayError): string {
 }
 
 /** Log line for a failed request: the full detail (target, upstream message) stays server-side. */
+/** Longest message / cause text logGatewayError writes to stdout. */
+const MAX_STDOUT_ERROR_LENGTH = 2048;
+
 export function logGatewayError(e: GatewayError, label = "gateway"): void {
   if (e.kind === "plugin_rejected" || e.kind === "invalid_request" || e.kind === "key_limit") return;
   const cause = e.cause instanceof Error ? e.cause.message : e.cause !== undefined ? String(e.cause) : "";
-  console.error(
-    `[${label}] ${e.status} ${e.kind}${e.target ? ` target=${e.target}` : ""}: ${e.message}${cause && cause !== e.message ? ` (${cause})` : ""}`,
-  );
+  // Messages can carry caller- or upstream-shaped text: one bounded line (D3).
+  const message = clampText(e.message, MAX_STDOUT_ERROR_LENGTH);
+  const causeText = cause && cause !== e.message ? ` (${clampText(cause, MAX_STDOUT_ERROR_LENGTH)})` : "";
+  console.error(`[${label}] ${e.status} ${e.kind}${e.target ? ` target=${e.target}` : ""}: ${message}${causeText}`);
 }
