@@ -126,7 +126,12 @@ export function readableSnapshot(snap: unknown): Record<string, unknown> {
     const hint = String(k["hint"] ?? "key");
     const n = (seen.get(`${ch}\u0000${hint}`) ?? 0) + 1;
     seen.set(`${ch}\u0000${hint}`, n);
-    keys[n > 1 ? `${hint} #${n}` : hint] = cleanRow(k, ["hint", "kind", "last_error_at"]);
+    const row = cleanRow(k, ["hint", "kind", "last_error_at"]);
+    // Key health in the console's language (正常 / 失效（401）…).
+    if (typeof row["status"] === "string" && DICTIONARY[`ch.keyStatus.${row["status"]}`]) {
+      row["status"] = t(`ch.keyStatus.${row["status"]}` as MsgKey);
+    }
+    keys[n > 1 ? `${hint} #${n}` : hint] = row;
   }
   if (Object.keys(channels).length > 0 || s["channels"] !== undefined) out["channels"] = channels;
 
