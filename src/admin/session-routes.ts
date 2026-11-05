@@ -218,6 +218,50 @@ export function sessionOrCredential(deps: SessionDeps, credentialAuth: Middlewar
   };
 }
 
+/**
+ * Failure limiting for the header credentials (X-Admin-Secret, Authorization:
+ * Bearer) on /admin/* (red team 2026-11-05 P4: they had none, so a client
+ * locked out of the console could still guess adminSecret at ~10,000/s).
+ * Same rules and the same per-IP counter as the console sign-in:
+ *  - a 401 for a presented credential counts as one failure of the client IP;
+ *    maxLoginFailures within lockoutMinutes locks that IP out;
+ *  - a locked IP gets 429 auth_locked (Retry-After) for every header
+ *    credential, valid or not, until the lockout ends — as the console refuses
+ *    a valid key from a locked IP (checking it would answer the guess);
+ *  - many failures overall (any IP) slow every attempt down (≤ 2 s), never
+ *    refuse one (RA1);
+ *  - a success does not clear the IP's failures (unlike the console, whose
+ *    reset needs a full sign-in): otherwise a read_only key holder could
+ *    interleave valid requests to guess adminSecret without limit.
+ * Requests without credential headers (and valid keys lacking the scope,
+ * 403) are not counted.
+ */
+export function limitCredentialFailures(deps: SessionDeps, credentialAuth: MiddlewareHandler): MiddlewareHandler {
+  return async (c, next) => {
+    const presented = c.req.header("Authorization") !== undefined || c.req.header("X-Admin-Secret") !== undefined;
+    if (!presented) return credentialAuth(c, next);
+    const ip = clientIp(c);
+    const wait = deps.sessions.loginBlocked(ip);
+    if (wait !== undefined) {
+      c.header("Retry-After", String(wait));
+      return adminError(c, 429, "auth_locked", `Too many failed admin credentials; try again in ${wait}s`, {
+        retryAfter: wait,
+      });
+    }
+    const delay = deps.sessions.loginDelayMs();
+    if (delay > 0) await Bun.sleep(delay);
+    let passed = false;
+    const res = await credentialAuth(c, async () => {
+      passed = true;
+      await next();
+    });
+    if (!passed && (res instanceof Response ? res.status : c.res.status) === 401) {
+      if (deps.sessions.loginFailed(ip)) deps.audit?.("anonymous", "admin_auth_locked", null, { ip });
+    }
+    return res;
+  };
+}
+
 /** Session info and management; register after the auth middleware. */
 export function registerSessionRoutes(app: Hono<never>, deps: SessionDeps): void {
   const r = app as unknown as Hono;

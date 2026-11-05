@@ -45,6 +45,7 @@ import type { UsageRecorder } from "../usage/recorder.js";
 import type { MiddlewareHandler } from "hono";
 import { type ConsoleSessionOptions, SessionManager } from "./session.js";
 import {
+  limitCredentialFailures,
   registerSessionPublicRoutes,
   registerSessionRoutes,
   sessionOrCredential,
@@ -149,7 +150,8 @@ export function createAdminApp(
     };
   }
   // Bearer / X-Admin-Secret exactly as before; otherwise the console session cookie (+ CSRF token on writes).
-  app.use("*", sessionOrCredential(sessionDeps, credentialAuth));
+  // Header credentials share the console sign-in's per-IP lockout and global slowdown (P4).
+  app.use("*", sessionOrCredential(sessionDeps, limitCredentialFailures(sessionDeps, credentialAuth)));
 
   // Every state-changing admin request: no cross-site origin, JSON bodies only (admin/guards.ts).
   app.use("*", csrfGuard({ allowedOrigins: () => config.cors?.origins }));

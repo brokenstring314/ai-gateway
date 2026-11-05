@@ -122,6 +122,18 @@ export async function bootstrap(configPath: string, overrides: ServeOverrides = 
     hasAuthKeys: (config.auth?.keys ?? []).some((k) => typeof k === "string" && k !== ""),
     keyStoreEmpty: keyStore.isEmpty(),
   });
+  // Production refuses < 16 characters; elsewhere a short secret is only a
+  // warning. The header lockout (P4) slows guessing but cannot save a weak one.
+  if (
+    config.adminSecret !== undefined &&
+    config.adminSecret.length < 16 &&
+    process.env["GATEWAY_ENV"] !== "production"
+  ) {
+    console.warn(
+      `[config] adminSecret is ${config.adminSecret.length} characters; use at least 16 (32+ random characters ` +
+        "recommended, e.g. `openssl rand -base64 32`). GATEWAY_ENV=production refuses shorter ones.",
+    );
+  }
 
   // Fresh process-wide request logger (console JSON); the log store is
   // attached as a sink by createApp (logStore), so /admin/logs has data.

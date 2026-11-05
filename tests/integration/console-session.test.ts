@@ -268,7 +268,17 @@ describe("console login lockout", () => {
     expect(locked.status).toBe(429);
     expect(Number(locked.headers.get("Retry-After"))).toBeGreaterThan(800);
     expect(((await locked.json()) as { error: { code: string } }).error.code).toBe("login_locked");
-    const audit = (await (await h.admin("GET", "/audit")).json()) as {
+    // The lockout covers header credentials from that client too (P4)…
+    const header = await h.admin("GET", "/audit");
+    expect(header.status).toBe(429);
+    expect(((await header.json()) as { error: { code: string } }).error.code).toBe("auth_locked");
+    // …but not other clients.
+    const elsewhere = await h.app.request(
+      "/admin/audit",
+      { headers: { authorization: `Bearer ${h.keys.admin}` } },
+      { requestIP: () => ({ address: "10.9.9.9", family: "IPv4", port: 40000 }) },
+    );
+    const audit = (await elsewhere.json()) as {
       data: Array<{ action: string; detail: unknown }>;
     };
     const failures = audit.data.filter((a) => a.action === "console_login_failed");
