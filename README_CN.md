@@ -352,7 +352,7 @@ AI_GATEWAY_CORS_ORIGINS=https://a.example,https://b.example   # 数组：逗号�
 | `ALLOW_UNAUTHENTICATED_PROXY` | `false` | `true` 时允许可选的透传代理在没有客户端密钥时转发。`GATEWAY_ENV=production` 下被拒绝。 |
 | `RATE_LIMIT_RPS` | 未设置（限流关闭） | `/v1/*` 按客户端 IP 的每秒请求数，优先于 `server.perIpRateLimit.rps`；`0` 表示关闭。 |
 | `RATE_LIMIT_BURST` | 2 × rps | 每个 IP 的桶容量，优先于 `server.perIpRateLimit.burst`。 |
-| `TRUSTED_PROXIES` | `127.0.0.1,::1` | 逗号分隔的 IP/CIDR，来自这些地址的 `X-Forwarded-For` / `X-Real-IP` 才被按 IP 限流信任。部署在负载均衡后面时请设为 LB 的地址段，否则所有请求共享 LB 的 IP。 |
+| `TRUSTED_PROXIES` | *（无）* | 逗号分隔的 IP/CIDR，只有来自这些地址的 `X-Forwarded-For` / `X-Real-IP` 才被信任（按 IP 限流、控制台登录锁定）。默认不信任任何地址——自 0.3.0 起**不再默认信任回环地址**：同机反向代理请设为 `127.0.0.1,::1`，负载均衡后面请设为 LB 的地址段（链路上每一层代理都要列出）。`X-Forwarded-For` 从右往左读，跳过受信代理。在代理后面却未设置时，所有请求共享代理的 IP（会打印一次警告）。 |
 | `SHUTDOWN_GRACE_MS` | `10000` | 收到 SIGTERM/SIGINT 后等待在途请求完成的时间（毫秒）。关闭顺序：`/readyz` 立即返回 503，已有连接上的新请求返回 503 `shutting_down`；监听器停止接受新连接；等待在途请求完成，包括仍在写出的 SSE / 流式响应体（响应带 `Connection: close`）；最后关闭监听器和存储。 |
 | `OTEL_EXPORTER_OTLP_ENDPOINT` | 未设置 | 未配置 `observability.tracing.otlpEndpoint` 时使用的 OTLP HTTP 端点。 |
 | `OTEL_TRACES_SAMPLER` | 未设置 | `always_on`、`always_off` 或 `traceidratio`（使用 `sampleRatio`）；其他值被忽略。 |
@@ -741,7 +741,8 @@ curl -X POST -H "X-Admin-Secret: $S" http://localhost:3000/admin/keys/<id>/reset
 （`POST /admin/session/login`），**浏览器不保存密钥**：会话放在 `HttpOnly; SameSite=Strict; Path=/admin` Cookie 中（https 或代理发送
 `X-Forwarded-Proto: https` 时加 `Secure`），有效期 12 小时、空闲 60 分钟超时；所有用 Cookie 认证的写请求必须带双提交 CSRF token
 （`X-CSRF-Token`，与第二个 Cookie 和会话中保存的值比对）。同一客户端 IP 连续登录失败 5 次锁定 15 分钟（`429` + `Retry-After`；
-在反向代理后面请设置 `TRUSTED_PROXIES`，以便取到真实客户端 IP）。会话只存在进程内存中（重启后需重新登录），与 `/v1/*` 无关。
+在反向代理后面——包括同机代理——请设置 `TRUSTED_PROXIES`，以便取到真实客户端 IP）。没有全局锁定：全局失败过多只会让每次登录变慢（最多 2 秒），
+任何人都无法借此把真正的管理员锁在外面。会话只存在进程内存中（重启后需重新登录），与 `/v1/*` 无关。
 用密钥库 key 登录的会话在该 key 被吊销、过期或失去权限时立即失效。可调参数：
 
 ```yaml

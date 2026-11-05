@@ -1,7 +1,7 @@
 /**
  * Console session endpoints and the cookie-session admin auth (0.3.0 P6, plan §9.4).
  *
- *   POST   /admin/session/login    { key } → session cookie + CSRF cookie (public; rate limited, lockout)
+ *   POST   /admin/session/login    { key } → session cookie + CSRF cookie (public; per-IP lockout, global slowdown)
  *   POST   /admin/session/logout   ends the session (cookies cleared)
  *   GET    /admin/session          who is signed in (+ csrfToken for a cookie session)
  *   GET    /admin/sessions         live console sessions
@@ -118,6 +118,9 @@ export function registerSessionPublicRoutes(app: Hono<never>, deps: SessionDeps)
         retryAfter: wait,
       });
     }
+    // Many failures overall slow every attempt down (≤ 2 s) instead of refusing it (RA1).
+    const delay = deps.sessions.loginDelayMs();
+    if (delay > 0) await Bun.sleep(delay);
     let key: unknown;
     try {
       const body = (await c.req.json()) as unknown;

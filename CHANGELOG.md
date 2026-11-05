@@ -132,6 +132,12 @@
   - **RB5:** an upstream `Retry-After` no longer cools a key for longer than the channel's `keyCooldownSeconds`
     (default 30; was up to 1 h), the cooldown is soft (a channel without another usable key still uses the cooling
     key instead of answering `429` locally), and `429` is no longer a circuit-breaker failure.
+  - **RA2: `TRUSTED_PROXIES` now defaults to nobody** (was `127.0.0.1,::1`). `X-Forwarded-For` / `X-Real-IP` are
+    honored only from a proxy you list, and `X-Forwarded-For` is read right to left skipping trusted proxies (was:
+    leftmost hop, which the client writes). *Migration:* behind a reverse proxy **on the same host** (nginx, Caddy, a
+    sidecar) set `TRUSTED_PROXIES=127.0.0.1,::1`; behind a load balancer list its range, and every proxy in a chain.
+    Without it every client shares the proxy's address for the console sign-in lockout and the per-IP rate limit (one
+    warning is logged the first time a loopback request carries those headers).
 
 - **P5: no prices or money anywhere (user decision 2026-11-02).** The `budget` plugin is deleted: any `budget` entry in
   `plugins` (enabled or not, also in the config store's settings) fails validation with "the budget plugin was removed
@@ -315,6 +321,18 @@ now fail `ai-gateway validate` and startup with a migration hint:
   `burst` (never read) and `config.example.json` used the removed `logger`
   plugin; both now use `maxRequestsPerMinute`. The example OTLP endpoint is
   the full `/v1/traces` URL.
+
+### Security
+
+- **Console sign-in: a flood of bad attempts locked the real admin out** (red team 2026-11-02 RA1, 中). Anyone
+  sending 60 failed sign-ins a minute (from any IPs) made every sign-in `429 login_locked` for everyone. The global
+  lockout is gone: the per-IP lockout stays (5 failures → 15 min), and while ≥ 60 sign-ins fail per minute overall
+  every attempt is only slowed down before its key is checked (500 ms per multiple of 60, at most 2 s). A guesser
+  spread over many IPs pays the delay on each attempt; the real admin on an IP that is not locked always gets in.
+- **Spoofable client IP behind a same-host proxy** (RA2, 中). Loopback was trusted by default and the leftmost
+  `X-Forwarded-For` hop was used, so a client could rotate it to dodge the per-IP lockout or name a victim's IP to
+  lock it out for 15 minutes. Now nothing is trusted by default and the client is the rightmost untrusted hop (see
+  Breaking changes).
 
 ### Removed
 

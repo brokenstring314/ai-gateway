@@ -85,13 +85,19 @@ describe("SessionManager", () => {
     expect(m.loginFailed("a")).toBe(false);
   });
 
-  it("caps failures overall per minute (distributed guessing)", () => {
+  it("RA1: many failures overall slow sign-ins down (≤ 2 s) but never lock out a fresh IP", () => {
     const c = clock();
     const m = new SessionManager({ maxLoginFailures: 100 }, c.now);
-    for (let i = 0; i < 60; i++) m.loginFailed(`ip${i}`);
-    expect(m.loginBlocked("fresh")).toBeGreaterThan(0);
-    c.advance(60_000);
+    for (let i = 0; i < 59; i++) m.loginFailed(`ip${i}`);
+    expect(m.loginDelayMs()).toBe(0);
+    m.loginFailed("ip59");
+    expect(m.loginBlocked("fresh")).toBeUndefined(); // was a 429 for everyone (global lockout)
+    expect(m.loginDelayMs()).toBe(500);
+    for (let i = 0; i < 1000; i++) m.loginFailed(`flood${i}`);
     expect(m.loginBlocked("fresh")).toBeUndefined();
+    expect(m.loginDelayMs()).toBe(2000); // capped
+    c.advance(60_000);
+    expect(m.loginDelayMs()).toBe(0);
   });
 
   it("revoke by public id, end, and eviction of the least recently used beyond the cap", () => {

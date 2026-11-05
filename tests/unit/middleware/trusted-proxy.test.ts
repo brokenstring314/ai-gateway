@@ -1,10 +1,16 @@
 import { describe, it, expect } from "bun:test";
-import { parseTrustedProxies, ipInCidr, resolveClientIp } from "@/middleware/trusted-proxy";
+import {
+  ipInCidr,
+  noteIgnoredForwarding,
+  parseTrustedProxies,
+  resetForwardingWarning,
+  resolveClientIp,
+} from "@/middleware/trusted-proxy";
 
 describe("parseTrustedProxies", () => {
-  it("defaults to loopback IPv4 and IPv6 when no env is given", () => {
-    expect(parseTrustedProxies()).toEqual(["127.0.0.1", "::1"]);
-    expect(parseTrustedProxies(undefined)).toEqual(["127.0.0.1", "::1"]);
+  it("trusts nobody when no env is given (RA2: loopback is no longer trusted by default)", () => {
+    expect(parseTrustedProxies()).toEqual([]);
+    expect(parseTrustedProxies(undefined)).toEqual([]);
   });
 
   it("parses a comma-separated list and trims whitespace", () => {
@@ -17,8 +23,8 @@ describe("parseTrustedProxies", () => {
 
   it("ignores empty entries and falls back to defaults when nothing usable remains", () => {
     expect(parseTrustedProxies(" , 10.0.0.1/32 , ")).toEqual(["10.0.0.1/32"]);
-    expect(parseTrustedProxies("  ,  ")).toEqual(["127.0.0.1", "::1"]);
-    expect(parseTrustedProxies("")).toEqual(["127.0.0.1", "::1"]);
+    expect(parseTrustedProxies("  ,  ")).toEqual([]);
+    expect(parseTrustedProxies("")).toEqual([]);
   });
 });
 
@@ -87,7 +93,7 @@ describe("resolveClientIp", () => {
     expect(ip).toBe("203.0.113.9");
   });
 
-  it("trusts X-Forwarded-For from a trusted proxy and takes the leftmost hop", () => {
+  it("trusts X-Forwarded-For from a trusted proxy and skips trusted hops from the right", () => {
     const ip = resolveClientIp("10.1.2.3", { "x-forwarded-for": "203.0.113.5, 10.0.0.1, 127.0.0.1" }, trusted);
     expect(ip).toBe("203.0.113.5");
   });
@@ -124,5 +130,42 @@ describe("resolveClientIp", () => {
   it("does not trust a header value when the proxy itself is untrusted", () => {
     const ip = resolveClientIp("10.9.9.9", { "x-forwarded-for": "203.0.113.1" }, ["127.0.0.1"]);
     expect(ip).toBe("10.9.9.9");
+  });
+
+  it("RA2: a hop the client wrote (left of the address a trusted proxy appended) is never used", () => {
+    // nginx `proxy_add_x_forwarded_for`: the client sent "198.51.100.200" (a victim), nginx appended 203.0.113.9.
+    const ip = resolveClientIp("127.0.0.1", { "x-forwarded-for": "198.51.100.200, 203.0.113.9" }, ["127.0.0.1"]);
+    expect(ip).toBe("203.0.113.9");
+    // Two trusted proxies in a row (LB 10.0.0.5 → nginx on loopback).
+    expect(
+      resolveClientIp("127.0.0.1", { "x-forwarded-for": "6.6.6.6, 203.0.113.9, 10.0.0.5" }, [
+        "127.0.0.1",
+        "10.0.0.0/8",
+      ]),
+    ).toBe("203.0.113.9");
+  });
+
+  it("RA2: with the default (nothing trusted) a loopback peer's X-Forwarded-For is ignored", () => {
+    resetForwardingWarning();
+    const ip = resolveClientIp("127.0.0.1", { "x-forwarded-for": "198.51.100.200" }, parseTrustedProxies(undefined));
+    expect(ip).toBe("127.0.0.1");
+    expect(resolveClientIp("::1", { "x-real-ip": "198.51.100.200" }, [])).toBe("::1");
+  });
+});
+
+describe("noteIgnoredForwarding (one-time warning)", () => {
+  it("warns once for a loopback peer with forwarding headers, never for others", () => {
+    resetForwardingWarning();
+    const seen: string[] = [];
+    const warn = (m: string) => seen.push(m);
+    expect(noteIgnoredForwarding("203.0.113.9", { "x-forwarded-for": "1.2.3.4" }, warn)).toBe(false);
+    expect(noteIgnoredForwarding("127.0.0.1", {}, warn)).toBe(false);
+    expect(noteIgnoredForwarding("127.0.0.1", { "X-Forwarded-For": "1.2.3.4" }, warn)).toBe(true);
+    expect(noteIgnoredForwarding("::1", { "x-real-ip": "1.2.3.4" }, warn)).toBe(false); // already warned
+    expect(seen).toHaveLength(1);
+    expect(seen[0]).toContain("TRUSTED_PROXIES");
+    resetForwardingWarning();
+    expect(noteIgnoredForwarding("::ffff:127.0.0.1", { "x-real-ip": "1.2.3.4" }, warn)).toBe(true);
+    resetForwardingWarning();
   });
 });

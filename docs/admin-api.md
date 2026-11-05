@@ -186,8 +186,14 @@ server-side session:
   records `console_login`, `console_logout`, `console_session_revoked` and `console_login_failed` (client IP, never the
   key), with the session's actor (`key:<id>`, `admin-secret`, `bootstrap-key`) on every write.
 - **Lockout.** `console.maxLoginFailures` (5) failures from one client IP lock it out for `console.lockoutMinutes`
-  (15); at most 60 failures per minute overall. Behind a reverse proxy set `TRUSTED_PROXIES`, or every client shares
-  the proxy's address. Header (Bearer / `X-Admin-Secret`) access is not affected and always wins over a cookie.
+  (15). There is no global lockout: while 60 or more sign-ins fail per minute across all IPs, every sign-in attempt
+  is only slowed down (500 ms per multiple of 60, at most 2 s) before its key is checked, so a flood of bad attempts
+  can never lock the real admin out of an IP that is not locked (red team RA1; was a hard `429` for everyone).
+  The client IP is the TCP peer; `X-Forwarded-For` / `X-Real-IP` count only from a proxy listed in `TRUSTED_PROXIES`
+  (default: none — loopback is no longer trusted, RA2), read right to left skipping trusted proxies. Behind a reverse
+  proxy (also one on the same host) set `TRUSTED_PROXIES`, or every client shares the proxy's address; the gateway
+  logs one warning when a request from loopback carries those headers while nothing is trusted. Header (Bearer /
+  `X-Admin-Secret`) access is not affected and always wins over a cookie.
 
 ### Playground
 

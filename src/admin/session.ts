@@ -12,7 +12,9 @@
  *  - double-submit CSRF: a second, script-readable cookie holds a random token that
  *    every cookie-authenticated write must echo in X-CSRF-Token; it must equal both the
  *    cookie and the token stored in the session (compared in constant time);
- *  - login failures are rate limited per client IP with a lockout, plus a global cap;
+ *  - login failures are rate limited per client IP with a lockout; many failures overall
+ *    (≥ 60 a minute, any IP) only slow every sign-in attempt down (≤ 2 s), never refuse
+ *    one, so a flood of bad attempts cannot lock the real admin out (red team RA1);
  *  - the map is keyed by SHA-256 of the cookie value; listing shows a separate public id;
  *  - sessions minted from a store key are re-checked against the key store on every
  *    admin request (revoked / expired / scope removed → session ends); bootstrap
@@ -70,7 +72,11 @@ export interface SessionView {
 }
 
 const MAX_SESSIONS = 64;
-const GLOBAL_FAILURES_PER_MINUTE = 60;
+/** Failures a minute (all IPs) above which every sign-in attempt is slowed down (RA1: was a hard 429 for everyone). */
+export const GLOBAL_SLOWDOWN_FAILURES_PER_MINUTE = 60;
+/** Slowdown per multiple of the threshold, and its ceiling. */
+export const GLOBAL_SLOWDOWN_STEP_MS = 500;
+export const GLOBAL_SLOWDOWN_MAX_MS = 2000;
 
 function randomToken(bytes = 32): string {
   const buf = new Uint8Array(bytes);
@@ -103,15 +109,28 @@ export class SessionManager {
     this.secureCookie = opts.secureCookie ?? "auto";
   }
 
-  /** Seconds the client must wait before another login attempt, else undefined. */
+  /**
+   * Seconds this client IP must wait before another login attempt, else undefined.
+   * Only the per-IP lockout refuses a login: there is no global lockout (RA1).
+   */
   loginBlocked(ip: string): number | undefined {
     const t = this.now();
     const f = this.failures.get(ip);
     if (f && f.lockedUntil > t) return Math.max(1, Math.ceil((f.lockedUntil - t) / 1000));
-    if (t - this.globalWindow.start < 60_000 && this.globalWindow.count >= GLOBAL_FAILURES_PER_MINUTE) {
-      return Math.max(1, Math.ceil((this.globalWindow.start + 60_000 - t) / 1000));
-    }
     return undefined;
+  }
+
+  /**
+   * Delay (ms) to apply to a login attempt before its credential is checked:
+   * 0 normally; while failures from all IPs in the current minute reach the
+   * threshold, 500 ms per multiple of it, at most 2 s. It slows a distributed
+   * guesser (each attempt costs the delay) but never refuses the real admin.
+   */
+  loginDelayMs(): number {
+    const t = this.now();
+    if (t - this.globalWindow.start >= 60_000) return 0;
+    const n = Math.floor(this.globalWindow.count / GLOBAL_SLOWDOWN_FAILURES_PER_MINUTE);
+    return Math.min(GLOBAL_SLOWDOWN_MAX_MS, n * GLOBAL_SLOWDOWN_STEP_MS);
   }
 
   /** Record a failed login; returns true when this failure locked the client out. */

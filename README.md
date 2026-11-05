@@ -357,7 +357,7 @@ These are read directly from the environment (not via `AI_GATEWAY_*`):
 | `ALLOW_UNAUTHENTICATED_PROXY` | `false` | `true` lets the opt-in pass-through proxy forward requests without a client key. Refused when `GATEWAY_ENV=production`. |
 | `RATE_LIMIT_RPS` | unset (limiter off) | Per-client-IP limit on `/v1/*`, requests/second. Overrides `server.perIpRateLimit.rps`. `0` disables. |
 | `RATE_LIMIT_BURST` | 2 × rps | Per-IP bucket size. Overrides `server.perIpRateLimit.burst`. |
-| `TRUSTED_PROXIES` | `127.0.0.1,::1` | Comma-separated IPs/CIDRs whose `X-Forwarded-For` / `X-Real-IP` are trusted for the per-IP limiter. Set it to your load balancer's range, otherwise every request behind it shares the LB's IP. |
+| `TRUSTED_PROXIES` | *(none)* | Comma-separated IPs/CIDRs whose `X-Forwarded-For` / `X-Real-IP` are trusted (per-IP limiter, console sign-in lockout). Default: nobody — since 0.3.0 loopback is **not** trusted, so behind a same-host reverse proxy set `127.0.0.1,::1`; behind a load balancer, its range (list every proxy in the chain). `X-Forwarded-For` is read right to left, skipping trusted proxies. Unset behind a proxy, every client shares the proxy's IP (one warning is logged). |
 | `SHUTDOWN_GRACE_MS` | `10000` | How long SIGTERM/SIGINT waits for in-flight requests before closing. Shutdown order: `/readyz` → 503 and new requests on open connections → 503 `shutting_down`; the listener stops accepting new connections; in-flight requests finish, including SSE / streamed bodies still being written (their responses carry `Connection: close`); then the listener and stores are closed. |
 | `OTEL_EXPORTER_OTLP_ENDPOINT` | unset | OTLP HTTP endpoint when `observability.tracing.otlpEndpoint` is not set. |
 | `OTEL_TRACES_SAMPLER` | unset | `always_on`, `always_off` or `traceidratio` (uses `sampleRatio`); other values are ignored. |
@@ -803,8 +803,9 @@ it once for a server-side session (`POST /admin/session/login`) and never stores
 lives in an `HttpOnly; SameSite=Strict; Path=/admin` cookie (`Secure` on https or behind a proxy sending
 `X-Forwarded-Proto: https`), lasts 12 h with a 60-minute idle timeout, and every cookie-authenticated write needs the
 double-submit CSRF token (`X-CSRF-Token`, compared with a second cookie and the session). Five failed sign-ins from one
-client IP lock it out for 15 minutes (`429` + `Retry-After`; set `TRUSTED_PROXIES` behind a reverse proxy so the real
-client IP is used). Sessions are kept in memory only (a restart signs everyone out) and never touch `/v1/*`. A
+client IP lock it out for 15 minutes (`429` + `Retry-After`; set `TRUSTED_PROXIES` behind a reverse proxy, also one on
+the same host, so the real client IP is used). There is no global lockout: many failures overall only slow sign-ins
+down (at most 2 s), so nobody can lock the real admin out. Sessions are kept in memory only (a restart signs everyone out) and never touch `/v1/*`. A
 session made with a store key ends when that key is revoked, expires or loses its scope. Tune with:
 
 ```yaml

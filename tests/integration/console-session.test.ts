@@ -248,6 +248,52 @@ describe("console login lockout", () => {
   });
 });
 
+/** A login from a given TCP peer address (Bun's server.requestIP), with optional extra headers. */
+async function loginFrom(
+  h: Harness,
+  key: string,
+  peer: string,
+  headers: Record<string, string> = {},
+): Promise<Response> {
+  return h.app.request(
+    "/admin/session/login",
+    { method: "POST", headers: { "content-type": "application/json", ...headers }, body: JSON.stringify({ key }) },
+    { requestIP: () => ({ address: peer, family: peer.includes(":") ? "IPv6" : "IPv4", port: 40000 }) },
+  );
+}
+
+describe("console login: no global lockout, no spoofable client IP (red team RA1 / RA2)", () => {
+  it("RA1: 62 failures from 62 IPs (over the old global cap) do not lock the admin out of a fresh IP", async () => {
+    const h = await adminHarness(FILE);
+    for (let i = 0; i < 62; i++) {
+      expect((await loginFrom(h, "sk-wrong-flood", `203.0.113.${i + 1}`)).status).toBe(401);
+    }
+    const t0 = Date.now();
+    const ok = await loginFrom(h, h.keys.admin, "198.51.100.77");
+    expect(ok.status).toBe(200); // was 429 login_locked for everyone
+    expect(Date.now() - t0).toBeGreaterThanOrEqual(450); // slowed down (500 ms at 1× the threshold), not refused
+    // The per-IP lockout still holds.
+    for (let i = 0; i < 5; i++) await loginFrom(h, "sk-wrong", "192.0.2.10");
+    expect((await loginFrom(h, h.keys.admin, "192.0.2.10")).status).toBe(429);
+  });
+
+  it("RA2: by default X-Forwarded-For from a loopback peer is ignored: no lockout bypass, no victim lockout", async () => {
+    const h = await adminHarness(FILE);
+    // Rotating the spoofed XFF does not give 5 fresh "IPs": the peer (127.0.0.1) is locked after 5.
+    for (let i = 0; i < 5; i++) {
+      expect((await loginFrom(h, "sk-wrong", "127.0.0.1", { "x-forwarded-for": `203.0.113.${i + 1}` })).status).toBe(
+        401,
+      );
+    }
+    expect((await loginFrom(h, h.keys.admin, "127.0.0.1", { "x-forwarded-for": "203.0.113.99" })).status).toBe(429);
+    // Those attempts named 198.51.100.200 nowhere; and spoofing a victim's IP does not lock the victim out.
+    const h2 = await adminHarness(FILE);
+    for (let i = 0; i < 6; i++)
+      await loginFrom(h2, "sk-wrong", "203.0.113.50", { "x-forwarded-for": "198.51.100.200" });
+    expect((await loginFrom(h2, h2.keys.admin, "198.51.100.200")).status).toBe(200);
+  });
+});
+
 describe("console playground and channel balance", () => {
   let h: Harness;
   beforeAll(async () => {

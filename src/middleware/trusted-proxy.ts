@@ -3,12 +3,18 @@
  *
  * X-Forwarded-For / X-Real-IP headers are only honored when the request
  * arrives from a trusted proxy — i.e. the remote address matches one of the
- * configured CIDR ranges. Untrusted clients can spoof these headers, so the
- * raw remote address is always returned for them.
+ * configured CIDR ranges (`TRUSTED_PROXIES`). Untrusted clients can spoof these
+ * headers, so the raw remote address is always returned for them.
+ *
+ * Nothing is trusted by default (red team 2026-11-02 RA2): loopback used to be,
+ * so behind a same-host proxy any client could choose its "IP" with
+ * X-Forwarded-For (skip the per-IP sign-in lockout, or lock a victim's IP out).
+ * Behind a reverse proxy, list it in TRUSTED_PROXIES; a request from loopback
+ * that carries forwarding headers while nothing is trusted logs one warning.
  */
 
-/** Default trusted proxies when none are configured: loopback IPv4 and IPv6. */
-export const DEFAULT_TRUSTED_PROXIES: readonly string[] = ["127.0.0.1", "::1"];
+/** Default trusted proxies when none are configured: none (0.3.0, RA2; was loopback). */
+export const DEFAULT_TRUSTED_PROXIES: readonly string[] = [];
 
 export interface ParsedIp {
   readonly bytes: Uint8Array;
@@ -26,7 +32,7 @@ export type HeaderMap = Readonly<Record<string, string | undefined>>;
 /**
  * Parse a comma-separated list of CIDR ranges. Entries are trimmed and
  * empty entries are ignored. When `env` is undefined or contains no usable
- * entries, the default loopback proxies are returned.
+ * entries, nothing is trusted.
  */
 export function parseTrustedProxies(env?: string): string[] {
   const entries = (env ?? "")
@@ -52,23 +58,71 @@ export function ipInCidr(ip: string, cidr: string): boolean {
 /**
  * Resolve the real client IP. Forwarded headers are only consulted when
  * `remoteAddress` itself is one of the `trustedProxies`. When trusted,
- * X-Forwarded-For wins and its leftmost (trimmed) hop is returned; falling
- * back to X-Real-IP, then the remote address itself.
+ * X-Forwarded-For is read from the right: each proxy appends the address it
+ * saw, so the first hop (from the right) that is not a trusted proxy is the
+ * client; hops further left were written by the client and are never used
+ * (unless every hop is a trusted proxy, then the leftmost one). Without
+ * X-Forwarded-For, X-Real-IP, then the remote address itself.
  */
 export function resolveClientIp(remoteAddress: string, headers: HeaderMap, trustedProxies: readonly string[]): string {
   const isTrusted = trustedProxies.some((cidr) => ipInCidr(remoteAddress, cidr));
-  if (!isTrusted) return remoteAddress;
+  if (!isTrusted) {
+    if (trustedProxies.length === 0) noteIgnoredForwarding(remoteAddress, headers);
+    return remoteAddress;
+  }
 
   const forwardedFor = getHeader(headers, "x-forwarded-for");
   if (forwardedFor !== undefined) {
-    const leftmost = forwardedFor.split(",")[0]?.trim();
-    if (leftmost !== undefined && leftmost !== "") return leftmost;
+    const hops = forwardedFor
+      .split(",")
+      .map((h) => h.trim())
+      .filter((h) => h !== "");
+    for (let i = hops.length - 1; i >= 0; i--) {
+      const hop = hops[i]!;
+      if (i === 0 || !trustedProxies.some((cidr) => ipInCidr(hop, cidr))) return hop;
+    }
   }
 
   const realIp = getHeader(headers, "x-real-ip");
   if (realIp !== undefined && realIp.trim() !== "") return realIp.trim();
 
   return remoteAddress;
+}
+
+let forwardingWarned = false;
+
+/** Reset the one-time warning (tests). */
+export function resetForwardingWarning(): void {
+  forwardingWarned = false;
+}
+
+/**
+ * One warning per process when a request from loopback carries forwarding
+ * headers while no proxy is trusted: most likely a same-host reverse proxy
+ * whose TRUSTED_PROXIES was not set (since 0.3.0 loopback is not trusted by
+ * default), so every client shares the proxy's address for per-IP limits.
+ */
+export function noteIgnoredForwarding(
+  remoteAddress: string,
+  headers: HeaderMap,
+  warn: (message: string) => void = (m) => console.warn(m),
+): boolean {
+  if (forwardingWarned || !isLoopback(remoteAddress)) return false;
+  const xff = getHeader(headers, "x-forwarded-for");
+  const real = getHeader(headers, "x-real-ip");
+  if ((xff === undefined || xff.trim() === "") && (real === undefined || real.trim() === "")) return false;
+  forwardingWarned = true;
+  warn(
+    `[security] a request from ${remoteAddress} carries X-Forwarded-For / X-Real-IP, but TRUSTED_PROXIES is not set, ` +
+      "so the header is ignored and every client behind this proxy shares its address for the sign-in lockout and " +
+      "per-IP rate limit. Behind a same-host reverse proxy set TRUSTED_PROXIES=127.0.0.1,::1 (since 0.3.0 loopback " +
+      "is no longer trusted by default). This warning is shown once.",
+  );
+  return true;
+}
+
+function isLoopback(ip: string): boolean {
+  return ipInCidr(ip, "127.0.0.0/8") || ipInCidr(ip, "::1");
 }
 
 function getHeader(headers: HeaderMap, name: string): string | undefined {
