@@ -4,7 +4,9 @@
  *  - U2: editing a key restricted to NO models (allowedModels: []) and saving
  *    an unrelated field used to widen it to ALL models;
  *  - U5: the model drawer saved with PATCH model then PUT bindings, so a
- *    bindings error left the field change live and the retry answered 409.
+ *    bindings error left the field change live and the retry answered 409;
+ *  - U3 / U4: clearing an optional field (model display name / description,
+ *    channel 429 cooldown) was omitted from the PATCH, so the old value stayed.
  */
 import { expect, test } from "@playwright/test";
 import { type Gateway, goTo, signedIn, startGateway, toast } from "./support/gateway";
@@ -88,6 +90,61 @@ test("U5 models: a bindings error saves nothing; fixing it and saving again work
   const saved = await gw.admin<{ description: string | null }>("GET", `/models/${m.body.id}`);
   expect(saved.body.description).toBe("all or nothing");
   expect((await gw.admin<{ head: number }>("GET", "/config/versions?limit=1")).body.head).toBe(v0 + 1);
+  await watch.assertClean();
+  await page.context().close();
+});
+
+test("U3 models: clearing the display name and description saves them as cleared (null)", async ({ browser }) => {
+  const m = await gw.admin<{ id: string }>("POST", "/models", {
+    name: "m-display",
+    displayName: "Old display",
+    description: "Old description",
+    bindings: [{ channel: "seed", upstreamModel: "seed-chat" }],
+  });
+  expect(m.status).toBe(201);
+  const { page, watch } = await signedIn(browser, gw, adminKey);
+  await goTo(page, "模型");
+  const row = page.locator("table.card tbody tr", { hasText: "m-display" });
+  await expect(row).toContainText("Old display");
+  await row.getByRole("button", { name: "编辑" }).click();
+  const drawer = page.getByRole("dialog", { name: "m-display" });
+  await drawer.locator("label.field", { hasText: "显示名" }).locator("input").fill("");
+  await drawer.locator("label.field", { hasText: "描述" }).locator("input").fill("");
+  await drawer.getByRole("button", { name: "保存" }).click();
+  await toast(page, /已生效/);
+  const after = await gw.admin<{ displayName: string | null; description: string | null }>(
+    "GET",
+    `/models/${m.body.id}`,
+  );
+  expect(after.body.displayName).toBeNull();
+  expect(after.body.description).toBeNull();
+  await expect(row).not.toContainText("Old display");
+  await watch.assertClean();
+  await page.context().close();
+});
+
+test("U4 channels: clearing the 429 cooldown saves it as cleared (back to the default)", async ({ browser }) => {
+  const chs = await gw.admin<{ data: Array<{ id: string; name: string }> }>("GET", "/channels");
+  const seedId = chs.body.data.find((c) => c.name === "seed")?.id ?? "";
+  const ch = await gw.admin<{ revision: number }>("GET", `/channels/${seedId}`);
+  const p = await gw.admin(
+    "PATCH",
+    `/channels/${seedId}`,
+    { keyCooldownSeconds: 60 },
+    { "If-Match": `"${ch.body.revision}"` },
+  );
+  expect(p.status).toBe(200);
+  const { page, watch } = await signedIn(browser, gw, adminKey);
+  await goTo(page, "渠道");
+  await page.locator("table.card tbody tr", { hasText: "seed" }).getByRole("button", { name: "编辑" }).click();
+  const drawer = page.getByRole("dialog", { name: "seed" });
+  const cooldown = drawer.locator("label.field", { hasText: "429 冷却秒数" }).locator("input");
+  await expect(cooldown).toHaveValue("60");
+  await cooldown.fill("");
+  await drawer.getByRole("button", { name: "保存" }).click();
+  await toast(page, /已生效|已保存/);
+  const after = await gw.admin<{ keyCooldownSeconds: number | null }>("GET", `/channels/${seedId}`);
+  expect(after.body.keyCooldownSeconds).toBeNull();
   await watch.assertClean();
   await page.context().close();
 });

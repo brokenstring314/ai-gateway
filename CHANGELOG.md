@@ -206,6 +206,13 @@ now fail `ai-gateway validate` and startup with a migration hint:
 
 ### Fixed
 
+- **Console: clearing an optional field did not save** (review 2026-11-02 U3 / U4). The model drawer left an empty
+  display name / description out of the `PATCH` and the channel drawer did the same with an empty 429 cooldown, so the
+  old value stayed while the console said “已生效”. A cleared field is now sent as `null`: the display name and
+  description are cleared, `keyCooldownSeconds` goes back to the default (30 s). The server also stores an empty or
+  blank `displayName` / `description` as `null` (create and `PATCH`). Checked the other optional fields of the same
+  drawers: model metadata (sent whole), base URL (already `null`), key limits / expiry / allowed models (already
+  `null`) and settings `limits` (already `null`) were correct; bindings are replaced whole.
 - **A response without usage was counted as 0 tokens: unlimited quota** (red team 2026-11-02 RB1, 严重). PoC: quota
   1000, 30 non-streaming requests to an upstream that omits `usage` → all 200, 30,240 tokens billed upstream, 0
   counted. A missing or implausible usage (absent, all zero, negative / NaN, zero completion with output) on chat,

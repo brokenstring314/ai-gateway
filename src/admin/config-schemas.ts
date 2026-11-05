@@ -119,10 +119,19 @@ export const BindingSchema = strictObject({
 
 const modelName = z.string().min(1).max(200);
 
+/** Optional free text where an empty (or blank) value means "none": stored as null, so clearing a field clears it (review 2026-11-02 U3). */
+const clearableText = (max: number) =>
+  z
+    .string()
+    .max(max)
+    .nullable()
+    .optional()
+    .transform((v) => (typeof v === "string" && v.trim() === "" ? null : v));
+
 export const ModelCreateSchema = strictObject({
   name: modelName,
-  displayName: z.string().max(200).nullable().optional(),
-  description: z.string().max(2000).nullable().optional(),
+  displayName: clearableText(200),
+  description: clearableText(2000),
   enabled: z.boolean().optional(),
   metadata: ModelMetadataSchema.optional(),
   strategy: z.enum(["fallback", "loadbalance"]).optional(),
@@ -132,8 +141,8 @@ export const ModelCreateSchema = strictObject({
 
 export const ModelPatchSchema = strictObject({
   name: modelName.optional(),
-  displayName: z.string().max(200).nullable().optional(),
-  description: z.string().max(2000).nullable().optional(),
+  displayName: clearableText(200),
+  description: clearableText(2000),
   enabled: z.boolean().optional(),
   metadata: ModelMetadataSchema.optional(),
   strategy: z.enum(["fallback", "loadbalance"]).optional(),

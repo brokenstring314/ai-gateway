@@ -415,6 +415,41 @@ describe("SSRF: Admin API base URLs are public internet only", () => {
 });
 
 describe("models and the unavailable-model fix", () => {
+  it("U3/U4: null or an empty display name / description clears it; null keyCooldownSeconds reverts to the default", async () => {
+    const h = await adminHarness(explicitFile());
+    const created = await h.admin("POST", "/models", {
+      name: "clearable",
+      displayName: "   ",
+      description: "",
+      bindings: [{ channel: "a", upstreamModel: "m" }],
+    });
+    expect(created.status).toBe(201);
+    let m = await json(created);
+    expect(m.displayName).toBeNull();
+    expect(m.description).toBeNull();
+    let r = await h.admin(
+      "PATCH",
+      `/models/${m.id}`,
+      { displayName: "Shown", description: "Text" },
+      { ifMatch: m.revision },
+    );
+    m = await json(r);
+    expect(m).toMatchObject({ displayName: "Shown", description: "Text" });
+    r = await h.admin("PATCH", `/models/${m.id}`, { displayName: null, description: "" }, { ifMatch: m.revision });
+    expect(r.status).toBe(200);
+    m = await json(await h.admin("GET", `/models/${m.id}`));
+    expect(m.displayName).toBeNull();
+    expect(m.description).toBeNull();
+
+    const a = (await json(await h.admin("GET", "/channels"))).data.find((c: { name: string }) => c.name === "a");
+    r = await h.admin("PATCH", `/channels/${a.id}`, { keyCooldownSeconds: 60 }, { ifMatch: a.revision });
+    const ch = await json(r);
+    expect(ch.keyCooldownSeconds).toBe(60);
+    r = await h.admin("PATCH", `/channels/${a.id}`, { keyCooldownSeconds: null }, { ifMatch: ch.revision });
+    expect(r.status).toBe(200);
+    expect((await json(await h.admin("GET", `/channels/${a.id}`))).keyCooldownSeconds).toBeNull();
+  });
+
   it("create a model with priority groups; the next group is used only when the first fails", async () => {
     const h = await adminHarness({
       strategy: { mode: "fallback" },

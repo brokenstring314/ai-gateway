@@ -240,8 +240,9 @@ export function ModelDrawer(props: { id: string; canWrite: boolean; channels: Ch
     }
     const fields = {
       name: f.name,
-      ...(f.displayName ? { displayName: f.displayName } : {}),
-      ...(f.description ? { description: f.description } : {}),
+      // A cleared field is sent as null so the server clears it; omitting it kept the old value (review 2026-11-02 U3).
+      displayName: f.displayName.trim() === "" ? null : f.displayName,
+      description: f.description.trim() === "" ? null : f.description,
       enabled: f.enabled,
       strategy: f.strategy,
       balance: f.balance,

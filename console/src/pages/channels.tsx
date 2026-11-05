@@ -317,7 +317,8 @@ function ChannelDrawer(props: { id: string; canWrite: boolean; onClose: () => vo
                 enabled: form["enabled"],
                 priority: Number(form["priority"]),
                 keyStrategy: form["keyStrategy"],
-                ...(cd !== "" ? { keyCooldownSeconds: Number(cd) } : {}),
+                // Cleared = null: back to the default (30 s). Omitting it kept the old value (review 2026-11-02 U4).
+                keyCooldownSeconds: cd.trim() === "" ? null : Number(cd),
                 models: String(form["models"] ?? "")
                   .split(/\s*[\n,]\s*/)
                   .filter(Boolean),
