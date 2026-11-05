@@ -65,7 +65,10 @@ test("RC1 channel drawer (en): the notice and the error are translated", async (
   await goTo(page, "Channels");
   await page.locator("table.card tbody tr", { hasText: "epsilon" }).getByRole("button", { name: "Edit" }).click();
   const drawer = page.getByRole("dialog", { name: "epsilon" });
-  await drawer.locator("label.field", { hasText: "Base URL" }).locator("input").fill("https://zeta.upstream.test/v1");
+  const base = drawer.locator("label.field", { hasText: "Base URL" }).locator("input");
+  // Wait for the loaded channel: filling before the drawer's form is populated gets overwritten (CI flake).
+  await expect(base).toHaveValue("https://epsilon.upstream.test/v1");
+  await base.fill("https://zeta.upstream.test/v1");
   const rekey = drawer.getByTestId("rekey");
   await expect(rekey).toContainText("never sent to a new origin");
   await drawer.getByRole("button", { name: "Save" }).first().click();
