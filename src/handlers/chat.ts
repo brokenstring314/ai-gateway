@@ -7,7 +7,7 @@
 
 import { z } from "zod";
 import type { AppType } from "../app.js";
-import { respondError, respondInvalidJson, respondValidation } from "./error-response.js";
+import { respondError, respondValidation, readJsonBody } from "./error-response.js";
 import type { Gateway } from "../gateway.js";
 import type { ChatCompletionRequest } from "../providers/types.js";
 import { mergeForwardedHeaders } from "../providers/response-headers.js";
@@ -103,12 +103,9 @@ const ChatCompletionRequestSchema = z.object({
 export function registerChatHandler(app: AppType, gateway: Gateway): void {
   app.post("/v1/chat/completions", async (c) => {
     // Parse and validate request body
-    let body: unknown;
-    try {
-      body = await c.req.json();
-    } catch {
-      return respondInvalidJson(c);
-    }
+    const read = await readJsonBody(c);
+    if (!read.ok) return read.response;
+    const body = read.body;
 
     const parsed = ChatCompletionRequestSchema.safeParse(fromOpenAIWireChatRequest(body));
     if (!parsed.success) {

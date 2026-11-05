@@ -44,6 +44,31 @@ export function errorStatus(err: unknown): number | undefined {
   return undefined;
 }
 
+/** The JavaScript engine's own error types: thrown by gateway code, never by an upstream. */
+const LOCAL_ERROR_TYPES: readonly (abstract new (...args: never[]) => Error)[] = [
+  RangeError,
+  TypeError,
+  SyntaxError,
+  ReferenceError,
+  EvalError,
+  URIError,
+];
+
+/**
+ * Whether `err` is a bug / resource error raised by the gateway itself (a
+ * stack overflow serializing a deeply nested body, a TypeError), not
+ * something the upstream did (red team 2026-11-05 D5). Upstream and
+ * transport failures always arrive as errors carrying a status
+ * (ProviderError; status 0 = transport), so a bare engine error says nothing
+ * about the target: it must not count toward the breaker and must not fail
+ * over (every target would hit the same local error).
+ */
+export function isLocalError(err: unknown): boolean {
+  if (err === null || typeof err !== "object") return false;
+  if ("statusCode" in err) return false;
+  return LOCAL_ERROR_TYPES.some((T) => err instanceof T);
+}
+
 /**
  * Upstream statuses caused by the TARGET rather than the caller's request:
  * 401/403 = the operator's credential for that target is revoked, expired or
@@ -65,6 +90,7 @@ const TARGET_CAUSED_4XX: ReadonlySet<number> = new Set([401, 403, 404]);
  * key into its rate limit, and the key pool's soft cooldown handles it.
  */
 export function isBreakerFailure(err: unknown): boolean {
+  if (isLocalError(err)) return false;
   if (err !== null && typeof err === "object" && "statusCode" in err) {
     const status = (err as { statusCode: unknown }).statusCode;
     if (typeof status !== "number" || status === 0) return true;
@@ -96,6 +122,7 @@ export function isBreakerFailure(err: unknown): boolean {
  */
 export function isFailoverEligible(err: unknown): boolean {
   if (isAbortError(err) || isTimeoutError(err)) return false;
+  if (isLocalError(err)) return false;
   const status = errorStatus(err);
   if (status === undefined || status === 0) return true;
   if (status >= 500) return true;
@@ -144,6 +171,7 @@ export interface AttemptClassification {
  *  - gateway deadline after output started: release (says little about upstream health);
  *  - client abort: success if output had started, else release;
  *  - caller-caused 4xx, upstream 404 and 429: release (see isBreakerFailure);
+ *  - a local engine error (RangeError, TypeError …, see isLocalError): release;
  *  - anything else (network, 5xx, 408, 401/403, broken stream): failure.
  * Failover eligibility is decided separately by isFailoverEligible().
  */

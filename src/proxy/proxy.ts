@@ -21,6 +21,7 @@
  * /v1/* only outside production, and production ignores the flag entirely.
  */
 
+import { inspectJson, looksLikeJsonContainer, MAX_JSON_DEPTH } from "@/security/json-guard";
 import type { Context, Handler, MiddlewareHandler } from "hono";
 import type { TargetConfig } from "@/config/types";
 import type { KeyStore } from "@/persistence/key-store";
@@ -465,6 +466,30 @@ export function createProxyHandler(options: ProxyHandlerOptions): Handler<ProxyE
     const raw = await c.req.arrayBuffer();
     let bodyBuffer: ArrayBuffer | Uint8Array | undefined = raw.byteLength > 0 ? raw : undefined;
     const bodyText = bodyBuffer !== undefined ? new TextDecoder().decode(bodyBuffer) : undefined;
+
+    // One reading of the body for every check (red team 2026-11-05): a JSON
+    // body nested deeper than MAX_JSON_DEPTH (D5), or with a top-level key
+    // given twice (P1: the access check read the last "model", routing the
+    // first), is refused before anything parses it.
+    if (bodyText !== undefined && looksLikeJsonContainer(bodyText)) {
+      const shape = inspectJson(bodyText, { topLevelKeys: true });
+      if (shape.tooDeep) {
+        return openAIErrorResponse(
+          400,
+          `The JSON body is nested more than ${MAX_JSON_DEPTH} levels deep.`,
+          "invalid_request_error",
+          "json_too_deep",
+        );
+      }
+      if (shape.duplicateKey !== undefined) {
+        return openAIErrorResponse(
+          400,
+          `The JSON body repeats the top-level key ${JSON.stringify(shape.duplicateKey.slice(0, 64))}; send each key once.`,
+          "invalid_request_error",
+          "duplicate_json_key",
+        );
+      }
+    }
 
     if (options.beforeForward) {
       const result = await options.beforeForward(c as unknown as Context, bodyText);

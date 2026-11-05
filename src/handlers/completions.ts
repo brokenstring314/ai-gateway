@@ -7,7 +7,7 @@
  */
 
 import type { AppType } from "../app.js";
-import { respondError, respondInvalidJson, respondValidation } from "./error-response.js";
+import { respondError, respondValidation, readJsonBody } from "./error-response.js";
 import type { Gateway } from "../gateway.js";
 import {
   completionsSurface,
@@ -20,12 +20,9 @@ import { handlerRequest, respondSse } from "./request.js";
 
 export function registerCompletionsHandler(app: AppType, gateway: Gateway): void {
   app.post("/v1/completions", async (c) => {
-    let body: unknown;
-    try {
-      body = await c.req.json();
-    } catch {
-      return respondInvalidJson(c);
-    }
+    const read = await readJsonBody(c);
+    if (!read.ok) return read.response;
+    const body = read.body;
 
     // snake_case wire params (max_tokens, top_p …) mapped onto the chat
     // request the pipeline runs; legacy-only options chat can't express → 400.
