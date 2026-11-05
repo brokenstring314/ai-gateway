@@ -4,6 +4,11 @@
 
 ### Added
 
+- **Key names in request logs and the session** (console UI test 2026-11-05 U8): `GET /admin/logs` entries carry
+  `keyName` and `keyKind` (`store` / `config` / `console` / `deleted`), joined in when the list is read (never on the
+  request path); `GET /admin/session`, `/admin/session/status` and the login response carry `keyName` for key-store
+  credentials.
+
 - Browser e2e (0.3.0 P7): `bun run test:browser` runs Playwright (`@playwright/test`, devDependency only, Chromium)
   against the real server, one gateway per suite with a temporary data dir and an in-process fake upstream
   (`tests/browser/`, `playwright.config.ts`). Covers sign-in / lockout / sign-out / session end, zh / en, no console
@@ -116,6 +121,27 @@
   `registerProvider` / `registerPlugin` registrations now survive reloads. Not yet exposed over HTTP.
 
 ### Breaking changes
+
+- **Responses and request logs use the published model name** (console UI test 2026-11-05 B3). `model` in every
+  client response — chat, completions, embeddings, stream and non-stream (every chunk) — is now the published model
+  name (an alias answers with the model it names) instead of the binding's upstream id, which leaked the real
+  upstream model to whoever got a key. `request_logs.model` (and the stdout log line's `model`) is the published name
+  for successes and failures alike — successes used to be logged under the upstream's id, so `GET
+  /admin/logs?model=<published>` showed only the refused requests while `/admin/usage` grouped by the published name.
+  The upstream's name moves to a new `upstreamModel` field / column (migration `request_logs_upstream_model`; filter
+  `?upstreamModel=`). The `model` label of the token metrics (`…_tokens_input_total` / `…_tokens_output_total`) is the published name too. *Migration:* clients
+  that matched the response `model` against the upstream id, log queries / dashboards filtering on upstream ids
+  (use `upstreamModel`). Rows written before the upgrade are unchanged. Pass-through routes (`/v1/responses`,
+  moderations, audio) still forward both bodies verbatim: no binding rename applies there and the upstream's own
+  `model` echo is passed on unchanged (documented).
+- **Model names are checked and an enabled model needs a binding** (B7). Admin API model writes refuse a name that is
+  not 1–256 characters of `A–Z a–z 0–9 . _ : / @ -` (`400 invalid_model_name`; e.g. `bad name!` used to be saved and
+  then answer `503`) and an enabled model with no binding (`400 model_no_bindings` on `POST`, `PATCH` and `PUT
+  …/bindings`; save it `enabled: false` as a draft). Names already stored (database or config file) keep loading;
+  startup warns about each invalid name and each enabled model without a usable binding. Config-file model names may
+  now be up to 256 characters (was 200).
+- **`GET /admin/usage` errors have their own codes** (U2): `invalid_group_by`, `invalid_timezone`, `invalid_date`,
+  `date_range_inverted`, `date_range_too_long`, `invalid_parameter` (were all `invalid_request`), with `param`.
 
 - **`max_tokens` and `max_completion_tokens` with different values are refused** (review 2026-11-05 F1):
   `400 conflicting_max_tokens` (`param` `max_completion_tokens`). *Migration:* send one of them, or the same value in
@@ -236,6 +262,22 @@ now fail `ai-gateway validate` and startup with a migration hint:
   misreading it.
 
 ### Fixed
+
+- **Rollback revived dead upstream keys** (console UI test 2026-11-05 B4). Rolling back to a version taken before
+  the gateway disabled a key (upstream 401, account-level 402) restored it as `ok` until the next request hit the
+  401 again. A rollback now keeps a key's current health (`status`, `lastError`, `lastErrorAt`) when it is the same
+  key (same id and stored value); a different value, or a key that no longer exists, comes back with the health
+  its version recorded.
+- **`/favicon.ico` answered `401`** on every console page load (B5): `/favicon.ico`, `/admin/favicon.ico` and
+  `/admin/dashboard/favicon.ico` now serve a small icon (generated in code, public, cached a day). New public
+  `GET /admin/session/status` answers `200 { "authenticated": false }` instead of a `401` for the console's
+  first-paint probe (or the session view when signed in); `GET /admin/session` is unchanged apart from new
+  `authenticated: true` / `keyName` fields.
+- **Admin errors without a code** (U2): unknown `/admin/*` routes answered a plain-text `404 Not Found`, uncaught
+  errors a plain-text `500`, and `DELETE /admin/logs` / the legacy config-key routes a bare `{ "error": "…" }`.
+  Every error body is now `{ error: { message, type, code, … } }` (`not_found`, `unknown_route`,
+  `unhandled_exception`, `missing_parameter`, `invalid_parameter`, `key_not_found`), so the console can translate by
+  code; key-handler `400`s also name the field (`param`).
 
 - **Local engine errors opened the circuit** (red team 2026-11-05 D5). A `RangeError` / `TypeError` / `SyntaxError`
   thrown inside the gateway (e.g. a stack overflow on a deeply nested body) counted as an upstream failure, so a few

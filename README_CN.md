@@ -598,7 +598,7 @@ Prometheus 格式的指标，包括：
 | POST   | `/admin/keys/:id/revoke`  | admin     | 吊销密钥 |
 | POST   | `/admin/keys/:id/rotate`  | admin     | 轮换密钥（新密钥只返回一次）；用旧密钥登录的控制台会话随即结束 |
 | DELETE | `/admin/keys/:id`         | admin     | 删除密钥 |
-| GET    | `/admin/logs`             | read_only | 请求日志（新的在前）；`limit`（≤200）、`offset`，过滤 `stage`（surface）、`model`、`provider`（target）、`since`、`status=error\|ok` |
+| GET    | `/admin/logs`             | read_only | 请求日志（新的在前）；`limit`（≤200）、`offset`，过滤 `stage`（surface）、`model`（对外发布名）、`upstreamModel`、`provider`（target）、`since`、`status=error\|ok`；每条含 `upstreamModel` 和 key 的 `keyName` / `keyKind` |
 | GET    | `/admin/logs/stats`       | read_only | 按 surface/target/model 计数、错误数、token（同样的过滤） |
 | DELETE | `/admin/logs?before=<ISO>`| admin     | 删除 `before` 之前的持久化日志（可选 `stage` / `model` / `provider`） |
 | GET    | `/admin/status`           | read_only | 控制台概览：调用方 `scopes`、各 target 的 `circuitBreakers`、`upstreamAvailable`、`mcpServers`、本进程请求摘要（数量、4xx/5xx、错误率、延迟 mean/p50/p95） |
@@ -619,12 +619,12 @@ Prometheus 格式的指标，包括：
 | POST | `/admin/channels/:id/keys` | admin | 添加上游 key（加密存储） |
 | PATCH / DELETE | `/admin/channels/:id/keys/:keyId` | admin | 改权重 / 启停、删除；另有 `POST …/enable`、`…/disable` |
 | POST | `/admin/channels/:id/test`、`/fetch-models` | admin | 探测上游（限流、10 秒超时、2 MiB 上限、不跟随重定向） |
-| GET / POST | `/admin/models` | read_only / admin | 已发布模型（含绑定、`available`） |
+| GET / POST | `/admin/models` | read_only / admin | 已发布模型（含绑定、`available`）。模型名：1–256 个 `A–Z a–z 0–9 . _ : / @ -` 字符（否则 `400 invalid_model_name`）；启用的模型至少要有一个绑定（否则 `400 model_no_bindings`） |
 | GET / PATCH / DELETE | `/admin/models/:id` | read_only / admin | 单个模型（`PATCH` 也可带 `bindings`：字段和绑定在同一事务里一起生效或一起失败） |
 | PUT | `/admin/models/:id/bindings` | admin | 整体替换绑定（渠道、上游模型名、优先级、权重、启停、参数） |
 | GET / PATCH | `/admin/settings` | read_only / admin | 全局策略、别名、插件、兼容性、`modelSource`、`limits`（`maxOutputTokens`） |
 | GET | `/admin/config/versions`、`/admin/config/versions/:v` | read_only | 配置历史（快照不含 key 材料） |
-| POST | `/admin/config/versions/:v/rollback` | admin | 把版本 `v` 恢复为一个新版本 |
+| POST | `/admin/config/versions/:v/rollback` | admin | 把版本 `v` 恢复为一个新版本；上游 key 保留当前健康状态（401 后被自动停用的 key 回滚后仍是停用） |
 | GET | `/admin/audit` | read_only | 谁在何时改了什么（从不含密钥） |
 | GET | `/admin/presets` | read_only | 提供商预设与已知模型 |
 
@@ -1197,6 +1197,7 @@ observability:
   "timestamp": "2026-07-27T00:00:00.000Z",
   "requestId": "abc-123",
   "model": "gpt-4o",
+  "upstreamModel": "gpt-4o-2024-08-06",
   "provider": "openai-main",
   "strategy": "single",
   "durationMs": 1500,
@@ -1208,7 +1209,7 @@ observability:
 }
 ```
 
-`keyId` 是客户端 key 的 id（密钥库 id，或 `cfg_<n>` 表示 `auth.keys` 中第 n 个条目，从 0 起），绝不是 key 本身；`publishedModel` 是客户端请求的对外模型（已解析别名）。可选字段：`error`、`usageEstimated`（流式且没有 usage chunk）、`plugin` / `outcome`（被插件结束的请求）、`guardrail`（检测结果，只有实体类型）。`surface` 取值为 `chat`、`chat_stream`、`completions`、`completions_stream`、`embedding`、`image` 或 `passthrough`。
+`keyId` 是客户端 key 的 id（密钥库 id，或 `cfg_<n>` 表示 `auth.keys` 中第 n 个条目，从 0 起），绝不是 key 本身；`model` 是客户端请求的**对外发布**模型名（已解析别名；0.3.0 起成功和失败一律如此，之前成功请求记的是上游模型名），`upstreamModel` 是上游返回的模型名（没有时取该绑定的上游模型名；没有经过上游时不出现），`publishedModel` 是用量汇总用的名字（即 `model`，失败且不是已发布模型时为 `(unknown)`）。可选字段：`error`、`usageEstimated`（流式且没有 usage chunk）、`plugin` / `outcome`（被插件结束的请求）、`guardrail`（检测结果，只有实体类型）。`surface` 取值为 `chat`、`chat_stream`、`completions`、`completions_stream`、`embedding`、`image` 或 `passthrough`。
 
 ---
 
@@ -1393,6 +1394,8 @@ models:
 未填写的元数据取所有绑定上游都支持的部分（目前收录 DeepSeek 的 `deepseek-flash`、`deepseek-v4-pro`，数据来自 DeepSeek 自己的模型列表）：取最小的上限和共同支持的输入类型。已发布模型的承诺不能超过已知上游：`contextWindow` / `maxOutputTokens` 更大，或声明了上游没有的输入类型、结构化输出级别，都会配置报错。未知上游不做检查。旧版 `/v1/completions` 也做输出上限和上下文检查。
 
 **每个 key 的模型白名单。** 密钥库里的 key 可以限定只能用部分已发布模型：`ai-gateway keys create --models my-chat,gpt-4o`，或在 `POST /admin/keys` / `PUT /admin/keys/:id` 中传 `"allowedModels": ["my-chat"]`（`null` = 全部模型，`[]` = 不能用任何模型；`PATCH` 时不传则保持不变）。别名本身或它指向的模型在白名单里即可使用。其他任何模型（无论是否发布）都返回 `403 model_not_allowed`（「This API key is not allowed to use the model …」），受限 key 无法借此探测白名单以外的模型。配置里的静态 `auth.keys` 不受限制。
+
+**响应里是对外发布名。** 所有响应里的 `model` —— chat、旧版 completions、embeddings，流式与非流式、每一个 chunk —— 都是对外发布的模型名（别名返回它指向的模型），不再是绑定的上游模型 id（0.3.0 起，UI 测试 B3），所以把 key 和模型名发给别人不会暴露真实上游模型。请求日志和用量用同一个名字；上游的 id 单独记在日志的 `upstreamModel`。透传路由（`/v1/responses`、`/v1/moderations`、`/v1/audio/*`）例外：请求体和响应体双向逐字节转发（结构未知无法如实改写，音频是二进制），请求本来带的就是发布名（绑定的改名在透传上不生效），上游的响应——包括它回显的 `model`，可能是带日期的快照 id——原样返回。
 
 **`GET /v1/models`** 只列出调用者的 key 可用的、已启用的模型和别名；`display_name`、`description`、`metadata`、`alias_of` 是扩展字段，OpenAI SDK 会忽略。
 

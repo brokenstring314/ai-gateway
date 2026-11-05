@@ -26,6 +26,14 @@ restart. Client keys with token quota / RPM / TPM and usage statistics: [Key lim
   Requests authenticated by the console's session cookie additionally need the double-submit CSRF token
   (`X-CSRF-Token`, see [Console sessions](#console-sessions)).
 - **Strict bodies.** Unknown fields, wrong types and out-of-range values are `400 invalid_request` with the field.
+- **Every error has a stable `code`** (since 0.3.0, UI test 2026-11-05 U2): every `/admin/*` error body is
+  `{ "error": { "message", "type", "code", "param"?, "fields"?, … } }` — unknown routes (`404 not_found`) and
+  uncaught errors (`500 unhandled_exception`) included. `message` is English and may change; clients (the console)
+  translate by `code` (+ `param`), never by `message`. Codes added in this release: `invalid_model_name`,
+  `model_no_bindings` (models), `missing_parameter` / `invalid_parameter` (`DELETE /admin/logs`), `invalid_group_by`,
+  `invalid_timezone`, `invalid_date`, `date_range_inverted`, `date_range_too_long` (`GET /admin/usage`, were all
+  `invalid_request`); the legacy config-key routes (no key store) answer `invalid_request` / `key_not_found` instead
+  of a bare `{ "error": "…" }` string.
 - **Optimistic concurrency.** Every resource has a `revision` (also its `ETag`). Writes to an existing resource need
   `If-Match: "<revision>"` (`W/"7"` and `7` are accepted): missing → `428 precondition_required`; stale →
   `409 revision_mismatch` with `currentRevision`. A revision is the config version that last changed the
@@ -170,6 +178,16 @@ the same request:
 }
 ```
 
+**Names** (since 0.3.0, UI test B7): a published model name is 1–256 characters from `A–Z a–z 0–9 . _ : / @ -`
+(no spaces; `@cf/meta/llama-3.1:8b` is fine) — the same 256 a request may send (D3). Anything else is
+`400 invalid_model_name` (`param: "name"`) on `POST` and on a `PATCH` that renames. Names stored before this check
+(database, config file) keep loading and serving; startup logs a `[models] … has an invalid name` warning for each.
+
+**Bindings required** (B7): an **enabled** model needs at least one binding — `POST` without bindings, a `PATCH`
+that enables a model without bindings or sets `bindings: []`, and `PUT …/bindings` with `[]` on an enabled model
+answer `400 model_no_bindings` (`param: "bindings"`). Save it with `"enabled": false` to keep a draft without
+bindings. Startup warns about enabled models left with no usable binding.
+
 A binding names its channel by `channelId` or `channel` (name). Model writes need explicit published models:
 while models are derived from the channels' `models` lists they answer `409 models_derived` — switch once with
 `PATCH /admin/settings {"modelSource": "explicit"}`, which turns the current derived list into editable models
@@ -185,12 +203,15 @@ server-side session:
 
 | Method | Path | Notes |
 | ------ | ---- | ----- |
-| POST | `/admin/session/login` | public. `{ "key": "<admin or read_only key, or adminSecret>" }` → `{ actor, scopes, sessionId, csrfToken, expiresAt, idleTimeoutSeconds }` and two cookies; `401 invalid_credentials`, `403 insufficient_scope` (inference key), `429 login_locked` + `Retry-After` |
+| POST | `/admin/session/login` | public. `{ "key": "<admin or read_only key, or adminSecret>" }` → `{ authenticated: true, via: "session", actor, keyName?, scopes, sessionId, csrfToken, expiresAt, idleTimeoutSeconds }` and two cookies; `401 invalid_credentials`, `403 insufficient_scope` (inference key), `429 login_locked` + `Retry-After` |
 | POST | `/admin/session/logout` | ends the cookie's session (needs `X-CSRF-Token` when the session is live) → 204, cookies cleared |
-| GET | `/admin/session` | who is calling: `{ via: "session" \| "header", actor, scopes, csrfToken?, expiresAt? }` |
+| GET | `/admin/session` | who is calling: `{ authenticated: true, via: "session" \| "header", actor, keyName?, scopes, csrfToken?, expiresAt? }`; `401` without a credential (unchanged) |
+| GET | `/admin/session/status` | **public probe** (since 0.3.0, B5): never `401`. No / unknown / expired session cookie → `200 { "authenticated": false }` (`"expired": true` when a stale cookie was sent and cleared); a live session → the same body as `GET /admin/session`. Reads only the session cookie, never header credentials. For the console's first paint, so the sign-in page logs no failed request |
 | GET | `/admin/sessions` | live sessions `{ id, actor, scopes, createdAt, lastSeenAt, expiresAt, idleExpiresAt, ip, userAgent, current }` |
 | DELETE | `/admin/sessions/:id` | revoke (admin scope, or your own session) → 204 / 404 |
 
+- **`keyName`** (U8): the name of the key-store key behind the session / header credential, so the console can show
+  it instead of `key:<uuid>`; absent for `adminSecret` and bootstrap keys.
 - **Cookies.** `aigw_session` (opaque random id; `HttpOnly; SameSite=Strict; Path=/admin`) and `aigw_csrf` (random
   token readable by the page; `SameSite=Strict; Path=/admin`). Both get `Secure` when the request is https or carries
   `X-Forwarded-Proto: https` (`console.secureCookie: auto | always | never`).
@@ -249,9 +270,17 @@ top-level `limits:` section (database mode: imported once, then this endpoint; c
 | ------ | ---- | ----- |
 | GET | `/admin/config/versions?limit=&before=` | `{ head, data: [{ version, createdAt, actor, summary }] }`, `ETag` = head |
 | GET | `/admin/config/versions/:v` | one version with its snapshot (no key ciphertext) |
-| POST | `/admin/config/versions/:v/rollback` | If-Match = current head version; restores every runtime row of `v` as a new version |
+| POST | `/admin/config/versions/:v/rollback` | If-Match = current head version; restores every runtime row of `v` as a new version — except upstream keys' health (below) |
 | GET | `/admin/audit?limit=&before=` | newest first: `{ id, at, actor, action, resourceType, resourceId, detail }` |
 | GET | `/admin/presets` | provider presets: `baseURL`, `baseURLRequired`, `adminUsable`, known models with metadata |
+
+**Rollback keeps key health** (since 0.3.0, UI test B4). A key's health — `status` `ok` / `invalid` (upstream 401) /
+`quota` (account-level 402), `lastError`, `lastErrorAt` — is runtime state, not configuration. A rollback restores a
+key with its **current** health when it is the same key: same id and same stored value. So a key the gateway
+disabled after a 401 since version `v` stays disabled after rolling back to `v`; only re-enabling it (`POST
+…/keys/:keyId/enable`) clears it. A key whose value differs in `v`, or that no longer exists, is another key and
+comes back with the health `v` recorded for it. (Snapshots still contain the health columns at the time they were
+taken, so a version diff can show a `status` change that was made by the gateway, not by the version's author.)
 
 ## Load balancing and keys at a glance
 
@@ -448,5 +477,41 @@ Storage: every finished request — refused ones included, as errors — is adde
 the endpoint flushes first, so it always includes every finished request. Buckets are whole UTC hours: a day in a
 zone with a :30 / :45 offset is accurate to the hour. Rollups are kept indefinitely (they grow with hours ×
 distinct key/model/channel, not with traffic). Per-request rows stay in `GET /admin/logs` (now with `keyId`,
-`cacheHitTokens`, `reasoningTokens`, `durationMs`, `status`). Without a data directory (embedded `createApp`)
+`cacheHitTokens`, `reasoningTokens`, `durationMs`, `status`; see [below](#get-adminlogs)). Without a data directory (embedded `createApp`)
 the endpoint answers `503 usage_unavailable`.
+
+Errors: `400 invalid_group_by` (`param: "groupBy"`), `invalid_timezone` (`tz`), `invalid_date` (`from` / `to`),
+`date_range_inverted` (`from` after `to`), `date_range_too_long` (`maxDays`: 366), `invalid_parameter` (`daily`).
+
+### `GET /admin/logs`
+
+Any `read_only` credential. Query: `limit` (1–200, default 50), `offset`, `stage` (surface: `chat`, `chat_stream`,
+`completions`, `completions_stream`, `embedding`, `image`, `passthrough`), `model`, `upstreamModel`, `provider`
+(channel), `since` (ISO time), `status=error|ok`. `GET /admin/logs/stats` takes the same filters; `DELETE
+/admin/logs?before=<ISO time>` (admin) purges older rows (`400 missing_parameter` / `invalid_parameter`).
+
+```json
+{
+  "entries": [
+    { "traceId": "…", "stage": "chat", "createdAt": "2026-11-05T12:00:00.000Z",
+      "model": "my-chat",            // the PUBLISHED name — successes and failures alike
+      "upstreamModel": "deepseek-v4-flash", // what the channel was sent / answered; absent when no upstream was involved
+      "provider": "deepseek-main",   // channel; "none" = never routed
+      "keyId": "3f2a…", "keyName": "friend", "keyKind": "store",
+      "promptTokens": 11, "completionTokens": 22, "totalTokens": 33, "cacheHitTokens": 0, "reasoningTokens": 0,
+      "durationMs": 840, "status": 200, "errorMessage": "" }
+  ],
+  "total": 1
+}
+```
+
+- **`model` is the published name** (since 0.3.0, UI test B3; breaking for log consumers): before, successful
+  requests were logged under the upstream's model id and refused ones under the published name, so
+  `?model=<published>` missed every success. Now `model` is the published name (an alias resolves to its model; a
+  name that is not published is kept as sent) and `?model=` finds successes and failures; `GET /admin/usage` groups
+  by the same name. `upstreamModel` is the model the upstream answered with (else the binding's upstream name for
+  the channel that served or failed the request); filter with `?upstreamModel=`. Rows written before the upgrade keep
+  what they had (`model` = the upstream's name for successes, no `upstreamModel`).
+- **`keyName` / `keyKind`** (U8) are joined in when the list is read (one key-store read per listing, never on the
+  request path): `store` (`keyName` = the key's name), `config` (`auth.keys` entry `cfg_<n>`, no name), `console`
+  (`console-playground`, the Playground), `deleted` (the key no longer exists). Absent when the row has no `keyId`.

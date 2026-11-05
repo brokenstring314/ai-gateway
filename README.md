@@ -657,7 +657,7 @@ Admin endpoints accept, in key-store mode (`ai-gateway serve`): the `adminSecret
 | POST   | `/admin/keys/:id/revoke`  | admin      | Revoke a key                           |
 | POST   | `/admin/keys/:id/rotate`  | admin      | Replace a key's secret (new key returned once); console sessions signed in with the old secret end |
 | DELETE | `/admin/keys/:id`         | admin      | Delete a key                           |
-| GET    | `/admin/logs`             | read_only  | Request log, newest first; `limit` (≤200), `offset`, filters `stage` (surface), `model`, `provider` (target), `since`, `status=error\|ok` |
+| GET    | `/admin/logs`             | read_only  | Request log, newest first; `limit` (≤200), `offset`, filters `stage` (surface), `model` (published name), `upstreamModel`, `provider` (target), `since`, `status=error\|ok`; each entry has `upstreamModel` and the key's `keyName` / `keyKind` |
 | GET    | `/admin/logs/stats`       | read_only  | Counts by surface/target/model, errors, tokens (same filters) |
 | DELETE | `/admin/logs?before=<ISO>`| admin      | Purge persisted log entries older than `before` (optional `stage` / `model` / `provider`) |
 | GET    | `/admin/status`           | read_only  | Console overview: caller `scopes`, `circuitBreakers` per target, `upstreamAvailable`, `mcpServers`, in-process request summary (count, 4xx/5xx, error rate, latency mean/p50/p95) |
@@ -678,12 +678,12 @@ Without a key store, `GET` / `POST` / `DELETE /admin/keys` manage the in-memory 
 | POST | `/admin/channels/:id/keys` | admin | Add upstream keys (stored encrypted) |
 | PATCH / DELETE | `/admin/channels/:id/keys/:keyId` | admin | Weight / enabled, delete; `POST …/enable`, `…/disable` |
 | POST | `/admin/channels/:id/test`, `/fetch-models` | admin | Probe the upstream (rate-limited, 10 s timeout, 2 MiB cap, no redirects) |
-| GET / POST | `/admin/models` | read_only / admin | Published models with bindings, `available` |
+| GET / POST | `/admin/models` | read_only / admin | Published models with bindings, `available`. Names: 1–256 of `A–Z a–z 0–9 . _ : / @ -` (`400 invalid_model_name`); an enabled model needs a binding (`400 model_no_bindings`) |
 | GET / PATCH / DELETE | `/admin/models/:id` | read_only / admin | One model (`PATCH` may carry `bindings` too: fields and bindings change in one transaction) |
 | PUT | `/admin/models/:id/bindings` | admin | Replace a model's bindings (channel, upstream model, priority, weight, enabled, params) |
 | GET / PATCH | `/admin/settings` | read_only / admin | Global strategy, aliases, plugins, compatibility, `modelSource`, `limits` (`maxOutputTokens`) |
 | GET | `/admin/config/versions`, `/admin/config/versions/:v` | read_only | Config history (snapshots without key material) |
-| POST | `/admin/config/versions/:v/rollback` | admin | Restore version `v` as a new version |
+| POST | `/admin/config/versions/:v/rollback` | admin | Restore version `v` as a new version; upstream keys keep their current health (a key disabled after a 401 stays disabled) |
 | GET | `/admin/audit` | read_only | Who changed what, when (never secrets) |
 | GET | `/admin/presets` | read_only | Provider presets and known models |
 
@@ -1298,6 +1298,7 @@ Every request is logged exactly once as structured JSON to stdout (and to the re
   "timestamp": "2026-07-27T00:00:00.000Z",
   "requestId": "abc-123",
   "model": "gpt-4o",
+  "upstreamModel": "gpt-4o-2024-08-06",
   "provider": "openai-main",
   "strategy": "single",
   "durationMs": 1500,
@@ -1309,7 +1310,7 @@ Every request is logged exactly once as structured JSON to stdout (and to the re
 }
 ```
 
-`keyId` is the client key's id (key-store id, or `cfg_<n>` for the n-th `auth.keys` entry, counted from 0), never the key; `publishedModel` is the model the client asked for (aliases resolved). Optional fields: `error`, `usageEstimated` (stream without a usage chunk), `plugin` / `outcome` (request ended by a plugin), `guardrail` (detections, entity types only). `surface` is `chat`, `chat_stream`, `completions`, `completions_stream`, `embedding`, `image` or `passthrough`.
+`keyId` is the client key's id (key-store id, or `cfg_<n>` for the n-th `auth.keys` entry, counted from 0), never the key; `model` is the **published** model the client asked for (aliases resolved; since 0.3.0 for successes and failures alike — it used to be the upstream's name on success), `upstreamModel` the name the upstream answered with (else the binding's upstream name; absent when no upstream was involved), `publishedModel` the usage-rollup name (`model`, or `(unknown)` for a failed request naming no published model). Optional fields: `error`, `usageEstimated` (stream without a usage chunk), `plugin` / `outcome` (request ended by a plugin), `guardrail` (detections, entity types only). `surface` is `chat`, `chat_stream`, `completions`, `completions_stream`, `embedding`, `image` or `passthrough`.
 
 ---
 
@@ -1494,6 +1495,8 @@ models:
 Unset metadata falls back to what every bound upstream is known to support (currently DeepSeek's `deepseek-flash` and `deepseek-v4-pro`, from DeepSeek's own model list): the smallest limits and the common input types. A published model may never promise more than a known upstream: a larger `contextWindow` / `maxOutputTokens`, or an input type or structured-output level the upstream lacks, is a config error. Unknown upstreams stay unchecked. Legacy `/v1/completions` gets the output-limit and context checks.
 
 **Per-key model allow-lists.** A key-store key can be limited to some published models: `ai-gateway keys create --models my-chat,gpt-4o`, or `"allowedModels": ["my-chat"]` on `POST /admin/keys` / `PUT /admin/keys/:id` (`null` = every model, `[]` = no model at all; on `PATCH` an omitted field is left unchanged). An alias counts when either it or its target is allowed. Any other model, published or not, gets `403 model_not_allowed` ("This API key is not allowed to use the model …"), so a restricted key learns nothing about models outside its list. Static `auth.keys` are unrestricted.
+
+**Responses carry the published name.** `model` in every response — chat, legacy completions, embeddings, stream and non-stream, every chunk — is the published model name (an alias answers with the model it names), never a binding's upstream id (since 0.3.0, UI test B3), so handing out a key and a model name does not reveal the upstream model. Request logs and usage use the same name; the upstream's id is kept apart in the log's `upstreamModel`. Pass-through routes (`/v1/responses`, `/v1/moderations`, `/v1/audio/*`) are the exception: their bodies are forwarded byte for byte both ways (an unknown shape cannot be rewritten faithfully, and audio is binary), the request already carries the published name (a binding's rename does not apply there), and the upstream's answer — including any `model` it echoes, possibly a dated snapshot id — is passed through unchanged.
 
 **`GET /v1/models`** lists the enabled published models and aliases the calling key may use; `display_name`, `description`, `metadata` and `alias_of` are extension fields that OpenAI SDKs ignore.
 
