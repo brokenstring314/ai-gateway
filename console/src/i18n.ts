@@ -292,18 +292,15 @@ const D = {
   "breaker.half_open": ["试探中（半开）", "half-open"],
   "ch.testNever": ["点“测试连通性”测量", "Click Test connection to measure"],
   "ch.balanceFailed": ["查询失败：{e}", "Lookup failed: {e}"],
-  "ch.urlInvalid": [
-    "不是合法的 URL，例如 https://api.example.com/v1",
-    "Not a valid URL, e.g. https://api.example.com/v1",
-  ],
+  "ch.urlInvalid": ["不是合法的 URL，形如 https://<主机名>/v1", "Not a valid URL, like https://<host>/v1"],
   "ch.urlScheme": ["只支持 http/https 地址", "Only http/https addresses"],
   "ch.urlCreds": [
     "地址里不能带用户名/密码，请把 key 填在下一步",
     "No user:password in the URL; put the key in the next step",
   ],
   "ch.urlLocal": [
-    "这是本机或内网主机名，只允许公网地址（例如 https://api.example.com/v1）",
-    "This is a local / intranet host name; only public addresses (e.g. https://api.example.com/v1)",
+    "这是本机或内网主机名，只允许公网地址（形如 https://<主机名>/v1）",
+    "This is a local / intranet host name; only public addresses (like https://<host>/v1)",
   ],
   "ch.urlPrivate": [
     "这是内网 / 本机 IP，只允许公网地址",

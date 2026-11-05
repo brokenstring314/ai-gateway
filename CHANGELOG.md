@@ -294,7 +294,7 @@ now fail `ai-gateway validate` and startup with a migration hint:
     accounts see 查看 instead of 编辑 (U13); usage charts add an “其他 / Other” line beyond the top 6 (U14); closing a
     drawer or the wizard with unsaved edits asks first (U15); the lockout message says “15 分钟” instead of “900 秒”
     (U12); the header shows a key's name instead of `key:<uuid>`; the login page probes `GET /admin/session/status`
-    (no 401 in the browser console) and links the favicon.
+    (no 401 in the browser console).
 
 - **Rollback revived dead upstream keys** (console UI test 2026-11-05 B4). Rolling back to a version taken before
   the gateway disabled a key (upstream 401, account-level 402) restored it as `ok` until the next request hit the
