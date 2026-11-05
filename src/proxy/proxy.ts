@@ -43,7 +43,14 @@ export interface ProxyTarget {
 }
 
 /** Resolves a proxy target by provider name or by body model. */
-export type TargetResolver = (selector: { provider: string } | { model: string }) => ProxyTarget | undefined;
+/**
+ * `{ provider }`: the X-Provider header (a target name or provider type); with
+ * `model`, only targets bound to that published model qualify (P2).
+ * `{ model }`: the first target serving the body's published model.
+ */
+export type TargetResolver = (
+  selector: { provider: string; model?: string } | { model: string },
+) => ProxyTarget | undefined;
 
 export type ProviderResolution =
   | { ok: true; provider: string; target: ProxyTarget }
@@ -300,13 +307,17 @@ export function resolveProvider(
   resolver: TargetResolver,
 ): ProviderResolution {
   const headerName = providerHeader !== undefined ? providerHeader.trim() : undefined;
+  const model = bodyText !== undefined && bodyText !== "" ? extractTopLevelModel(bodyText) : undefined;
   if (headerName !== undefined && headerName !== "") {
-    const target = resolver({ provider: headerName });
+    // The body's model goes along: the header may only pick among the
+    // channels bound to it (P2), the same set the access check used.
+    const target = resolver(
+      model !== undefined && model !== "" ? { provider: headerName, model } : { provider: headerName },
+    );
     if (target !== undefined) return { ok: true, provider: headerName, target };
     return { ok: false, reason: "unknown_provider", provider: headerName };
   }
 
-  const model = bodyText !== undefined && bodyText !== "" ? extractTopLevelModel(bodyText) : undefined;
   if (model !== undefined && model !== "") {
     const target = resolver({ model });
     if (target !== undefined) return { ok: true, provider: target.provider, target };

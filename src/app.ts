@@ -246,11 +246,30 @@ export function createApp(
 
   // Proxy target: X-Provider names a target; otherwise the first target bound
   // to the body's (published) model. Read from the gateway's current config.
-  const resolveTarget = (selector: { provider: string } | { model: string }) => {
+  // X-Provider (a target name or a provider type) and a body model: only the
+  // targets bound to that published model, in its routing order (red team
+  // 2026-11-05 P2: the bound-check accepted ANY target of the type while the
+  // forward took the FIRST one, possibly a channel the model is not bound to).
+  // The access check (beforeForward) and the forward both use this one list.
+  const namedTargets = (explicit: string, model: string | undefined) => {
+    const targets = gateway.getConfig().targets;
+    const named = targets.filter((t) => t.name === explicit || t.provider === explicit);
+    const entry = model !== undefined && model !== "" ? gateway.modelCatalog().lookup(model) : undefined;
+    if (!entry) return { named, bound: undefined };
+    const order = entry.enabled ? entry.route.strategy.selectTargets({ model: entry.name, messages: [] }) : [];
+    const ranked = [...order, ...entry.targets.filter((n) => !order.includes(n))];
+    const bound = ranked
+      .map((n) => named.find((t) => t.name === n))
+      .filter((t): t is (typeof targets)[number] => t !== undefined && t.enabled !== false);
+    return { named, bound };
+  };
+
+  const resolveTarget = (selector: { provider: string; model?: string } | { model: string }) => {
     const targets = gateway.getConfig().targets;
     let target: (typeof targets)[number] | undefined;
     if ("provider" in selector) {
-      target = targets.find((t) => t.name === selector.provider || t.provider === selector.provider);
+      const { named, bound } = namedTargets(selector.provider, selector.model);
+      target = bound !== undefined ? bound[0] : named[0];
     } else {
       const entry = gateway.modelCatalog().lookup(selector.model);
       const first = entry?.enabled
@@ -333,10 +352,8 @@ export function createApp(
             const explicit = c.req.header("X-Provider");
             const model = passthroughModel(bodyText);
             if (explicit && model) {
-              const entry = gateway.modelCatalog().lookup(model);
-              const targets = gateway.getConfig().targets;
-              const named = targets.filter((t) => t.name === explicit || t.provider === explicit).map((t) => t.name);
-              if (entry && !named.some((n) => entry.targets.includes(n))) {
+              const { bound } = namedTargets(explicit.trim(), model);
+              if (bound !== undefined && bound.length === 0) {
                 return respondError(
                   c as unknown as Context,
                   invalidRequest(
