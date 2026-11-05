@@ -46,6 +46,7 @@ export function keyLabel(
 export function LogsPage() {
   const [model, setModel] = useState("");
   const [provider, setProvider] = useState("");
+  const [upstream, setUpstream] = useState("");
   const [onlyErrors, setOnlyErrors] = useState(false);
   const [offset, setOffset] = useState(0);
   const logs = useLoad(
@@ -55,9 +56,10 @@ export function LogsPage() {
         offset,
         model,
         provider,
+        upstreamModel: upstream,
         ...(onlyErrors ? { status: "error" } : {}),
       }),
-    [model, provider, onlyErrors, offset],
+    [model, provider, upstream, onlyErrors, offset],
   );
   const keys = useLoad(async (): Promise<Array<{ id: string; name: string }>> => {
     try {
@@ -78,6 +80,12 @@ export function LogsPage() {
           <input
             value={model}
             onChange={(e) => (setOffset(0), setModel((e.currentTarget as HTMLInputElement).value))}
+          />
+        </Field>
+        <Field label={t("l.upstreamModel")}>
+          <input
+            value={upstream}
+            onChange={(e) => (setOffset(0), setUpstream((e.currentTarget as HTMLInputElement).value))}
           />
         </Field>
         <Field label={t("l.provider")}>

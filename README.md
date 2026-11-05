@@ -790,16 +790,21 @@ image serve it without files on disk and the server has no new runtime dependenc
 | ---- | --------------- | --------- |
 | 概览 Overview | Requests / tokens / errors per day (14 days), error rate, upstream availability, channel health (breaker, key states) | `/admin/status`, `/admin/usage`, `/admin/channels` |
 | 渠道 Channels | List with status, test latency, key states (ok / cooling / disabled), **account balance** where the provider exposes it (DeepSeek, OpenRouter; others "—"); add wizard: preset → keys → test → fetch models → select and publish; edit, add / enable / disable / weight / delete keys, key strategy, 429 cooldown | `/admin/channels…`, `/admin/channels/:id/balance` |
-| 模型 Models | Table + edit drawer: metadata (context, max output, input types, structured output, tools, web search, system / developer role, reasoning), bindings with drag-to-reorder priority groups, weights, balance mode, strategy | `/admin/models…` |
-| 密钥 Keys | Create with allowed models, token quota, RPM / TPM, expiry (the secret is shown once, with copy); usage vs quota, change limits, reset usage, revoke | `/admin/keys…` |
-| 用量 Usage | Tokens / requests / errors by key, model or channel; date range and time zone; charts and totals | `/admin/usage` |
-| 日志 Logs | Request log, filters, paging | `/admin/logs` |
-| Playground | Chat with any published model through the real routing (bindings, metadata checks, failover), streaming or not; recorded as `console-playground` | `/admin/playground/chat/completions` |
+| 模型 Models | Table + edit drawer: metadata (context, max output, input types, structured output, tools, web search, system / developer role, reasoning), bindings with drag-to-reorder priority groups, weights, balance mode, strategy. A `loadbalance` model shows its bindings as one weighted set (share %), a `fallback` model as priority groups in order; a model whose bound channels have only unusable keys gets a warning | `/admin/models…` |
+| 密钥 Keys | Create with allowed models, token quota, RPM / TPM, expiry (the secret is shown once, with copy); usage vs quota, change limits, reset usage, **rotate** (confirm; the new secret is shown once; the old one and its console sessions stop at once), revoke | `/admin/keys…` |
+| 用量 Usage | Tokens / requests / errors by key, model or channel; date range and time zone (checked before the query: a bad range or zone shows the reason and no stale charts); charts (top 6 + “other”) and totals | `/admin/usage` |
+| 日志 Logs | Request log with key **names** (not ids), published and upstream model, filters (model, upstream model, channel, errors only), paging | `/admin/logs` |
+| 调试台 Playground | Chat with any published model through the real routing (bindings, metadata checks, failover), streaming or not; **Enter sends, Shift+Enter is a new line** (IME-safe); recorded as `console-playground` | `/admin/playground/chat/completions` |
 | 设置 Settings | Aliases, global per-key rate limit, plugins (JSON), model source; console sessions (list / revoke) | `/admin/settings`, `/admin/sessions` |
-| 版本与审计 Versions & audit | Config versions, diff between versions, rollback; audit log | `/admin/config/versions…`, `/admin/audit` |
+| 版本与审计 Versions & audit | Config versions with readable summaries, diff between versions (by channel / key / model / binding and field label; internal ids, revisions and timestamps hidden, secrets masked), rollback; audit log with labelled details (long ones folded) | `/admin/config/versions…`, `/admin/audit` |
 
-Every save shows **“已生效 · 版本 #N”** (live as config version N); validation errors are shown on their fields; a
-stale write (`409`) shows “已被修改，请刷新” (changed by someone else, refresh). All writes send `If-Match`.
+Every save shows **“已生效 · 版本 #N”** (live as config version N) and sends only the fields you changed; validation
+errors are shown on their fields (the toast only says to fix them); a stale write (`409`) shows “已被修改，请刷新”
+(changed by someone else, refresh). All writes send `If-Match`. Server errors are shown by their stable `code` in the
+console's language (the server's message when the code is unknown); identical toasts do not stack (at most three, they
+time out, a click dismisses). Closing a drawer with unsaved edits asks first. The channel wizard checks the Base URL
+(public http(s) only) before the key step. The console works down to phone width: tables scroll inside their card,
+drawers and dialogs go full width, the navigation scrolls sideways.
 
 **Sign-in (sessions, plan §9.4).** Enter an `admin` or `read_only` key (or the `adminSecret`). The console exchanges
 it once for a server-side session (`POST /admin/session/login`) and never stores the key in the browser: the session

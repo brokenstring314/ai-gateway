@@ -4,6 +4,12 @@
 
 ### Added
 
+- **Console: rotate a key** (console UI test 2026-11-05 U10): 密钥 → 轮换 asks for confirmation, then shows the new
+  secret once (with copy); the old secret and the console sessions it opened stop at once (`POST /admin/keys/:id/rotate`).
+- **Console: upstream-model filter and key names in 日志 / Logs** (U8): the key column shows the key's name (server
+  `keyName`, else the name from `/admin/keys`, else a short id; the Playground and config-file keys are labelled), the
+  model column shows the published name with the upstream model under it, and `?upstreamModel=` has its own filter.
+
 - **Key names in request logs and the session** (console UI test 2026-11-05 U8): `GET /admin/logs` entries carry
   `keyName` and `keyKind` (`store` / `config` / `console` / `deleted`), joined in when the list is read (never on the
   request path); `GET /admin/session`, `/admin/session/status` and the login response carry `keyName` for key-store
@@ -262,6 +268,33 @@ now fail `ai-gateway validate` and startup with a migration hint:
   misreading it.
 
 ### Fixed
+
+- **Console layout and wording from the real-usage UI test** (2026-11-05):
+  - B1 / B2: no page scrolls sideways at 390, 768 or 1366 px. Tables scroll inside their own box, the audit detail is
+    shown as labelled fields and folded when long (展开 / 收起), status badges never wrap, drawers and dialogs are full
+    width on phones with usable inputs / selects, and the navigation is one sideways-scrolling row.
+  - B6: an invalid 用量 query (start after end, unknown time zone) is caught before the request and shown in the
+    console's language; old charts and tables are no longer shown next to the error.
+  - U2: Chinese mode has no leftover English — breaker states, the audit header and action names, version summaries
+    (parsed back into labelled text), HEAD (当前), Playground (调试台), key strategy / routing / scope options (with the
+    code in brackets); server errors are translated by their stable `code`, with the server's message as fallback.
+  - U3: the channel wizard checks the Base URL (public http(s), no credentials, no local / private host) before the key
+    step, with an https hint; a field error is no longer repeated in a toast, identical toasts do not stack, at most
+    three are shown, and a click dismisses one.
+  - U9: config writes from the console send only the changed fields, so version summaries name just those; the
+    version diff is grouped by channel / key / model / binding with field labels, hides ids, revisions, timestamps and
+    raw `*_json` columns, shows a whole added / removed channel or model as one line, and masks anything secret-looking.
+  - U11: in the Playground Enter sends and Shift+Enter adds a line (never while an IME is composing); the Send button no
+    longer wraps; a stopped reply is marked 已停止, a failed call leaves no empty bubble, and an empty chat shows a hint.
+  - U6: a `loadbalance` model's bindings are shown as one weighted set with each binding's share, not as a "→" chain;
+    the drawer shows shares instead of priority groups and says priority groups are ignored.
+  - Also: chart axis text stays at its real size at any width (U1); channel latency keeps the last test result and
+    explains "—"; balance has a refresh button and shows the failure reason inline (U4); two keys with the same last
+    four characters are numbered (U5); a model whose bound channels only have unusable keys is flagged (U7); read-only
+    accounts see 查看 instead of 编辑 (U13); usage charts add an “其他 / Other” line beyond the top 6 (U14); closing a
+    drawer or the wizard with unsaved edits asks first (U15); the lockout message says “15 分钟” instead of “900 秒”
+    (U12); the header shows a key's name instead of `key:<uuid>`; the login page probes `GET /admin/session/status`
+    (no 401 in the browser console) and links the favicon.
 
 - **Rollback revived dead upstream keys** (console UI test 2026-11-05 B4). Rolling back to a version taken before
   the gateway disabled a key (upstream 401, account-level 402) restored it as `ok` until the next request hit the

@@ -333,7 +333,10 @@ const D = {
   "m.up": ["上移", "up"],
   "m.down": ["下移", "down"],
   "m.keysDown": ["绑定渠道的 key 全部不可用", "every key of the bound channels is unusable"],
-  "m.noBindings": ["还没有绑定任何渠道：保存后调用会失败。", "No binding yet: calls will fail until one is added."],
+  "m.noBindings": [
+    "还没有绑定任何渠道：启用的模型需要至少一个绑定，或先取消“启用”保存为草稿。",
+    "No binding yet: an enabled model needs one, or untick Enabled to save a draft.",
+  ],
   "k.rotate": ["轮换", "Rotate"],
   "k.confirmRotate": [
     "确定轮换 {name}？旧密钥立即失效，用它登录的控制台会话也会结束。",
@@ -341,6 +344,7 @@ const D = {
   ],
   "k.rotated": ["新密钥（{name}）", "New secret ({name})"],
   "l.upstream": ["上游：{m}", "upstream: {m}"],
+  "l.upstreamModel": ["上游模型", "Upstream model"],
   "l.keyConsole": ["控制台调试台", "console Playground"],
   "l.keyConfig": ["配置文件密钥 {id}", "config key {id}"],
   "l.keyDeleted": ["已删除的密钥 {id}", "deleted key {id}"],
@@ -584,7 +588,10 @@ const ERRORS: Record<string, Pair> = {
   upstream_unreachable: ["无法连接上游：{detail}", "Upstream unreachable: {detail}"],
   upstream_error: ["上游返回错误：{detail}", "Upstream error: {detail}"],
   upstream_invalid_response: ["上游响应无法解析：{detail}", "Upstream response not understood: {detail}"],
-  model_no_bindings: ["模型至少需要绑定一个渠道", "A model needs at least one binding"],
+  model_no_bindings: [
+    "启用的模型至少需要绑定一个渠道（或先保存为停用）",
+    "An enabled model needs at least one binding (or save it disabled)",
+  ],
   invalid_model_name: ["模型名不合法：{detail}", "Invalid model name: {detail}"],
   model_not_found: ["模型不存在或未发布", "Model not found or not published"],
   model_unavailable: ["模型暂时没有可用的渠道", "The model has no available channel right now"],
@@ -629,6 +636,17 @@ export function fmtDuration(seconds: number): string {
 const PHRASES: Array<[RegExp, (m: RegExpMatchArray) => string]> = [
   [/^use letters, digits and (.+?) \(no spaces\)$/, (m) => `只能使用字母、数字和 ${m[1]}（不能有空格）`],
   [/^from must not be after to$/, () => "开始日期不能晚于结束日期"],
+  [
+    /^Model names use letters, digits and (.+?) only/,
+    (m) => `模型名只能使用字母、数字和 ${m[1]}（不能有空格或其他字符）`,
+  ],
+  [/^The model name is empty\.$/, () => "模型名不能为空"],
+  [
+    /^The model name is (\d+) characters long; model names are at most (\d+)/,
+    (m) => `模型名有 ${m[1]} 个字符，最多 ${m[2]} 个`,
+  ],
+  [/^at least one binding is required$/, () => "至少需要一个绑定"],
+  [/^An enabled model needs at least one binding/, () => "启用的模型至少需要一个绑定（或保存为停用）"],
   [/^tz must be an IANA time zone/, () => "时区无效，例如 Asia/Shanghai 或 UTC"],
   [/^(from|to) must be a date/, () => "日期格式应为 YYYY-MM-DD"],
   [/^at most (\d+) days per query$/, (m) => `一次最多查询 ${m[1]} 天`],
