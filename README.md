@@ -652,7 +652,7 @@ Admin endpoints accept, in key-store mode (`ai-gateway serve`): the `adminSecret
 | POST   | `/admin/keys/:id/reset-usage` | admin  | Used tokens back to 0 (`If-Match` optional) |
 | GET    | `/admin/usage`            | read_only  | Tokens / requests / errors / latency by `key`, `model` or `channel` over a date range |
 | POST   | `/admin/keys/:id/revoke`  | admin      | Revoke a key                           |
-| POST   | `/admin/keys/:id/rotate`  | admin      | Replace a key's secret (new key returned once) |
+| POST   | `/admin/keys/:id/rotate`  | admin      | Replace a key's secret (new key returned once); console sessions signed in with the old secret end |
 | DELETE | `/admin/keys/:id`         | admin      | Delete a key                           |
 | GET    | `/admin/logs`             | read_only  | Request log, newest first; `limit` (≤200), `offset`, filters `stage` (surface), `model`, `provider` (target), `since`, `status=error\|ok` |
 | GET    | `/admin/logs/stats`       | read_only  | Counts by surface/target/model, errors, tokens (same filters) |
@@ -806,7 +806,7 @@ double-submit CSRF token (`X-CSRF-Token`, compared with a second cookie and the 
 client IP lock it out for 15 minutes (`429` + `Retry-After`; set `TRUSTED_PROXIES` behind a reverse proxy, also one on
 the same host, so the real client IP is used). There is no global lockout: many failures overall only slow sign-ins
 down (at most 2 s), so nobody can lock the real admin out. Sessions are kept in memory only (a restart signs everyone out) and never touch `/v1/*`. A
-session made with a store key ends when that key is revoked, expires or loses its scope. Tune with:
+session made with a store key ends when that key is revoked, rotated, expires or loses its scope. Tune with:
 
 ```yaml
 console:

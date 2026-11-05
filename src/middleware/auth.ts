@@ -237,6 +237,13 @@ export interface AdminCredential {
   /** Audit label: admin-secret, bootstrap-key or key:<id>. */
   actor: string;
   keyId?: string;
+  /** Store keys: which secret of the key was presented (its rotatedAt, "never" before the first rotation). */
+  credentialVersion?: string;
+}
+
+/** Version of a store key's secret: changes on every rotation (RA4). */
+export function keyCredentialVersion(rotatedAt: Date | null): string {
+  return rotatedAt === null ? "never" : rotatedAt.toISOString();
 }
 
 /**
@@ -258,7 +265,13 @@ export function resolveAdminCredential(
   const apiKey = opts.keyStore?.validateKey(token) ?? null;
   // read_only keys are admitted; mutating admin routes enforce requireScope("admin") themselves.
   if (apiKey !== null && (apiKey.scopes.includes(SCOPE_ADMIN) || apiKey.scopes.includes(SCOPE_READ_ONLY))) {
-    return { kind: "key", scopes: apiKey.scopes, actor: `key:${apiKey.id}`, keyId: apiKey.id };
+    return {
+      kind: "key",
+      scopes: apiKey.scopes,
+      actor: `key:${apiKey.id}`,
+      keyId: apiKey.id,
+      credentialVersion: keyCredentialVersion(apiKey.rotatedAt),
+    };
   }
   if (apiKey !== null) return "insufficient_scope";
   return undefined;

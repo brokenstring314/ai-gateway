@@ -201,6 +201,7 @@ export function createAdminApp(
     const keyState: KeyHandlerState = {
       keyStore,
       meter: gateway.keyMeter(),
+      sessions,
       ...(configStore
         ? {
             audit: (actor: string, action: string, id: string, detail: Record<string, unknown>) =>

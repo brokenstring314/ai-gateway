@@ -181,6 +181,35 @@ describe("console session auth", () => {
     );
   });
 
+  it("RA4: rotating a key ends the sessions it opened (and only those); the new secret signs in", async () => {
+    const created = await h.admin("POST", "/keys", { name: "rotated-admin", scopes: ["admin"] });
+    const { id, key } = (await created.json()) as { id: string; key: string };
+    const s1 = await signIn(h, key);
+    const s2 = await signIn(h, key);
+    const other = await signIn(h, h.keys.admin);
+    expect((await h.app.request("/admin/sessions", { headers: { cookie: s1.cookie } })).status).toBe(200);
+    const rot = await h.admin("POST", `/keys/${id}/rotate`, {});
+    expect(rot.status).toBe(200);
+    const fresh = ((await rot.json()) as { key: string }).key;
+    for (const s of [s1, s2]) {
+      const after = await withSession(h, s, "GET", "/status");
+      expect(after.status).toBe(401); // was 200: rotate left the sessions of the old secret alive
+      expect(((await after.json()) as { error: { code: string } }).error.code).toBe("session_expired");
+    }
+    expect((await withSession(h, other, "GET", "/status")).status).toBe(200);
+    expect((await login(h, key)).status).toBe(401);
+    const s3 = await signIn(h, fresh);
+    expect((await withSession(h, s3, "GET", "/status")).status).toBe(200);
+    const audit = (await (await h.admin("GET", "/audit")).json()) as {
+      data: Array<{ action: string; detail: Record<string, unknown> | null }>;
+    };
+    expect(audit.data.find((a) => a.action === "key_rotate")?.detail).toMatchObject({ sessionsEnded: 2 });
+
+    // A rotation outside this process (the CLI on the same database) also ends the session, on its next request.
+    h.keyStore.rotateKey(id);
+    expect((await withSession(h, s3, "GET", "/status")).status).toBe(401);
+  });
+
   it("logout ends the session (CSRF required)", async () => {
     const s = await signIn(h, h.keys.admin);
     expect((await withSession(h, s, "POST", "/session/logout")).status).toBe(403);

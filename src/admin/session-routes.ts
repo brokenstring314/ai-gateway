@@ -15,7 +15,7 @@
 
 import type { Context, Hono, MiddlewareHandler } from "hono";
 import type { BootstrapGate } from "../auth/bootstrap.js";
-import { resolveAdminCredential } from "../middleware/auth.js";
+import { keyCredentialVersion, resolveAdminCredential } from "../middleware/auth.js";
 import { requestRemoteAddress } from "../middleware/per-ip-rate-limit.js";
 import { parseTrustedProxies, resolveClientIp } from "../middleware/trusted-proxy.js";
 import type { KeyStore } from "../persistence/key-store.js";
@@ -88,7 +88,7 @@ function getVar(c: Context, key: string): unknown {
 
 /**
  * Is the session still backed by a valid credential? Store-key sessions follow
- * the key (revoked, expired or scope removed → ended; scopes refreshed);
+ * the key (revoked, rotated, expired or scope removed → ended; scopes refreshed);
  * bootstrap sessions end once bootstrap keys are retired.
  */
 function stillValid(s: ConsoleSession, deps: SessionDeps): boolean {
@@ -99,6 +99,8 @@ function stillValid(s: ConsoleSession, deps: SessionDeps): boolean {
   if (k === null || !k.active || k.revokedAt !== null) return false;
   if (k.expiresAt !== null && new Date() > k.expiresAt) return false;
   if (!k.scopes.includes(SCOPE_ADMIN) && !k.scopes.includes(SCOPE_READ_ONLY)) return false;
+  // Rotated since sign-in (also by another process, e.g. the CLI on the same database): the old secret is dead (RA4).
+  if (s.credentialVersion === undefined || s.credentialVersion !== keyCredentialVersion(k.rotatedAt)) return false;
   s.scopes = [...k.scopes];
   return true;
 }
@@ -152,6 +154,7 @@ export function registerSessionPublicRoutes(app: Hono<never>, deps: SessionDeps)
       actor: cred.actor,
       kind: cred.kind,
       ...(cred.keyId !== undefined ? { keyId: cred.keyId } : {}),
+      ...(cred.credentialVersion !== undefined ? { credentialVersion: cred.credentialVersion } : {}),
       scopes: cred.scopes,
       ip,
       userAgent: c.req.header("User-Agent") ?? "",

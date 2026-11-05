@@ -17,7 +17,7 @@
  *    one, so a flood of bad attempts cannot lock the real admin out (red team RA1);
  *  - the map is keyed by SHA-256 of the cookie value; listing shows a separate public id;
  *  - sessions minted from a store key are re-checked against the key store on every
- *    admin request (revoked / expired / scope removed → session ends); bootstrap
+ *    admin request (revoked / rotated / expired / scope removed → session ends); bootstrap
  *    sessions end as soon as bootstrap keys are retired.
  */
 
@@ -51,6 +51,8 @@ export interface ConsoleSession {
   readonly actor: string;
   readonly kind: SessionKind;
   readonly keyId?: string;
+  /** Store-key sessions: the key's secret version at sign-in; a rotation ends the session (RA4). */
+  readonly credentialVersion?: string;
   scopes: string[];
   readonly createdAt: number;
   lastSeenAt: number;
@@ -163,6 +165,7 @@ export class SessionManager {
     actor: string;
     kind: SessionKind;
     keyId?: string;
+    credentialVersion?: string;
     scopes: string[];
     ip: string;
     userAgent: string;
@@ -184,6 +187,7 @@ export class SessionManager {
       actor: input.actor,
       kind: input.kind,
       ...(input.keyId !== undefined ? { keyId: input.keyId } : {}),
+      ...(input.credentialVersion !== undefined ? { credentialVersion: input.credentialVersion } : {}),
       scopes: [...input.scopes],
       createdAt: t,
       lastSeenAt: t,
@@ -236,6 +240,18 @@ export class SessionManager {
 
   end(s: ConsoleSession): void {
     this.sessions.delete(s.hash);
+  }
+
+  /** End every session signed in with this store key (rotate / revoke, RA4); returns how many. */
+  endForKey(keyId: string): number {
+    let n = 0;
+    for (const [hash, s] of this.sessions) {
+      if (s.kind === "key" && s.keyId === keyId) {
+        this.sessions.delete(hash);
+        n++;
+      }
+    }
+    return n;
   }
 
   list(): SessionView[] {

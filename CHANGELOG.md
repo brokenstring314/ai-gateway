@@ -333,6 +333,11 @@ now fail `ai-gateway validate` and startup with a migration hint:
   `X-Forwarded-For` hop was used, so a client could rotate it to dodge the per-IP lockout or name a victim's IP to
   lock it out for 15 minutes. Now nothing is trusted by default and the client is the rightmost untrusted hop (see
   Breaking changes).
+- **Rotating a leaked admin key did not end its console sessions** (RA4 / review K3, 低). `POST /admin/keys/:id/rotate`
+  kept every session opened with the old secret alive (revoke already ended them). Now rotate and revoke end that
+  key's sessions at once (audit `sessionsEnded`), and each session remembers the secret version it signed in with,
+  so a rotation by another process (the CLI on the same database) ends it on its next request. `adminSecret` is a
+  startup setting; changing it needs a restart, which already ends every (in-memory) session.
 
 ### Removed
 

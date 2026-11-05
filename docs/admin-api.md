@@ -181,8 +181,12 @@ server-side session:
   unknown cookies get `401 session_expired` and are cleared. Sessions live in process memory only (a restart signs
   everyone out; at most 64, least recently used evicted) — no database read anywhere, and `/v1/*` never looks at
   cookies.
-- **Credential follows.** A session from a key-store key is re-checked on every admin request: revoked, expired or
-  without `admin` / `read_only` → ended. Bootstrap-key sessions end once bootstrap keys are retired. The audit log
+- **Credential follows.** A session from a key-store key is re-checked on every admin request: revoked, **rotated**
+  (since 0.3.0, red team RA4; also a rotation by the CLI on the same database), expired or without `admin` /
+  `read_only` → ended. `POST /admin/keys/:id/rotate` and `…/revoke` end that key's sessions at once (audit detail
+  `sessionsEnded`), including the caller's own session when it was signed in with that key. Bootstrap-key sessions
+  end once bootstrap keys are retired. `adminSecret` is a startup setting: changing it needs a restart, which ends
+  every session (they live in memory only). The audit log
   records `console_login`, `console_logout`, `console_session_revoked` and `console_login_failed` (client IP, never the
   key), with the session's actor (`key:<id>`, `admin-secret`, `bootstrap-key`) on every write.
 - **Lockout.** `console.maxLoginFailures` (5) failures from one client IP lock it out for `console.lockoutMinutes`
@@ -266,7 +270,7 @@ The gateway has one owner. There are no prices, costs, money quotas, payments or
 | POST | `/admin/keys` | admin | `{ name, scopes?, expiresAt?, allowedModels?, quotaTokens?, rpm?, tpm? }` → 201, the secret once |
 | PATCH | `/admin/keys/:id` | admin | any of `name`, `scopes`, `allowedModels`, `expiresAt`, `quotaTokens`, `rpm`, `tpm` (`null` clears); `If-Match` required. `allowedModels`: omitted = unchanged, `null` = every model, `[]` = no model at all (the key can call nothing), a list = those models |
 | POST | `/admin/keys/:id/reset-usage` | admin | used tokens → 0, `usageResetAt` = now; `If-Match` optional (checked when sent) |
-| PUT, DELETE, `…/revoke`, `…/rotate` | | admin | unchanged (PUT: name and scopes only, no If-Match) |
+| PUT, DELETE, `…/revoke`, `…/rotate` | | admin | unchanged (PUT: name and scopes only, no If-Match); revoke / rotate end the key's console sessions |
 
 `PATCH` follows the same rules as the runtime-config writes: strict body (`400` for unknown fields, a
 non-integer, `rpm`/`tpm` < 1, `quotaTokens` < 0), CSRF guard, `If-Match: "<revision>"` (missing → `428

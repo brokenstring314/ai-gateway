@@ -45,6 +45,8 @@ export interface KeyHandlerState {
   meter?: KeyMeter;
   /** Audit sink for key changes (the config store's audit log, when there is one). */
   audit?: (actor: string, action: string, keyId: string, detail: Record<string, unknown>) => void;
+  /** Console sessions: rotate / revoke end the sessions signed in with that key at once (RA4). */
+  sessions?: { endForKey(keyId: string): number };
 }
 
 // ---------------------------------------------------------------------------
@@ -362,7 +364,8 @@ export function revokeKeyHandler(state: KeyHandlerState) {
       const id = c.req.param("id");
       if (id === undefined) return notFound(c);
       state.keyStore.revoke(id);
-      audit(state, c, "key_revoke", id, {});
+      const ended = state.sessions?.endForKey(id) ?? 0;
+      audit(state, c, "key_revoke", id, ended > 0 ? { sessionsEnded: ended } : {});
       return c.json({ revoked: true, id });
     } catch (err) {
       if (err instanceof KeyNotFoundError) return notFound(c);
@@ -378,7 +381,9 @@ export function rotateKeyHandler(state: KeyHandlerState) {
       const id = c.req.param("id");
       if (id === undefined) return notFound(c);
       const rotated = state.keyStore.rotateKey(id);
-      audit(state, c, "key_rotate", id, {});
+      // The old secret may be leaked: sessions it opened end now, not only on their next request (RA4).
+      const ended = state.sessions?.endForKey(id) ?? 0;
+      audit(state, c, "key_rotate", id, ended > 0 ? { sessionsEnded: ended } : {});
       return c.json({
         id: rotated.id,
         key: rotated.key,

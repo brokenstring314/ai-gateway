@@ -593,7 +593,7 @@ Prometheus 格式的指标，包括：
 | POST   | `/admin/keys/:id/reset-usage` | admin | 已用 token 清零（`If-Match` 可选） |
 | GET    | `/admin/usage`            | read_only | 按 `key`、`model` 或 `channel` 汇总一段日期内的 token / 请求数 / 错误数 / 延迟 |
 | POST   | `/admin/keys/:id/revoke`  | admin     | 吊销密钥 |
-| POST   | `/admin/keys/:id/rotate`  | admin     | 轮换密钥（新密钥只返回一次） |
+| POST   | `/admin/keys/:id/rotate`  | admin     | 轮换密钥（新密钥只返回一次）；用旧密钥登录的控制台会话随即结束 |
 | DELETE | `/admin/keys/:id`         | admin     | 删除密钥 |
 | GET    | `/admin/logs`             | read_only | 请求日志（新的在前）；`limit`（≤200）、`offset`，过滤 `stage`（surface）、`model`、`provider`（target）、`since`、`status=error\|ok` |
 | GET    | `/admin/logs/stats`       | read_only | 按 surface/target/model 计数、错误数、token（同样的过滤） |
@@ -743,7 +743,7 @@ curl -X POST -H "X-Admin-Secret: $S" http://localhost:3000/admin/keys/<id>/reset
 （`X-CSRF-Token`，与第二个 Cookie 和会话中保存的值比对）。同一客户端 IP 连续登录失败 5 次锁定 15 分钟（`429` + `Retry-After`；
 在反向代理后面——包括同机代理——请设置 `TRUSTED_PROXIES`，以便取到真实客户端 IP）。没有全局锁定：全局失败过多只会让每次登录变慢（最多 2 秒），
 任何人都无法借此把真正的管理员锁在外面。会话只存在进程内存中（重启后需重新登录），与 `/v1/*` 无关。
-用密钥库 key 登录的会话在该 key 被吊销、过期或失去权限时立即失效。可调参数：
+用密钥库 key 登录的会话在该 key 被吊销、轮换、过期或失去权限时立即失效。可调参数：
 
 ```yaml
 console:
