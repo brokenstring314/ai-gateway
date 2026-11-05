@@ -582,6 +582,8 @@ Prometheus 格式的指标，包括：
 
 密钥库模式（`ai-gateway serve`）下，管理端点接受：`adminSecret`（`X-Admin-Secret` 或 `Authorization: Bearer`）、密钥库中 `admin` 或 `read_only` 作用域的密钥（`Authorization: Bearer`），以及仍被允许时的 bootstrap 密钥（见下文）。仅 inference 作用域的密钥返回 403 `insufficient_scope`；所有写操作需要 `admin`。没有密钥库时（嵌入式 `createApp(gateway, config)`）只接受 `adminSecret`，未配置 `adminSecret` 时管理 API 返回 403 `admin_disabled`。
 
+**请求头凭据失败也会锁定客户端（0.3.0）。** 带了 `X-Admin-Secret` / `Authorization: Bearer` 却返回 `401` 的请求，和控制台登录失败计入同一个按 IP 的计数（`console.lockoutMinutes`（15 分钟）内 `console.maxLoginFailures`（5）次）。被锁定的 IP 在锁定结束前，所有请求头凭据——包括正确的——都返回 `429 auth_locked` + `Retry-After`；成功的请求不会清零计数；没带凭据的请求和 `403 insufficient_scope` 不计数。其他 IP 不受影响（在反向代理后面请设置 `TRUSTED_PROXIES`）。非生产环境下 `adminSecret` 少于 16 个字符时，`serve` 启动会给出警告（`GATEWAY_ENV=production` 直接拒绝）。
+
 | 方法     | 路径                        | 作用域       | 说明                |
 | ------ | ------------------------- | --------- | ----------------- |
 | GET    | `/admin/config`           | read_only | 获取当前配置（已脱敏：API 密钥、admin secret、客户端密钥、URL 中的凭据、OTLP 头、MCP env/args、插件配置里疑似密钥的字段；完整的 `${VAR}` 模板原样显示） |
@@ -755,7 +757,7 @@ console:
   secureCookie: auto         # auto | always | never
 ```
 
-用 Bearer / `X-Admin-Secret` 调 Admin API 的方式不变。页面和带哈希的静态资源不含数据，无需认证，均带严格 CSP（`default-src 'none';
+用 Bearer / `X-Admin-Secret` 调 Admin API 的方式不变，但请求头凭据的失败也计入这个按 IP 的锁定（`429 auth_locked`）。页面和带哈希的静态资源不含数据，无需认证，均带严格 CSP（`default-src 'none';
 script-src 'self'; style-src 'self'; connect-src 'self'; frame-ancestors 'none'`，无内联脚本、无 eval、无第三方来源）以及
 `X-Frame-Options: DENY`、`Referrer-Policy: no-referrer`、`Cross-Origin-Opener-Policy: same-origin`、`Permissions-Policy`，https 下加 HSTS。
 `/admin` 跳转到控制台；0.2 的 `/admin/static/*` 已删除。与其他管理 API 一样，`/admin/*` 只应暴露在可信网络中。
@@ -784,13 +786,16 @@ script-src 'self'; style-src 'self'; connect-src 'self'; frame-ancestors 'none'`
 | 情形 | 状态码 | `code` |
 | --- | --- | --- |
 | JSON 无效 / 校验失败 | 400 | `invalid_json` / `validation_failed` |
+| JSON 请求体嵌套超过 128 层 | 400 | `json_too_deep` |
+| 模型名超过 256 个字符或含控制字符 | 400 | `invalid_model_name` |
+| 透传请求体里重复的顶层键 | 400 | `duplicate_json_key` |
 | 没有目标支持该模型 | 404 | `model_not_found` |
 | 插件拒绝（word-filter 等） | 403 | `plugin_rejected` |
 | `pii-secret-guard` 拦截（请求 / 响应） | 400 / 422 | `secret_detected` / `pii_detected` |
 | `rate-limit` 插件拒绝 | 429 + `Retry-After` | `plugin_rejected` |
-| key 的 token 额度用完 | 403 | `quota_exhausted` |
+| key 的 token 额度用完（在检查模型之前判断，所以请求未知模型也是这个） | 403 | `quota_exhausted` |
 | key 的在途请求已预留了剩余额度 | 429 + `Retry-After: 1` | `quota_in_flight` |
-| `max_tokens` 超过模型的 `maxOutputTokens` / `limits.maxOutputTokens`（65536） | 400 | `max_tokens_exceeded` |
+| `max_tokens` 超过模型的 `maxOutputTokens` / `limits.maxOutputTokens`（65536）；透传代理按 `max_output_tokens` / `max_completion_tokens` / `max_tokens` 中最大的算 | 400 | `max_tokens_exceeded` |
 | 有额度的 key 调用图片 / 透传路由 | 403 | `quota_not_metered` |
 | key 自己的 RPM / TPM（或插件的 TPM）超限 | 429 + `Retry-After` | `rate_limit_exceeded` |
 | 上游 4xx（400、404、413、422 等） | 原状态码 | 上游 `code`；上游 `message`/`type`/`param` 原样保留 |
@@ -1235,7 +1240,7 @@ API 密钥比较使用常量时间相等性比较，防止时序攻击。
 adminSecret: "一个足够长的随机密钥至少8个字符"   # 可选；生产环境至少 16 个字符
 ```
 
-通过 `X-Admin-Secret` 头或 `Authorization: Bearer <密钥>` 发送。使用密钥库时（`ai-gateway serve`），`admin` / `read_only` 作用域的密钥同样可用，因此 `adminSecret` 是可选的；既没有密钥库也没有 `adminSecret` 时管理 API 被禁用（403）。详见[管理 API](#管理-api) 和[密钥作用域](#密钥作用域密钥库模式)。
+通过 `X-Admin-Secret` 头或 `Authorization: Bearer <密钥>` 发送；失败次数和控制台登录失败一样会锁定客户端 IP（`429 auth_locked`），少于 16 个字符时 `serve` 会警告。使用密钥库时（`ai-gateway serve`），`admin` / `read_only` 作用域的密钥同样可用，因此 `adminSecret` 是可选的；既没有密钥库也没有 `adminSecret` 时管理 API 被禁用（403）。详见[管理 API](#管理-api) 和[密钥作用域](#密钥作用域密钥库模式)。
 
 ### 请求体大小限制
 
@@ -1391,7 +1396,7 @@ models:
 
 **`GET /v1/models`** 只列出调用者的 key 可用的、已启用的模型和别名；`display_name`、`description`、`metadata`、`alias_of` 是扩展字段，OpenAI SDK 会忽略。
 
-**透传代理：** 转发请求体里的 `model` 必须已发布且在 key 的白名单内；受限 key 必须带 `model`。没有 `X-Provider` 时发给该模型的第一个绑定；`X-Provider` 指定的渠道不提供该模型时返回 `400 provider_not_bound`。请求体原样转发，所以绑定里的上游改名在透传代理上不生效。
+**透传代理：** 转发请求体里的 `model` 必须已发布且在 key 的白名单内；受限 key 必须带 `model`。没有 `X-Provider` 时发给该模型的第一个绑定；`X-Provider` 指定的渠道不提供该模型时返回 `400 provider_not_bound`（按提供商类型指定时只在该模型自己的渠道里选）。请求体原样转发，所以绑定里的上游改名在透传代理上不生效。但仍受模型输出上限约束（`max_output_tokens` / `max_completion_tokens` / `max_tokens` 中最大的，超出返回 `400 max_tokens_exceeded`），顶层键重复返回 `400 duplicate_json_key`，上游错误体里的渠道密钥会被抹掉。
 
 ---
 

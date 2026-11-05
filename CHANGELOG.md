@@ -123,6 +123,24 @@
 - **The gateway's `requestTimeout` is no longer a circuit-breaker failure by default** (review 2026-11-05 D4). New
   `circuitBreaker.countTimeouts: true` (config file and Admin API channel settings) restores the old behaviour per
   channel.
+- **Request shape limits** (red team 2026-11-05, batch A; `docs/admin-api.md#request-shape-errors-red-team-2026-11-05`):
+  - JSON bodies nested more than **128** levels are `400 json_too_deep` on every `/v1` surface (D5).
+  - Model names longer than **256** characters or containing control / formatting characters are
+    `400 invalid_model_name` (`param` `model`), pass-through included (D3).
+  - The key's meter now runs before the model checks (D3): a key that has used up its quota and asks for an unknown
+    model gets **`403 quota_exhausted` before `404 model_not_found`**, and unknown / forbidden / malformed model names
+    count toward the key's RPM.
+  - Pass-through: a body repeating a top-level key is `400 duplicate_json_key` (P1); the largest of
+    `max_output_tokens` / `max_completion_tokens` / `max_tokens` above the published model's `maxOutputTokens` (else
+    `limits.maxOutputTokens`) is `400 max_tokens_exceeded` instead of being forwarded (F4); `X-Provider: <provider
+    type>` picks only among the channels bound to the body's model (else `400 provider_not_bound`) (P2).
+
+  *Migration:* send each key once, keep `max_*` within the model's limit, and use model names from `GET /v1/models`.
+- **Failed `/admin` header credentials lock the client IP out** (red team 2026-11-05 P4): `X-Admin-Secret` /
+  `Authorization: Bearer` failures share the console sign-in's per-IP counter (5 → 15 min); a locked IP gets
+  `429 auth_locked` + `Retry-After` for every header credential, valid ones included, and a success does not reset
+  the count. *Migration:* scripts retrying with a wrong secret from the host the admin uses will lock that host out;
+  behind a reverse proxy set `TRUSTED_PROXIES` so clients are told apart.
 
 - **Red team 2026-11-02 fixes** (`docs/admin-api.md`):
   - **RC1 / RC2:** `PATCH /admin/channels/:id` that moves a channel with stored keys to another origin (scheme, host
@@ -218,6 +236,14 @@ now fail `ai-gateway validate` and startup with a migration hint:
   misreading it.
 
 ### Fixed
+
+- **Local engine errors opened the circuit** (red team 2026-11-05 D5). A `RangeError` / `TypeError` / `SyntaxError`
+  thrown inside the gateway (e.g. a stack overflow on a deeply nested body) counted as an upstream failure, so a few
+  bad requests could open a channel's breaker for everyone and trigger failover. Errors without an upstream status
+  are now local: breaker permit released, no failover. Upstream and transport failures (always with a status) are
+  unchanged; gateway timeouts follow `circuitBreaker.countTimeouts` (batch B).
+- `serve` warns at startup when `adminSecret` is shorter than 16 characters outside production
+  (`GATEWAY_ENV=production` still refuses it).
 
 - **Console: clearing an optional field did not save** (review 2026-11-02 U3 / U4). The model drawer left an empty
   display name / description out of the `PATCH` and the channel drawer did the same with an empty 429 cooldown, so the
@@ -330,6 +356,34 @@ now fail `ai-gateway validate` and startup with a migration hint:
   the full `/v1/traces` URL.
 
 ### Security
+
+- **Red team 2026-11-05, batch A** (regressions under `tests/regressions/sec/rv5-*`):
+  - **D1 / D2 (高) quadratic regexes:** email / JWT redaction, the `pii-secret-guard` detectors (`private_key`,
+    `jwt`, `generic_secret`, `email`) and the config scrubber's query-name class backtracked over long runs (quadratic
+    time on adversarial request or upstream text, blocking the event loop). They are now linear scanners (differential-tested against the old
+    regexes); detect / redact merge hits in one pass; the tracer cuts error text to 4096 characters and redacts only
+    spans that leave the process.
+  - **D3 (中) unbounded model names and log fields:** an arbitrarily long model name was copied into log lines and
+    usage rows. Model names are bounded (256, no control characters: `400 invalid_model_name`), every free-form
+    request-log field is cut (names 256, error 2048) before stdout and sinks, and requests for unpublished names log
+    `publishedModel: "(unknown)"`. Model rejections count toward the key's RPM.
+  - **D5 (中) deep JSON:** a deeply nested body overflowed the stack after `JSON.parse` and the `RangeError`
+    counted as an upstream failure. One linear pass now refuses more than 128 levels (`400 json_too_deep`), and local
+    errors never touch the breaker (see Fixed).
+  - **P1 (中) duplicate `model` key on pass-through:** the access check read the last `"model"`, the routing the first,
+    so a restricted key reached a forbidden model. Repeated top-level keys are `400 duplicate_json_key`.
+  - **F4 (中) pass-through bypassed the output limit:** bodies went upstream with any `max_output_tokens`. They are now
+    held to the model's limit like chat (`400 max_tokens_exceeded`).
+  - **P2 (中) `X-Provider` by type escaped the model's bindings:** the check accepted any channel of the named type
+    while the forward took the first one, so a model bound to a cheap channel went out through a premium channel's
+    key. Check and forward now use the same list: enabled channels bound to the model, in its routing order.
+  - **P3 (中) upstream keys in error text:** an upstream error echoing the key reached the client, `GET /admin/logs`
+    and stdout. Every key of the channel and key-shaped tokens are now replaced by `[key]` in upstream error
+    messages, stream errors and pass-through error bodies (≤ 1 MiB; larger → generic error, same status).
+  - **P4 (中) no limit on `/admin` header credentials:** a client locked out of the console could still guess
+    `adminSecret` at ~10,000/s. Header credential failures now share the console's per-IP lockout (`429 auth_locked`,
+    success does not reset the count, audited as `admin_auth_locked`), and a short `adminSecret` is warned about
+    outside production.
 
 - **Quota accounting and stream resources** (review 2026-11-05, batch B):
   - **F1 (高) decoy `max_completion_tokens`:** with `max_completion_tokens: 1` next to `max_tokens: 9999999` the output

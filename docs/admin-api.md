@@ -11,6 +11,15 @@ restart. Client keys with token quota / RPM / TPM and usage statistics: [Key lim
   ([Console sessions](#console-sessions)). `read_only` may call every `GET`; every
   write (`POST` / `PATCH` / `PUT` / `DELETE`) needs `admin`. The audit log records who acted as `key:<id>`,
   `admin-secret` or `bootstrap-key` — never the credential.
+- **Failed header credentials lock the client out** (since 0.3.0, red team 2026-11-05 P4). A `401` for a presented
+  `X-Admin-Secret` or `Authorization: Bearer` counts as a failure of the client IP in the same counter as the console
+  sign-in ([Console sessions](#console-sessions) → Lockout): `console.maxLoginFailures` (5) failures within
+  `console.lockoutMinutes` (15) lock that IP out, and every header credential from it — valid or not — then gets
+  `429 auth_locked` + `Retry-After` until the lockout ends (checking it would answer the guess). A success does
+  **not** clear the IP's failures, so a `read_only` key holder cannot interleave valid requests to keep guessing
+  `adminSecret`. Requests without credential headers and valid keys lacking the scope (`403`) are not counted. Many
+  failures overall only slow attempts down (≤ 2 s), never refuse them. The lockout is audited once
+  (`admin_auth_locked`, client IP). Other IPs are unaffected.
 - **CSRF.** Credentials travel only in headers, which a browser never adds by itself. In addition every write is
   refused when it comes from another site (`Sec-Fetch-Site: cross-site`, or an `Origin` that is neither this
   server nor in `cors.origins`: `403 csrf_rejected`) or carries a non-JSON body (`415 unsupported_media_type`).
@@ -208,7 +217,9 @@ server-side session:
   (default: none — loopback is no longer trusted, RA2), read right to left skipping trusted proxies. Behind a reverse
   proxy (also one on the same host) set `TRUSTED_PROXIES`, or every client shares the proxy's address; the gateway
   logs one warning when a request from loopback carries those headers while nothing is trusted. Header (Bearer /
-  `X-Admin-Secret`) access is not affected and always wins over a cookie.
+  `X-Admin-Secret`) credentials always win over a cookie and share this per-IP counter (since 0.3.0, P4): failed
+  header credentials count toward the lockout, and a locked IP gets `429 auth_locked` for header credentials as it
+  gets `429 login_locked` at sign-in ([Rules for every endpoint](#rules-for-every-endpoint)).
 
 ### Playground
 
@@ -378,6 +389,35 @@ Key view (added in 0.3.0 P5):
 | 400 | `max_tokens_exceeded` | `max_tokens` / `max_completion_tokens` above the model's `maxOutputTokens`, else `limits.maxOutputTokens` |
 | 400 | `conflicting_max_tokens` (`param` `max_completion_tokens`) | `max_tokens` and `max_completion_tokens` are both set with different values (send one, or the same value in both) |
 | 400 | `api_keys_required_on_base_url_change` | Admin API: `PATCH /admin/channels/:id` moves a channel with keys to another origin without `apiKeys` |
+
+Order of the checks: the key's own meter (quota, RPM) runs **before** the model is looked at (red team 2026-11-05
+D3), so a key over its quota gets `403 quota_exhausted` even for an unknown model (was `404 model_not_found`), and
+unknown, forbidden and malformed model names count toward the key's RPM.
+
+### Request shape errors (red team 2026-11-05)
+
+Every `/v1` surface (chat, completions, embeddings, images, pass-through) checks these before anything else reads
+the body; all are `400` in the OpenAI error shape.
+
+| Status | `code` (`param`) | When |
+| ------ | ---------------- | ---- |
+| 400 | `invalid_model_name` (`model`) | the model name is longer than 256 characters, or contains control / formatting characters (C0, DEL, C1, U+2028 / U+2029, bidi embeddings / overrides / isolates, BOM) (D3) |
+| 400 | `json_too_deep` | the JSON body is nested more than 128 levels deep (was a stack overflow after parsing) (D5) |
+| 400 | `duplicate_json_key` | pass-through only: a top-level key appears twice (compared after decoding escapes), so the access check and the routing always read the same `model` (P1) |
+| 400 | `max_tokens_exceeded` (the field) | pass-through only: the largest of `max_output_tokens` / `max_completion_tokens` / `max_tokens` (after a max-token plugin lowered it) is above the published model's `maxOutputTokens`, else `limits.maxOutputTokens`; never forwarded or clamped (F4). Bodies without a published model are unaffected |
+| 400 | `provider_not_bound` | pass-through: `X-Provider` (a channel name or a provider type) names no enabled channel bound to the body's model; a provider type picks only among the model's own channels, in its routing order (P2) |
+
+Upstream error text (client message, `GET /admin/logs`, stdout) has the channel's upstream keys and key-shaped tokens
+replaced by `[key]`; pass-through error bodies up to 1 MiB are scrubbed the same way, larger ones become a generic
+error with the same status (P3).
+
+### Admin credential errors
+
+| Status | `code` | When |
+| ------ | ------ | ---- |
+| 401 | `invalid_admin_secret` / `invalid_api_key` | wrong header credential (counts toward the client IP's lockout); `POST /admin/session/login` answers `invalid_credentials` |
+| 429 + `Retry-After` | `auth_locked` | header credential from a client IP locked out after `console.maxLoginFailures` failures (console sign-in and header failures share the counter); `error.retryAfter` in seconds |
+| 429 + `Retry-After` | `login_locked` | the same lockout at `POST /admin/session/login` |
 
 ### `GET /admin/usage`
 

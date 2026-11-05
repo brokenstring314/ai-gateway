@@ -641,6 +641,8 @@ Full list: [Prometheus Metrics](#prometheus-metrics).
 
 Admin endpoints accept, in key-store mode (`ai-gateway serve`): the `adminSecret` (as `X-Admin-Secret` or `Authorization: Bearer`), a key-store key with `admin` or `read_only` scope (`Authorization: Bearer`), or a bootstrap key while it is still allowed (see below). Inference-only keys get 403 `insufficient_scope`; every mutating route needs `admin`. Without a key store (embedded `createApp(gateway, config)`) only `adminSecret` is accepted, and with no `adminSecret` the admin API answers 403 `admin_disabled`.
 
+**Failed header credentials lock the client out (0.3.0).** A `401` for a presented `X-Admin-Secret` / `Authorization: Bearer` counts toward the same per-IP lockout as the console sign-in (`console.maxLoginFailures`, 5, within `console.lockoutMinutes`, 15). A locked IP gets `429 auth_locked` + `Retry-After` for every header credential, the right one included, until the lockout ends; a success does not reset the count; requests without credentials and `403 insufficient_scope` are not counted. Other IPs are unaffected (set `TRUSTED_PROXIES` behind a reverse proxy). `serve` warns at startup when `adminSecret` is shorter than 16 characters outside production (`GATEWAY_ENV=production` refuses it).
+
 | Method | Path                      | Scope      | Description                            |
 | ------ | ------------------------- | ---------- | -------------------------------------- |
 | GET    | `/admin/config`           | read_only  | Current config (secrets redacted: API keys, admin secret, client keys, URL credentials, OTLP headers, MCP env/args, secret-looking plugin config; exact `${VAR}` templates are shown as-is) |
@@ -818,7 +820,7 @@ console:
   secureCookie: auto         # auto | always | never
 ```
 
-Bearer / `X-Admin-Secret` access to the Admin API is unchanged. The page and its hashed assets carry no data and are
+Bearer / `X-Admin-Secret` access to the Admin API works as before, but failed header credentials share this per-IP lockout (`429 auth_locked`). The page and its hashed assets carry no data and are
 served without auth with a strict CSP (`default-src 'none'; script-src 'self'; style-src 'self'; connect-src 'self';
 frame-ancestors 'none'`, no inline script, no eval, no third-party origin) plus `X-Frame-Options: DENY`,
 `Referrer-Policy: no-referrer`, `Cross-Origin-Opener-Policy: same-origin`, `Permissions-Policy` and HSTS on https.
@@ -852,13 +854,16 @@ URLs never appear in the body; the failing target is in the
 | Situation | Status | `code` |
 | --- | --- | --- |
 | Invalid JSON / validation | 400 | `invalid_json` / `validation_failed` |
+| JSON body nested more than 128 levels | 400 | `json_too_deep` |
+| Model name over 256 characters or with control characters | 400 | `invalid_model_name` |
+| Pass-through body repeating a top-level key | 400 | `duplicate_json_key` |
 | Model not served by any target | 404 | `model_not_found` |
 | Plugin rejection (word-filter, …) | 403 | `plugin_rejected` |
 | `pii-secret-guard` block (request / response) | 400 / 422 | `secret_detected` / `pii_detected` |
 | `rate-limit` plugin rejection | 429 + `Retry-After` | `plugin_rejected` |
-| Key token quota used up | 403 | `quota_exhausted` |
+| Key token quota used up (checked before the model, so also for an unknown model) | 403 | `quota_exhausted` |
 | Key's requests in flight hold the rest of its quota | 429 + `Retry-After: 1` | `quota_in_flight` |
-| `max_tokens` above the model's `maxOutputTokens` / `limits.maxOutputTokens` (65536) | 400 | `max_tokens_exceeded` |
+| `max_tokens` above the model's `maxOutputTokens` / `limits.maxOutputTokens` (65536); on pass-through the largest of `max_output_tokens` / `max_completion_tokens` / `max_tokens` | 400 | `max_tokens_exceeded` |
 | Key with a quota on images / pass-through | 403 | `quota_not_metered` |
 | Key's own RPM / TPM (or the plugin's TPM) | 429 + `Retry-After` | `rate_limit_exceeded` |
 | Upstream 4xx (400, 404, 413, 422, …) | same status | upstream `code`; upstream `message`/`type`/`param` kept |
@@ -1336,7 +1341,7 @@ API key comparison uses constant-time equality to prevent timing attacks.
 adminSecret: "a-long-random-secret-at-least-8-chars"   # optional; 16+ chars in production
 ```
 
-Send the secret via `X-Admin-Secret` or `Authorization: Bearer <secret>`. With the key store (`ai-gateway serve`), `admin` / `read_only` store keys work too, so `adminSecret` is optional; without a key store and without `adminSecret` the admin API is disabled (403). See [Admin API](#admin-api) and [Key scopes](#key-scopes-key-store-mode).
+Send the secret via `X-Admin-Secret` or `Authorization: Bearer <secret>`; failed attempts lock the client IP out like failed console sign-ins (`429 auth_locked`), and `serve` warns about a secret under 16 characters. With the key store (`ai-gateway serve`), `admin` / `read_only` store keys work too, so `adminSecret` is optional; without a key store and without `adminSecret` the admin API is disabled (403). See [Admin API](#admin-api) and [Key scopes](#key-scopes-key-store-mode).
 
 ### Body Size Limit
 
@@ -1492,7 +1497,7 @@ Unset metadata falls back to what every bound upstream is known to support (curr
 
 **`GET /v1/models`** lists the enabled published models and aliases the calling key may use; `display_name`, `description`, `metadata` and `alias_of` are extension fields that OpenAI SDKs ignore.
 
-**Pass-through proxy:** a forwarded body's `model` must be published and allowed for the key; a restricted key must send one. Without `X-Provider`, the request goes to the model's first binding; an `X-Provider` that does not serve the model gets `400 provider_not_bound`. The body is forwarded unchanged, so a binding's upstream rename does not apply there.
+**Pass-through proxy:** a forwarded body's `model` must be published and allowed for the key; a restricted key must send one. Without `X-Provider`, the request goes to the model's first binding; an `X-Provider` that does not serve the model gets `400 provider_not_bound` (a provider type picks only among the model's own channels). The body is forwarded unchanged, so a binding's upstream rename does not apply there. It is still held to the model's output limit (the largest of `max_output_tokens` / `max_completion_tokens` / `max_tokens`, else `400 max_tokens_exceeded`), a repeated top-level key is `400 duplicate_json_key`, and upstream error bodies have the channel's keys scrubbed.
 
 ---
 
