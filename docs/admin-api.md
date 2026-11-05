@@ -52,6 +52,23 @@ restart. Client keys with token quota / RPM / TPM and usage statistics: [Key lim
   and every write answers `403 config_read_only`.
 - Write responses carry the resource, `configVersion`, `ETag` and `X-Config-Version`.
 
+## List responses
+
+Two envelope shapes exist, and both are stable (0.3.0 review U16). The 0.3.0 resource lists use the OpenAI-style
+`{ "object": "list", "data": [...] }`; the endpoints that predate 0.3.0 keep the shape they had in 0.2.x so existing
+scripts do not break. No alias is added (it would double the payload); clients read the field of the endpoint they
+call.
+
+| Endpoint | Envelope |
+| -------- | -------- |
+| `GET /admin/channels`, `/admin/models`, `/admin/presets`, `/admin/audit`, `/admin/sessions` | `{ "object": "list", "data": [...] }` (channels, models and audit also carry `source` / `readOnly`; models also `modelSource`, `published`) |
+| `GET /admin/config/versions` | `{ "object": "list", "head", "data": [...] }` |
+| `GET /admin/usage` | `{ "object": "usage", "groupBy", "from", "to", "tz", "data": [...], "totals" }` |
+| `GET /admin/keys` (0.2.x) | `{ "keys": [...], "total" }` |
+| `GET /admin/logs` (0.2.x) | `{ "entries": [...], "total" }` |
+
+Single resources are returned bare (no envelope); errors always use `{ "error": { … } }`.
+
 ## Channels
 
 | Method | Path | Body / notes |

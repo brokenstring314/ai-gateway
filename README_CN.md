@@ -6,6 +6,8 @@
 
 > **致谢：** 本项目的设计源自 [Ferro Labs AI Gateway](https://github.com/ferro-labs/ai-gateway)（Apache-2.0）。感谢 Ferro Labs 团队；详见 [NOTICE](NOTICE)。
 
+> **从 0.2.x 升级？** 0.3.0 改变了多项默认行为（配置库、`TRUSTED_PROXIES`、`GATEWAY_SECRET_KEY`、只服务已发布模型、输出上限）。请先阅读[迁移指南](docs/migration-0.3.zh.md)（[English](docs/migration-0.3.md)）和 [CHANGELOG](CHANGELOG.md)。
+
 ---
 
 ## 快速开始
@@ -15,12 +17,12 @@
 **Docker 镜像**（linux/amd64、linux/arm64），来自 GitHub Container Registry：
 
 ```bash
-docker pull ghcr.io/brokenstring314/ai-gateway:0.2.0   # 或 :0.2、:latest
+docker pull ghcr.io/brokenstring314/ai-gateway:0.3.0   # 或 :0.3、:latest
 docker run -d --name ai-gateway -p 3000:3000 \
   -v "$PWD/config.yaml:/config/config.yaml:ro" \
   -v ai-gateway-data:/data \
   -e OPENAI_API_KEY \
-  ghcr.io/brokenstring314/ai-gateway:0.2.0
+  ghcr.io/brokenstring314/ai-gateway:0.3.0
 ```
 
 镜像的运行要求（生产模式、必须开启 auth）见下文 [Docker](#docker)。
@@ -32,7 +34,7 @@ docker run -d --name ai-gateway -p 3000:3000 \
 README.md 和 `config.example.yaml`。
 
 ```bash
-V=0.2.0 P=linux-x64
+V=0.3.0 P=linux-x64
 curl -LO https://github.com/brokenstring314/ai-gateway/releases/download/v$V/ai-gateway-$V-$P.tar.gz
 curl -LO https://github.com/brokenstring314/ai-gateway/releases/download/v$V/SHA256SUMS
 sha256sum --ignore-missing -c SHA256SUMS
@@ -307,7 +309,7 @@ observability:
 配置分两层：
 
 - **启动配置** —— `server`、`auth`、`adminSecret`、`cors`、`observability`、`mcpServers`、`requestTimeout`、`maxRequestBytes`、`passthroughProxy` —— 始终来自配置文件，修改需要重启。
-- **运行时资源** —— `targets`（渠道）、`strategy`、`aliases`、`plugins`、`compatibility` —— 默认存放在 `<数据目录>/config.sqlite`（`runtimeConfig.source: database`），这样 0.3.0 的管理 API 和控制台可以不重启就修改它们。
+- **运行时资源** —— `targets`（渠道）、`strategy`、`aliases`、`plugins`、`compatibility`、`models`、`limits` —— 默认存放在 `<数据目录>/config.sqlite`（`runtimeConfig.source: database`），这样 0.3.0 的管理 API 和控制台可以不重启就修改它们。
 
 库为空时首次启动，会把配置文件里的运行时段落导入一次（日志 `[config] imported N target(s)…`，记为配置版本 1）。之后以库为准：配置文件的运行时段落再有改动，启动时会警告这些改动**被忽略**。要用文件覆盖库中配置，执行 `ai-gateway config import --force -c config.yaml` 后重启。`ai-gateway config status -c config.yaml` 查看渠道（只显示 key 尾号）和最近的版本。
 
