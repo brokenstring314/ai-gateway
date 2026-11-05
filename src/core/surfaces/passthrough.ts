@@ -16,6 +16,8 @@
 import { PluginRejectionError } from "../../plugins/error.js";
 import { settlePluginContext } from "../../plugins/context.js";
 import type { ChatCompletionRequest, RequestContext } from "../../providers/types.js";
+import type { ModelMetadata } from "../../config/types.js";
+import { invalidRequest } from "../errors.js";
 import type { Pipeline } from "../pipeline.js";
 import type { Surface } from "../types.js";
 
@@ -134,6 +136,50 @@ export function applyPassthroughMaxTokens(
   return changed ? JSON.stringify(next) : undefined;
 }
 
+/** The output-limit field holding the largest value (the one a limit error names). */
+function largestTokenField(body: Readonly<Record<string, unknown>>): PassthroughTokenField | undefined {
+  let best: PassthroughTokenField | undefined;
+  for (const f of TOKEN_FIELDS) {
+    const v = body[f];
+    if (typeof v === "number" && (best === undefined || v > (body[best] as number))) best = f;
+  }
+  return best;
+}
+
+/** A proxied body as the pipeline sees it, plus which body field carried its output limit. */
+export interface PassthroughRequest extends ChatCompletionRequest {
+  readonly passthroughTokenParam?: PassthroughTokenField;
+}
+
+/**
+ * Output limit of a proxied body against the published model (red team
+ * 2026-11-05 F4): the largest of max_output_tokens / max_completion_tokens /
+ * max_tokens (after before-plugins such as max-token lowered it) must be at
+ * most the model's maxOutputTokens, else limits.maxOutputTokens: 400
+ * max_tokens_exceeded with the reason, never clamped — as on chat.
+ */
+export function checkPassthroughOutputLimit(
+  req: PassthroughRequest,
+  meta: ModelMetadata | undefined,
+  model: string,
+  globalMaxOutputTokens?: number,
+): void {
+  const requested = req.maxTokens;
+  if (requested === undefined) return;
+  const param = req.passthroughTokenParam ?? "max_output_tokens";
+  const own = meta?.maxOutputTokens;
+  const limit = own ?? globalMaxOutputTokens;
+  if (limit === undefined || requested <= limit) return;
+  throw invalidRequest(
+    own !== undefined
+      ? `${param} is ${requested}, but the model "${model}" outputs at most ${own} tokens. Set ${param} to ${own} or less.`
+      : `${param} is ${requested}, but this gateway allows at most ${limit} output tokens per request ` +
+          `for the model "${model}" (limits.maxOutputTokens). Set ${param} to ${limit} or less.`,
+    "max_tokens_exceeded",
+    param,
+  );
+}
+
 // ── Before plugins for a proxied request ──
 
 /**
@@ -163,10 +209,12 @@ export async function runPassthroughBefore(
   const isJsonObject = body !== null && typeof body === "object" && !Array.isArray(body);
   const tokenField = isJsonObject ? passthroughTokenField(path, obj) : undefined;
   const maxTokens = passthroughMaxTokens(obj, tokenField);
-  const request: ChatCompletionRequest = {
+  const tokenParam = largestTokenField(obj);
+  const request: PassthroughRequest = {
     model: typeof obj["model"] === "string" ? obj["model"] : "",
     messages: extractPassthroughMessages(obj),
     ...(maxTokens !== undefined ? { maxTokens } : {}),
+    ...(tokenParam !== undefined ? { passthroughTokenParam: tokenParam } : {}),
   };
   const begun = await pipeline.begin(passthroughSurface, request, ctx);
   // Forwarded by the proxy: nothing more to account here, but release
@@ -201,7 +249,10 @@ export const passthroughSurface: Surface<ChatCompletionRequest, never> = {
         undefined,
       );
     }
-    return req;
+    // The limit check (F4) sees the output limit after plugins (max-token may lower it).
+    return view.maxTokens !== undefined && view.maxTokens !== req.maxTokens
+      ? { ...req, maxTokens: view.maxTokens }
+      : req;
   },
   supports: () => false,
   call: () => Promise.reject(new Error("pass-through requests are forwarded by the proxy")),

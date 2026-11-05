@@ -32,6 +32,7 @@ import type { IStrategy } from "../routing/types.js";
 import { type ModelCatalog, type ModelRoute, modelAllowed } from "../routing/model-catalog.js";
 import { invalidRequest, modelNotAllowed, modelNotFound, modelUnavailable, toGatewayError } from "./errors.js";
 import { checkLimits, enforceChatPolicy, outputCapOf } from "./model-policy.js";
+import { checkPassthroughOutputLimit, type PassthroughRequest } from "./surfaces/passthrough.js";
 import { boundLogEntry, loggableModelName, modelNameProblem } from "./request-limits.js";
 import { strategyRunOptions, type TargetExecutor } from "./executor.js";
 import type { McpLoop } from "./mcp-loop.js";
@@ -383,6 +384,9 @@ export class Pipeline {
     }
     if (surface.name === "completions") {
       checkLimits(surface.toPluginView(req), entry.metadata, model, this.deps.maxOutputTokens);
+    }
+    if (surface.name === "passthrough") {
+      checkPassthroughOutputLimit(req as PassthroughRequest, entry.metadata, model, this.deps.maxOutputTokens);
     }
     return req;
   }
