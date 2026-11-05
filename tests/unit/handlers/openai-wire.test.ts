@@ -80,7 +80,8 @@ describe("OpenAI wire format — request (snake_case in)", () => {
       model: "gpt-4o",
       messages: [{ role: "user", content: "a" }],
       max_tokens: 5,
-      max_completion_tokens: 6,
+      // The same value: different values are refused (conflicting_max_tokens, review 2026-11-05 F1).
+      max_completion_tokens: 5,
       top_p: 0.5,
       frequency_penalty: 0.1,
       presence_penalty: 0.2,
@@ -98,7 +99,7 @@ describe("OpenAI wire format — request (snake_case in)", () => {
     expect(res.status).toBe(200);
     const req = calls[0]!;
     expect(req.maxTokens).toBe(5);
-    expect(req.maxCompletionTokens).toBe(6);
+    expect(req.maxCompletionTokens).toBe(5);
     expect(req.topP).toBe(0.5);
     expect(req.frequencyPenalty).toBe(0.1);
     expect(req.presencePenalty).toBe(0.2);

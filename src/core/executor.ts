@@ -76,6 +76,17 @@ export interface RunOptions {
   readonly onServed?: (name: string) => void;
 }
 
+/**
+ * An attempt that was sent upstream ended without output because the
+ * request was aborted (client gone, or the gateway's request timeout):
+ * recorded on the context so the pipeline meters an estimate for it
+ * instead of 0 tokens (review 2026-11-05 F2 / D4).
+ */
+function noteAbortedCall(ctx: RequestContext, sentAt: number, streaming: boolean): void {
+  if (!ctx?.signal?.aborted) return;
+  ctx.abortedUpstreamCall = { sentAt, abortedAt: Date.now(), streaming };
+}
+
 function unwrapRetry(err: unknown): unknown {
   return err instanceof RetryExhaustedError ? err.cause : err;
 }
@@ -138,7 +149,12 @@ export class TargetExecutor {
 
   /** Settle a failed admitted attempt and return the error to rethrow. */
   private settleFailure(name: string, a: Admission, ctx: RequestContext, err: unknown, started: boolean): unknown {
-    const c = classifyAttemptError(err, { signal: ctx?.signal, admitted: true, started });
+    const c = classifyAttemptError(err, {
+      signal: ctx?.signal,
+      admitted: true,
+      started,
+      countTimeouts: a.breaker?.countsTimeouts === true,
+    });
     this.settle(a, c.breaker, name);
     if (c.breaker === "failure")
       this.notify(() => this.deps.onAttemptFailure?.(name, c.timedOut ? gatewayTimeout(name) : err));
@@ -166,11 +182,13 @@ export class TargetExecutor {
   private async attempt<T>(name: string, ctx: RequestContext, fn: () => Promise<T>): Promise<T> {
     const a = await this.admit(name, ctx);
     this.deps.load?.inc(name);
+    const sentAt = Date.now();
     try {
       const result = await fn();
       this.settle(a, "success", name);
       return result;
     } catch (err) {
+      noteAbortedCall(ctx, sentAt, false);
       throw this.settleFailure(name, a, ctx, err, false);
     } finally {
       this.deps.load?.dec(name);
@@ -182,6 +200,7 @@ export class TargetExecutor {
   private async *attemptStream<C>(name: string, ctx: RequestContext, open: () => AsyncIterable<C>): AsyncGenerator<C> {
     const a = await this.admit(name, ctx);
     this.deps.load?.inc(name);
+    const sentAt = Date.now();
     let started = false;
     let settled = false;
     try {
@@ -198,6 +217,7 @@ export class TargetExecutor {
       this.settle(a, "success", name);
     } catch (err) {
       settled = true;
+      if (!started) noteAbortedCall(ctx, sentAt, true);
       throw this.settleFailure(name, a, ctx, err, started);
     } finally {
       // Consumer stopped early. With output, upstream was healthy; without

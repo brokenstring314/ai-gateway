@@ -187,7 +187,7 @@ server:
   host: "0.0.0.0"          # Bind address (default: 0.0.0.0)
   idleTimeoutSeconds: 255   # Bun idle timeout; 0 = never, max/default 255
   sseHeartbeatSeconds: 5    # SSE ": ping" comment while a stream is idle (default 5); 0 = off
-  streamIdleTimeoutSeconds: 120  # end a stream when upstream sends nothing this long (default 120); 0 = off
+  streamIdleTimeoutSeconds: 120  # end a stream when upstream sends nothing, or the client reads nothing, this long (default 120); 0 = off
   streamMaxDurationSeconds: 0    # hard cap on one stream's duration; 0 = off (default)
   perIpRateLimit:           # per-client-IP token bucket on /v1/*; OFF unless rps > 0
     rps: 50                 #   sustained requests/second per IP (env RATE_LIMIT_RPS overrides)
@@ -224,6 +224,7 @@ targets:
       successThreshold: 1                   # Successes in half-open to close (default: 1)
       maxHalfThreshold: 1                   # Concurrent probes allowed in half-open (default: 1)
       timeoutMs: 30000                      # Open → half-open timeout (default: 30000)
+      countTimeouts: false                  # Gateway requestTimeout before output counts as a failure (default: false)
     concurrency:                            # Per-target concurrency limit (off unless set)
       maxConcurrency: 20                    # In-flight upstream calls (1–10000)
       queueSize: 1000                       # Waiting requests beyond that (default: 1000; full → 429)
@@ -762,7 +763,7 @@ Set them on create (`POST /admin/keys`, `ai-gateway keys create --quota-tokens N
 
 **Quota semantics.** A request is refused before it starts once the key's used tokens reach the quota: **403 `quota_exhausted`** (type `insufficient_quota`; 403 rather than 429 because waiting does not help — the quota never refills by itself). A request that was admitted **always finishes**, a stream is never cut for quota; its tokens are counted when it ends, so the last request (and requests already in flight) may take the key past its quota. Raise the quota (`PATCH`) or `POST /admin/keys/:id/reset-usage` to re-open it. Image generation and pass-through routes cannot be counted in tokens, so keys with a quota get **403 `quota_not_metered`** there. RPM / TPM refusals are **429 `rate_limit_exceeded`** with `Retry-After`.
 
-**In-flight reservations.** So that concurrent requests cannot all pass the quota check before any of them is counted, an admitted request of a key with a quota or TPM reserves its estimated prompt plus its output cap (`max_tokens` / `max_completion_tokens`, else the model's `maxOutputTokens`, else `limits.maxOutputTokens`) until it ends. A new request is admitted only while used + reserved < quota, else **429 `quota_in_flight`** with `Retry-After: 1` (the requests in flight may use the rest); reservations count toward TPM too. The overshoot past a quota is bounded by about one request. A reservation is released exactly once when its request ends (success, error, cancel, failover) and replaced by the real tokens; one that is never released (a bug) expires after max(`requestTimeout`, `server.streamMaxDurationSeconds`) + 60 s, or 1 h when streams are unbounded. When an upstream sends no or an implausible `usage` (also on non-streaming responses), the tokens are estimated (CJK-aware) instead of counted as 0.
+**In-flight reservations.** So that concurrent requests cannot all pass the quota check before any of them is counted, an admitted request of a key with a quota or TPM reserves its estimated prompt plus its output cap (the larger of `max_tokens` / `max_completion_tokens`, else the model's `maxOutputTokens`, else `limits.maxOutputTokens`) until it ends. A new request is admitted only while used + reserved < quota, else **429 `quota_in_flight`** with `Retry-After: 1` (the requests in flight may use the rest); reservations count toward TPM too. The overshoot past a quota is bounded by about one request. A reservation is released exactly once when its request ends (success, error, cancel, failover) and replaced by the real tokens; one that is never released (a bug) expires after max(`requestTimeout`, `server.streamMaxDurationSeconds`) + 60 s, or max(1 h, `requestTimeout` + 60 s) when streams are unbounded. When an upstream sends no or an implausible `usage` (also on non-streaming responses), the tokens are estimated (CJK-aware) instead of counted as 0. A request cut off after it reached the upstream (client gone, `requestTimeout`) counts its estimated prompt plus, when non-streaming, 10 output tokens per second it ran (at most its output cap); a failed MCP loop still counts the rounds it completed.
 
 **Performance.** Quota, RPM and TPM are checked against in-memory counters: no database read or write on the request path. Used tokens are written to the key store about once a second (and on shutdown), restored at startup, and kept across live config changes (reloads never reset a counter). A crash can lose up to a second of counted usage.
 
@@ -1049,7 +1050,8 @@ CLOSED ──── failureThreshold failures ────→ OPEN
 - **CLOSED**: All requests pass through. Consecutive failures are counted.
 - **OPEN**: The target is skipped (failover moves to the next candidate); when every candidate is open the request gets 503 `circuit_open` with `Retry-After`.
 - **HALF_OPEN**: Up to `maxHalfThreshold` (default 1) probe requests allowed. `successThreshold` successes close the breaker, a failure reopens it.
-- Settlement is permit-based: an outcome only counts in the breaker generation its request was admitted in. Client aborts and requests that never left the concurrency queue do not count.
+- Settlement is permit-based: an outcome only counts in the breaker generation its request was admitted in. Client aborts (and streaming clients that stopped reading) and requests that never left the concurrency queue do not count.
+- The gateway's own `requestTimeout` (504 `gateway_timeout`) does **not** count by default: how long a request runs is up to the caller (`max_tokens`, prompt size), so three deliberately slow requests from one key must not open the circuit for every tenant. Set `circuitBreaker.countTimeouts: true` on channels where a slow upstream really means an unhealthy one (that brings the risk back for those channels). 5xx, transport errors, stream idle timeouts before output still count.
 
 ### Concurrency Limit
 
@@ -1373,7 +1375,9 @@ cors:
 requestTimeout: "30s"  # default 30s; also 500ms, 5m, 1h, 1m30s
 ```
 
-Sets an `AbortController` that aborts the upstream fetch if exceeded (504 `gateway_timeout`). It covers the request until a streaming response starts; streams are then bounded by `server.streamIdleTimeoutSeconds` / `streamMaxDurationSeconds`.
+Sets an `AbortController` that aborts the upstream fetch if exceeded (504 `gateway_timeout`). It covers the request until a streaming response starts; streams are then bounded by `server.streamIdleTimeoutSeconds` / `streamMaxDurationSeconds`. A timed-out request that had reached the upstream is metered (estimated prompt + 10 output tokens per second it ran, at most its output cap) and is not a breaker failure unless `circuitBreaker.countTimeouts` is set.
+
+`server.streamIdleTimeoutSeconds` (default 120) also covers the other direction: a streaming client that stops reading for that long is cut off — the upstream is aborted, the slot and the key reservation are released and the tokens streamed so far are counted. A client that keeps reading is never cut.
 
 ---
 
@@ -1451,7 +1455,8 @@ Before a request leaves the gateway it is checked against the published model's 
 
 | Request | Metadata | `error.code` (`param`) |
 |---|---|---|
-| `max_tokens` / `max_completion_tokens` above the limit | `maxOutputTokens` | `max_tokens_exceeded` |
+| `max_tokens` / `max_completion_tokens` above the limit (both set: the larger counts) | `maxOutputTokens` | `max_tokens_exceeded` |
+| `max_tokens` and `max_completion_tokens` both set with different values | — | `conflicting_max_tokens` (`max_completion_tokens`) |
 | estimated input (CJK characters 1 token each, other text UTF-8 bytes / 4) + output limit above the window | `contextWindow` | `context_length_exceeded` (`messages`) |
 | image / audio / video / file parts the model does not take | `inputModalities` | `unsupported_input_modality` (`messages`) |
 | `tools` / `parallel_tool_calls: true` | `tools` / `parallelTools: false` | `tools_not_supported` / `parallel_tool_calls_not_supported` |

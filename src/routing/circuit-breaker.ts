@@ -32,7 +32,7 @@ export interface CircuitBreakerConfig extends BaseCircuitBreakerConfig {
   maxHalfThreshold?: number;
 }
 
-const DEFAULT_CB: Required<CircuitBreakerConfig> = {
+const DEFAULT_CB: Required<Omit<CircuitBreakerConfig, "countTimeouts">> = {
   failureThreshold: 5,
   successThreshold: 1,
   maxHalfThreshold: 1,
@@ -67,6 +67,11 @@ export class CircuitBreaker {
 
   private get timeoutMs(): number {
     return this.config.timeoutMs ?? DEFAULT_CB.timeoutMs;
+  }
+
+  /** Whether a gateway request timeout counts as a failure (CircuitBreakerConfig.countTimeouts; default no). */
+  get countsTimeouts(): boolean {
+    return this.config.countTimeouts === true;
   }
 
   private get maxHalfThreshold(): number {

@@ -54,14 +54,48 @@ const MODALITY_LABEL: Record<Modality, string> = {
  * gateway-wide `globalMaxOutputTokens` (limits.maxOutputTokens, review
  * 2026-11-02 RB6): over it is a 400, never clamped.
  */
+/**
+ * The request's effective output cap (review 2026-11-05 F1): the LARGER of
+ * max_tokens and max_completion_tokens when both are present. Upstreams honour
+ * one or the other (DeepSeek and most OpenAI-compatible servers read
+ * max_tokens, OpenAI reasoning models max_completion_tokens) and both are
+ * forwarded, so the limit check and the key meter's reservation must hold
+ * the request to the larger one. `param` names that field.
+ */
+export function outputCapOf(
+  req: Pick<ChatCompletionRequest, "maxTokens" | "maxCompletionTokens">,
+): { readonly value: number; readonly param: "max_tokens" | "max_completion_tokens" } | undefined {
+  const a = typeof req.maxTokens === "number" ? req.maxTokens : undefined;
+  const b = typeof req.maxCompletionTokens === "number" ? req.maxCompletionTokens : undefined;
+  if (a === undefined && b === undefined) return undefined;
+  if (b === undefined || (a !== undefined && a > b)) return { value: a as number, param: "max_tokens" };
+  return { value: b, param: "max_completion_tokens" };
+}
+
 export function checkLimits(
   req: ChatCompletionRequest,
   meta: ModelMetadata | undefined,
   model: string,
   globalMaxOutputTokens?: number,
 ): void {
-  const requested = req.maxCompletionTokens ?? req.maxTokens;
-  const param = req.maxCompletionTokens !== undefined ? "max_completion_tokens" : "max_tokens";
+  // Both output-limit fields with different values (F1): ambiguous — which
+  // one the upstream honours depends on the upstream — so the request is
+  // refused instead of guessing (never clamp or drop silently).
+  if (
+    req.maxTokens !== undefined &&
+    req.maxCompletionTokens !== undefined &&
+    req.maxTokens !== req.maxCompletionTokens
+  ) {
+    throw invalidRequest(
+      `max_tokens (${req.maxTokens}) and max_completion_tokens (${req.maxCompletionTokens}) are both set ` +
+        "and differ. Send only one of them (or the same value in both).",
+      "conflicting_max_tokens",
+      "max_completion_tokens",
+    );
+  }
+  const cap = outputCapOf(req);
+  const requested = cap?.value;
+  const param = cap?.param ?? "max_tokens";
   const own = meta?.maxOutputTokens;
   const limit = own ?? globalMaxOutputTokens;
   if (limit !== undefined && requested !== undefined && requested > limit) {

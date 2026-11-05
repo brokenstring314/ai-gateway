@@ -42,7 +42,14 @@ describe("classifyAttemptError (plan §1.4)", () => {
   };
   it.each([
     ["not admitted", new Error("x"), { admitted: false }, "release"],
-    ["deadline before output", new Error("x"), { admitted: true, signal: timedOut() }, "failure"],
+    // Review 2026-11-05 D4: a gateway timeout is a breaker failure only when the breaker opts in.
+    ["deadline before output", new Error("x"), { admitted: true, signal: timedOut() }, "release"],
+    [
+      "deadline before output, countTimeouts",
+      new Error("x"),
+      { admitted: true, signal: timedOut(), countTimeouts: true },
+      "failure",
+    ],
     ["deadline after output", new Error("x"), { admitted: true, signal: timedOut(), started: true }, "release"],
     ["client abort, no output", new Error("x"), { admitted: true, signal: clientAbort() }, "release"],
     ["client abort after output", new Error("x"), { admitted: true, signal: clientAbort(), started: true }, "success"],

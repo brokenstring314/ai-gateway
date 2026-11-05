@@ -184,7 +184,7 @@ server:
   host: "0.0.0.0"          # 绑定地址（默认：0.0.0.0）
   idleTimeoutSeconds: 255   # Bun 空闲超时；0 = 永不超时，最大/默认 255
   sseHeartbeatSeconds: 5    # 流空闲时发送 SSE ": ping" 注释（默认 5）；0 = 关闭
-  streamIdleTimeoutSeconds: 120  # 上游这么久没有数据就结束流（默认 120）；0 = 关闭
+  streamIdleTimeoutSeconds: 120  # 上游这么久没有数据、或客户端这么久不读，就结束流（默认 120）；0 = 关闭
   streamMaxDurationSeconds: 0    # 单个流的最长时长；0 = 关闭（默认）
   perIpRateLimit:           # /v1/* 按客户端 IP 的令牌桶；rps > 0 才启用（默认关闭）
     rps: 50                 #   每个 IP 每秒请求数（环境变量 RATE_LIMIT_RPS 优先）
@@ -221,6 +221,7 @@ targets:
       successThreshold: 1                   # 半开状态成功多少次后恢复（默认：1）
       maxHalfThreshold: 1                   # 半开状态允许的并发探测数（默认：1）
       timeoutMs: 30000                      # 熔断到半开的超时时间（默认：30000ms）
+      countTimeouts: false                  # 网关 requestTimeout（输出前）是否算失败（默认：false）
     concurrency:                            # 每目标并发限制（不设置则关闭）
       maxConcurrency: 20                    # 同时在途的上游调用数（1–10000）
       queueSize: 1000                       # 超出后的等待队列（默认 1000；满了返回 429）
@@ -703,7 +704,7 @@ ai-gateway keys revoke <id> -c config.yaml
 
 **额度语义。** key 的已用 token 达到额度后，新请求在开始前即被拒绝：**403 `quota_exhausted`**（type `insufficient_quota`；用 403 而不是 429，因为等待没有用——额度不会自动恢复）。已经放行的请求**一定完整结束**，流不会因为额度被中途切断；其 token 在结束时计入，所以最后一个请求（以及当时已在进行中的请求）可能让 key 超出额度。调高额度（`PATCH`）或 `POST /admin/keys/:id/reset-usage` 后可继续使用。图片生成和透传路由无法按 token 计量，因此设了额度的 key 在这些路由上返回 **403 `quota_not_metered`**。RPM / TPM 超限返回 **429 `rate_limit_exceeded`** 并带 `Retry-After`。
 
-**在途预留。** 为了不让并发请求在任何一个被计入之前全部通过额度检查，带额度或 TPM 的 key，每个被放行的请求在结束前会预留“估算的 prompt + 输出上限”（`max_tokens` / `max_completion_tokens`，否则模型的 `maxOutputTokens`，否则 `limits.maxOutputTokens`）。只有 已用 + 已预留 < 额度 时才放行新请求，否则返回 **429 `quota_in_flight`** 并带 `Retry-After: 1`（剩余额度可能被在途请求用掉）；预留同样计入 TPM。超出额度的部分因此最多约一个请求。请求结束时（成功、出错、取消、故障转移）预留恰好释放一次，并改为计入真实 token；万一某个预留始终没有释放（程序缺陷），它会在 max(`requestTimeout`, `server.streamMaxDurationSeconds`) + 60 秒后过期，流式时长不设上限时为 1 小时。上游不返回或返回不可信的 `usage`（非流式响应也一样）时，按估算（考虑中日韩字符）计入，而不是记 0。
+**在途预留。** 为了不让并发请求在任何一个被计入之前全部通过额度检查，带额度或 TPM 的 key，每个被放行的请求在结束前会预留“估算的 prompt + 输出上限”（`max_tokens` / `max_completion_tokens` 中较大的一个，否则模型的 `maxOutputTokens`，否则 `limits.maxOutputTokens`）。只有 已用 + 已预留 < 额度 时才放行新请求，否则返回 **429 `quota_in_flight`** 并带 `Retry-After: 1`（剩余额度可能被在途请求用掉）；预留同样计入 TPM。超出额度的部分因此最多约一个请求。请求结束时（成功、出错、取消、故障转移）预留恰好释放一次，并改为计入真实 token；万一某个预留始终没有释放（程序缺陷），它会在 max(`requestTimeout`, `server.streamMaxDurationSeconds`) + 60 秒后过期，流式时长不设上限时为 max(1 小时, `requestTimeout` + 60 秒)。上游不返回或返回不可信的 `usage`（非流式响应也一样）时，按估算（考虑中日韩字符）计入，而不是记 0。已经发到上游后被中断的请求（客户端断开、`requestTimeout`）计入估算的 prompt，非流式还加上运行的每秒 10 个输出 token（不超过输出上限）；MCP 循环最终失败时，已完成的各轮照样计入。
 
 **性能。** 额度、RPM、TPM 只检查内存计数器：请求路径上不读也不写数据库。已用 token 大约每秒（以及关闭时）异步写回密钥库，启动时恢复；在线改配置（重载）不会清零任何计数。进程崩溃最多丢失约 1 秒的计量。
 
@@ -951,7 +952,8 @@ targets:
 - **关闭**：所有请求通过。计算连续失败次数。
 - **打开**：该目标被跳过（failover 到下一个候选）；所有候选都打开时返回 503 `circuit_open` 并带 `Retry-After`。
 - **半开**：最多允许 `maxHalfThreshold`（默认 1）个探测请求。成功 `successThreshold` 次后关闭熔断器，失败则重新打开。
-- 结算基于 permit：一次结果只在其请求被放行时的熔断器“代”内生效。客户端中止、以及始终没离开并发队列的请求都不计入。
+- 结算基于 permit：一次结果只在其请求被放行时的熔断器“代”内生效。客户端中止（包括不再读取的流式客户端）、以及始终没离开并发队列的请求都不计入。
+- 网关自己的 `requestTimeout`（504 `gateway_timeout`）默认**不**计入：请求跑多久由调用方决定（`max_tokens`、prompt 长度），一个 key 故意发 3 个慢请求不能让所有租户都被熔断。只有在“上游慢就等于上游不健康”的渠道上才设置 `circuitBreaker.countTimeouts: true`（这些渠道会重新承担上述风险）。5xx、传输错误、输出前的流空闲超时仍然计入。
 
 ### 并发限制
 
@@ -1272,7 +1274,9 @@ cors:
 requestTimeout: "30s"  # 默认 30s；也可 500ms、5m、1h、1m30s
 ```
 
-设置 `AbortController`，超时后中止上游 fetch（504 `gateway_timeout`）。它覆盖到流式响应开始为止；之后流由 `server.streamIdleTimeoutSeconds` / `streamMaxDurationSeconds` 约束。
+设置 `AbortController`，超时后中止上游 fetch（504 `gateway_timeout`）。它覆盖到流式响应开始为止；之后流由 `server.streamIdleTimeoutSeconds` / `streamMaxDurationSeconds` 约束。已经发到上游的请求超时后会被计量（估算的 prompt + 运行的每秒 10 个输出 token，不超过它的输出上限），并且除非设置了 `circuitBreaker.countTimeouts`，不算熔断失败。
+
+`server.streamIdleTimeoutSeconds`（默认 120）也管另一个方向：流式客户端这么久不读数据就会被断开——中止上游请求，释放并发槽和 key 的预留，已经流出的 token 照常计入。一直在读的客户端永远不会被断开。
 
 ---
 
@@ -1350,7 +1354,8 @@ models:
 
 | 请求情况 | 依据的元数据 | `error.code`（`param`） |
 |---|---|---|
-| `max_tokens` / `max_completion_tokens` 超过上限 | `maxOutputTokens` | `max_tokens_exceeded` |
+| `max_tokens` / `max_completion_tokens` 超过上限（两个都设时按较大的算） | `maxOutputTokens` | `max_tokens_exceeded` |
+| 同时设置了 `max_tokens` 和 `max_completion_tokens` 且值不同 | — | `conflicting_max_tokens`（`max_completion_tokens`） |
 | 估算输入（中日韩字符每字 1 token，其他文本 UTF-8 字节 / 4）+ 输出上限超过上下文窗口 | `contextWindow` | `context_length_exceeded`（`messages`） |
 | 模型不接受的图片 / 音频 / 视频 / 文件 | `inputModalities` | `unsupported_input_modality`（`messages`） |
 | `tools` / `parallel_tool_calls: true` | `tools` / `parallelTools: false` | `tools_not_supported` / `parallel_tool_calls_not_supported` |

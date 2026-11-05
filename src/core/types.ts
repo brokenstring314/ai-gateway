@@ -105,7 +105,8 @@ export interface StreamResult<Chunk> {
  * How a request ended, for Pipeline.finalize(). Exactly one per request.
  *  - ok: upstream answered (usage summed across MCP rounds / stream);
  *  - error: no usable answer; `partial` carries what a stream delivered
- *    before failing (tokens were spent: after plugins still run);
+ *    before failing (tokens were spent: after plugins still run); `metered`
+ *    the tokens spent without an answer (completed MCP rounds, aborted call);
  *  - rejected: a before plugin refused the request (no upstream call);
  *  - short_circuit: a before plugin answered the request itself.
  */
@@ -123,6 +124,16 @@ export type FinalizeOutcome<Res> =
       readonly target?: string;
       readonly partial?: {
         readonly response: ChatCompletionResponse;
+        readonly usage: Usage;
+        readonly usageEstimated?: boolean;
+      };
+      /**
+       * Tokens the failed request still consumed with no answer to show
+       * (completed MCP rounds, a call cut off after it was sent upstream;
+       * review 2026-11-05 F2 / F3): counted toward the key's quota / TPM and
+       * logged, but after plugins do not run. `partial` wins when both are set.
+       */
+      readonly metered?: {
         readonly usage: Usage;
         readonly usageEstimated?: boolean;
       };

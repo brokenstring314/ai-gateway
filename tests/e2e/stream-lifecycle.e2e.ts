@@ -74,11 +74,16 @@ describe("stream lifecycle", () => {
     const first = up.bigStreamProduced;
     await Bun.sleep(1000);
     const second = up.bigStreamProduced;
-    await r.body?.cancel();
     // Socket + stream buffers hold a bounded amount (a few hundred 64 KiB chunks); it must stop growing.
     expect(second).toBe(first);
     expect(second).toBeLessThan(BIG_STREAM_TOTAL / 2);
-  }, 10000);
+    // Review 2026-11-05 D6: the stalled client is given up after streamIdleTimeoutSeconds (1 s here):
+    // the upstream request is aborted, which frees its socket and concurrency slot.
+    const deadline = Date.now() + 5000;
+    while (!up.requests[0]?.aborted && Date.now() < deadline) await Bun.sleep(25);
+    expect(up.requests[0]?.aborted).toBe(true);
+    await r.body?.cancel().catch(() => {});
+  }, 12000);
 
   // T3-5 (open): a non-SSE 200 on a stream request becomes an empty successful stream.
   it("200 application/json on a stream request is not turned into an empty stream", async () => {

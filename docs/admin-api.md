@@ -82,6 +82,11 @@ Create body:
 }
 ```
 
+`settings.circuitBreaker` takes `failureThreshold`, `successThreshold`, `maxHalfThreshold`, `timeoutMs` and
+`countTimeouts` (default `false`): whether the gateway's own `requestTimeout` firing before any output counts as a
+breaker failure. Off by default because the caller decides how long a request runs (`max_tokens`, prompt size), so
+a few deliberately slow requests from one key must not open the circuit for everyone (review 2026-11-05 D4).
+
 Channel view: the fields above plus `id`, `effectiveBaseURL`, `urlPolicy` (`public` for URLs written here,
 `trusted` for channels imported from the config file), `revision`, `createdAt`, `updatedAt` and
 `keys: [{ id, kind (encrypted | env_ref), hint, enabled, status (ok | invalid | quota), weight, lastError,
@@ -311,19 +316,28 @@ Key view (added in 0.3.0 P5):
   number, zero completion tokens although there is output) — non-streaming responses included, per upstream call
   and per MCP round — tokens are estimated: CJK characters count one token each, other text UTF-8 bytes / 4, plus
   tools, tool calls and reasoning; the request log marks such a request `usageEstimated`. MCP tool rounds are
-  summed. Refused requests count 0.
+  summed — also when the loop fails later (`mcp_depth_exceeded`, a later round's upstream error): the rounds that
+  were served still count. Refused requests count 0.
+- **Calls cut off by an abort** (review 2026-11-05 F2 / D4): a request that was already sent upstream (past the
+  breaker and the concurrency queue) and then ended by the client going away or by the gateway's `requestTimeout`
+  (504 `gateway_timeout`) before any answer is not free: it counts the **estimated prompt**, plus, for a
+  non-streaming call, **10 output tokens per second** it ran (a deliberately slow rate, never more than the
+  request's output cap); a stream cut before its first chunk counts the prompt only. Marked `usageEstimated`. A
+  request aborted while still queued for a slot never reached the upstream and counts 0. Streams cut after output
+  count what was streamed (see the client-stall rule below).
 - **Quota:** checked before the request starts: used ≥ quota → `403 quota_exhausted` (type `insufficient_quota`, no
   `Retry-After`: the quota never refills by itself). An admitted request always runs to the end — streams are never
   cut for quota — and its tokens are added when it ends. Raise the quota or reset the usage to re-open it.
 - **In-flight reservations.** An admitted request of a key with a quota or a TPM **reserves** its estimated prompt
-  plus its output cap (`max_completion_tokens` / `max_tokens`, else the model's `maxOutputTokens`, else
+  plus its output cap (the larger of `max_completion_tokens` / `max_tokens`, else the model's `maxOutputTokens`, else
   `limits.maxOutputTokens`; × `n`; embeddings: the input only) until it settles. A new request is admitted only while
   used + reserved < quota; otherwise **`429 quota_in_flight`** with `Retry-After: 1` (type `rate_limit_error`): the
   requests in flight may use the rest, retry when they have finished. Concurrent requests can therefore no longer all
   pass the check before any is counted — the overshoot is bounded by about one request. The reservation is released
   exactly once when the request settles (success, error, client cancel, failover, rejection) and the actual tokens are
   counted instead. Safety net: a reservation that is never settled expires after the request-lifetime bound —
-  max(`requestTimeout`, `server.streamMaxDurationSeconds`) + 60 s, or **1 h** when streams are unbounded — and is
+  max(`requestTimeout`, `server.streamMaxDurationSeconds`) + 60 s, or max(**1 h**, `requestTimeout` + 60 s) when
+  streams are unbounded — and is
   released lazily on the key's next request. `reset-usage` keeps the reservations of requests in flight.
 - **Not meterable:** image generation and pass-through proxy routes have no token usage, so a key **with a
   quota** gets `403 quota_not_metered` there (keys without a quota are unaffected).
@@ -335,6 +349,18 @@ Key view (added in 0.3.0 P5):
 - **Order:** published model and `allowedModels` (403/404) → quota (403 `quota_exhausted`, 429 `quota_in_flight`)
   → RPM → TPM → plugins → model metadata / `limits.maxOutputTokens` (400 `max_tokens_exceeded`; the reservation is
   released).
+- **Output cap with both fields** (review 2026-11-05 F1): upstreams honour `max_tokens` or `max_completion_tokens`
+  (DeepSeek and most OpenAI-compatible servers the former), and both are forwarded, so the effective cap is the
+  larger of the two. Different values are refused (`400 conflicting_max_tokens`) rather than guessing which one the
+  upstream reads; the same value in both is accepted. Pass-through bodies (`/v1/responses` …) use the largest of
+  `max_output_tokens` / `max_completion_tokens` / `max_tokens`, and a max-token plugin cap lowers every field present.
+- **A streaming client that stops reading** (review 2026-11-05 D6): once a chunk has waited for the client longer
+  than `server.streamIdleTimeoutSeconds` (default 120 s; `0` turns this and the upstream idle timeout off) the stream
+  is ended — the upstream request is aborted (a client cancel: never a breaker failure), its concurrency slot,
+  breaker permit and reservation are released, and the tokens streamed so far are counted. The gateway pulls the
+  upstream only as fast as the client socket accepts data, so a stalled stream holds at most what the kernel socket
+  buffers took, plus up to 1 Mi characters of answer text kept for after-request plugins and the usage estimate
+  (longer answers are counted, not kept). A client that keeps reading is never cut, however long the answer.
 - **Hot path:** all of this — reservations and their expiry included — reads in-memory counters only (no database
   access, no timer). Used tokens are persisted
   asynchronously about once a second (`USAGE_FLUSH_INTERVAL_MS`) and on shutdown, restored at startup, and never
@@ -350,6 +376,7 @@ Key view (added in 0.3.0 P5):
 | 403 | `quota_not_metered` | a key with a quota on image generation / pass-through routes |
 | 429 + `Retry-After` | `rate_limit_exceeded` | the key's RPM / TPM (in-flight reservations count toward TPM) |
 | 400 | `max_tokens_exceeded` | `max_tokens` / `max_completion_tokens` above the model's `maxOutputTokens`, else `limits.maxOutputTokens` |
+| 400 | `conflicting_max_tokens` (`param` `max_completion_tokens`) | `max_tokens` and `max_completion_tokens` are both set with different values (send one, or the same value in both) |
 | 400 | `api_keys_required_on_base_url_change` | Admin API: `PATCH /admin/channels/:id` moves a channel with keys to another origin without `apiKeys` |
 
 ### `GET /admin/usage`

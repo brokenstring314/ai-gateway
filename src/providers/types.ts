@@ -66,6 +66,25 @@ export interface RequestContext {
    * RPM, TPM). Unset for unauthenticated / embedded callers.
    */
   client?: MeteredKey;
+  /**
+   * Set by the target executor when an attempt that had already been sent
+   * upstream (breaker and limiter passed) ended because the request was
+   * aborted — client disconnect or the gateway's request timeout — before any
+   * output reached the gateway (review 2026-11-05 F2 / D4). The pipeline then
+   * meters an estimate instead of 0 tokens: the upstream has the request and
+   * usually bills at least its prompt.
+   */
+  abortedUpstreamCall?: AbortedUpstreamCall;
+}
+
+/** An upstream call cut off by the request's abort (RequestContext.abortedUpstreamCall). */
+export interface AbortedUpstreamCall {
+  /** When the attempt was sent upstream (epoch ms). */
+  readonly sentAt: number;
+  /** When it ended (epoch ms). */
+  readonly abortedAt: number;
+  /** A streaming attempt (it produced no chunk: the upstream was still before its first token). */
+  readonly streaming: boolean;
 }
 
 export interface ModelInfo {

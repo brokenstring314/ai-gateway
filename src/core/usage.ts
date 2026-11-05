@@ -80,7 +80,23 @@ export interface StreamAccumulator {
   finishReason: string;
   usage: Usage | undefined;
   chunks: number;
+  /**
+   * Estimated tokens of text past STREAM_ACCUMULATOR_MAX_CHARS that was not
+   * kept (review 2026-11-05 D6): still counted by estimateStreamUsage.
+   */
+  overflowTokens: number;
+  /** Some streamed text was not kept (the accumulator hit its cap). */
+  truncated: boolean;
 }
+
+/**
+ * Most characters of streamed text (content + tool-call text + reasoning) a
+ * stream keeps for after-request plugins and the usage estimate (review
+ * 2026-11-05 D6). Past it the text is only counted (estimated tokens), so a
+ * very long answer cannot grow the gateway's memory without bound; the stream
+ * itself is never cut for this.
+ */
+export const STREAM_ACCUMULATOR_MAX_CHARS = 1_048_576;
 
 export function newStreamAccumulator(model: string, startTime = Date.now()): StreamAccumulator {
   return {
@@ -93,7 +109,21 @@ export function newStreamAccumulator(model: string, startTime = Date.now()): Str
     finishReason: "",
     usage: undefined,
     chunks: 0,
+    overflowTokens: 0,
+    truncated: false,
   };
+}
+
+/** Append streamed text to one accumulator field, or only count it once the accumulator is full. */
+function keep(acc: StreamAccumulator, field: "content" | "toolArgText" | "reasoningText", text: string): void {
+  if (text === "") return;
+  const held = acc.content.length + acc.toolArgText.length + acc.reasoningText.length;
+  if (held + text.length <= STREAM_ACCUMULATOR_MAX_CHARS) {
+    acc[field] += text;
+    return;
+  }
+  acc.overflowTokens += estimateTextTokens(text);
+  acc.truncated = true;
 }
 
 /** Generated text that travels in delta extras and costs output tokens. */
@@ -108,17 +138,17 @@ export function accumulateChunk(acc: StreamAccumulator, chunk: StreamChunk): voi
   for (const choice of chunk.choices ?? []) {
     const delta = choice?.delta;
     if (delta) {
-      if (typeof delta.content === "string") acc.content += delta.content;
+      if (typeof delta.content === "string") keep(acc, "content", delta.content);
       for (const tc of delta.toolCalls ?? []) {
         const args = (tc as { function?: { arguments?: unknown; name?: unknown } }).function;
-        if (typeof args?.arguments === "string") acc.toolArgText += args.arguments;
-        if (typeof args?.name === "string") acc.toolArgText += args.name;
+        if (typeof args?.arguments === "string") keep(acc, "toolArgText", args.arguments);
+        if (typeof args?.name === "string") keep(acc, "toolArgText", args.name);
       }
       const extra = delta.extra;
       if (extra) {
         for (const key of ESTIMATED_DELTA_EXTRAS) {
           const v = extra[key];
-          if (typeof v === "string") acc.reasoningText += v;
+          if (typeof v === "string") keep(acc, "reasoningText", v);
         }
       }
     }
@@ -137,7 +167,10 @@ export function estimateStreamUsage(
 ): Usage {
   const promptTokens = estimatePromptTokens(req);
   const completionTokens =
-    estimateTextTokens(acc.content) + estimateTextTokens(acc.toolArgText) + estimateTextTokens(acc.reasoningText);
+    estimateTextTokens(acc.content) +
+    estimateTextTokens(acc.toolArgText) +
+    estimateTextTokens(acc.reasoningText) +
+    acc.overflowTokens;
   return { promptTokens, completionTokens, totalTokens: promptTokens + completionTokens };
 }
 

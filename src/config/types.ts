@@ -19,6 +19,15 @@ export interface CircuitBreakerConfig {
   successThreshold?: number;
   maxHalfThreshold?: number;
   timeoutMs?: number;
+  /**
+   * Count the gateway's own request timeout (requestTimeout expiring before
+   * any output) as a breaker failure. Default false (review 2026-11-05 D4):
+   * how long a request runs is largely up to the caller (max_tokens, prompt
+   * size), so a few deliberately slow requests from one key must not open
+   * the circuit for everyone. Turn it on only for channels where a slow
+   * upstream really means an unhealthy one.
+   */
+  countTimeouts?: boolean;
 }
 
 export interface ConcurrencyConfig {

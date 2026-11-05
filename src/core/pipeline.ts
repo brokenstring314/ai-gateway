@@ -31,7 +31,7 @@ import { ConcurrencyLimitError } from "../routing/concurrency-limiter.js";
 import type { IStrategy } from "../routing/types.js";
 import { type ModelCatalog, type ModelRoute, modelAllowed } from "../routing/model-catalog.js";
 import { invalidRequest, modelNotAllowed, modelNotFound, modelUnavailable, toGatewayError } from "./errors.js";
-import { checkLimits, enforceChatPolicy } from "./model-policy.js";
+import { checkLimits, enforceChatPolicy, outputCapOf } from "./model-policy.js";
 import { strategyRunOptions, type TargetExecutor } from "./executor.js";
 import type { McpLoop } from "./mcp-loop.js";
 import { runChatStream, type ChatShapedSurface } from "./chat-stream.js";
@@ -40,6 +40,15 @@ import { addUsage, estimatePromptTokens, resolveUsage } from "./usage.js";
 import type { KeyMeter, Reservation } from "../usage/key-meter.js";
 import { DEFAULT_MAX_OUTPUT_TOKENS } from "../config/types.js";
 import { KEY_RPM_METADATA } from "../plugins/builtins/rate-limit.js";
+
+/**
+ * Output tokens per second charged for a non-streaming upstream call that was
+ * cut off (client disconnect / gateway timeout) before it answered (review
+ * 2026-11-05 F2 / D4): deliberately slow — real upstreams generate several
+ * times faster — so the estimate stays an under- rather than an over-charge,
+ * and never above the request's output cap.
+ */
+export const ABORTED_CALL_OUTPUT_TOKENS_PER_SECOND = 10;
 
 /** Provider label for requests that never reached an upstream target. */
 export const NO_UPSTREAM_PROVIDER = "none";
@@ -90,21 +99,30 @@ export class Pipeline {
     if (begun.kind === "answered") return { kind: "ok", value: begun.value, target: NO_UPSTREAM_PROVIDER };
     const { run } = begun;
     let target: string | undefined;
+    // Metered usage of every completed upstream call (RB1), kept outside the
+    // try so a request that fails later (a later MCP round errors, the loop
+    // exceeds its depth, the client goes away) still counts the rounds that
+    // were served (review 2026-11-05 F3).
+    let usage: Usage | undefined;
+    let usageEstimated = false;
+    // The request of the upstream call in flight (the current MCP round).
+    let inFlight: Req = run.request;
     try {
       let request = run.request;
       // Chat-capable surfaces (chat, completions) run the MCP agentic loop.
       const mcp = surface.capability === "chat" ? this.deps.mcp() : null;
       if (mcp) request = mcp.inject(request as never) as Req;
+      inFlight = request;
       const first = await this.attempt(surface, request, ctx);
       target = first.target;
       let value = first.value;
-      // Metered usage of every upstream call (RB1): an upstream that reports
-      // no or an implausible usage is estimated, round by round.
+      // An upstream that reports no or an implausible usage is estimated, round by round.
       let metered = meteredUsage(surface, request, value);
-      let usage = metered.usage;
-      let usageEstimated = metered.estimated;
+      usage = metered.usage;
+      usageEstimated = metered.estimated;
       if (mcp) {
         const looped = await mcp.run(ctx, request as never, value as never, async (c, r) => {
+          inFlight = r as unknown as Req;
           const next = await this.attempt(surface, r as unknown as Req, c);
           target = next.target;
           metered = meteredUsage(surface, r as unknown as Req, next.value);
@@ -118,9 +136,64 @@ export class Pipeline {
       value = await this.finalize(run, { kind: "ok", value, target, usage, usageEstimated });
       return { kind: "ok", value, target, usage };
     } catch (err) {
-      await this.finalize(run, { kind: "error", error: err, target });
+      // Completed rounds (F3) plus an estimate for a call the upstream
+      // received before the request was aborted (F2 / D4).
+      const aborted = this.abortedCallUsage(surface, inFlight, ctx);
+      const failedUsage = addUsage(usage, aborted);
+      await this.finalize(run, {
+        kind: "error",
+        error: err,
+        target,
+        ...(failedUsage
+          ? { metered: { usage: failedUsage, usageEstimated: usageEstimated || aborted !== undefined } }
+          : {}),
+      });
       throw err;
     }
+  }
+
+  /**
+   * Estimated usage of an upstream call that was sent but cut off by the
+   * request's abort before any output reached the gateway — client
+   * disconnect or the gateway's request timeout (review 2026-11-05 F2 / D4;
+   * set by the executor: RequestContext.abortedUpstreamCall). The upstream
+   * has the request and normally bills at least its prompt, so the key is
+   * never charged 0:
+   *  - always the estimated prompt;
+   *  - non-streaming: plus ABORTED_CALL_OUTPUT_TOKENS_PER_SECOND for every
+   *    second the call ran, never more than the request's output cap (a
+   *    slow, conservative generation rate; the output itself is unknown);
+   *  - streaming (no chunk yet): prompt only — no token had been produced.
+   * Undefined when no such call happened, or on surfaces that are not
+   * token-metered (images, pass-through).
+   */
+  abortedCallUsage<Req, Res, Chunk>(
+    surface: Surface<Req, Res, Chunk>,
+    req: Req,
+    ctx: RequestContext,
+  ): Usage | undefined {
+    const call = ctx?.abortedUpstreamCall;
+    if (!call || !surface.estimateUsage) return undefined;
+    const view = surface.toPluginView(req);
+    const promptTokens = estimatePromptTokens(view);
+    let completionTokens = 0;
+    if (!call.streaming && surface.name !== "embeddings") {
+      const seconds = Math.max(0, call.abortedAt - call.sentAt) / 1000;
+      const byTime = Math.floor(seconds * ABORTED_CALL_OUTPUT_TOKENS_PER_SECOND);
+      completionTokens = Math.min(byTime, this.outputCap(surface, req));
+    }
+    return { promptTokens, completionTokens, totalTokens: promptTokens + completionTokens };
+  }
+
+  /** A request's output cap times n: requested, else the model's / gateway's limit (RB3 / RB6). */
+  private outputCap<Req, Res, Chunk>(surface: Surface<Req, Res, Chunk>, req: Req): number {
+    const view = surface.toPluginView(req);
+    const meta = this.deps.catalog.lookup(surface.model(req))?.metadata;
+    // The larger of max_tokens / max_completion_tokens (F1): both are forwarded.
+    const cap =
+      outputCapOf(view)?.value ?? meta?.maxOutputTokens ?? this.deps.maxOutputTokens ?? DEFAULT_MAX_OUTPUT_TOKENS;
+    const n = typeof view.n === "number" && Number.isFinite(view.n) && view.n > 1 ? Math.min(view.n, 128) : 1;
+    return cap * n;
   }
 
   /** Streaming chat-shaped request (chat, completions) through the pipeline: core/chat-stream.ts. */
@@ -229,23 +302,14 @@ export class Pipeline {
 
   /**
    * Tokens a request reserves in the key meter while it runs (RB3): the
-   * estimated prompt plus its output cap — max_completion_tokens /
-   * max_tokens, else the model's published maxOutputTokens, else
+   * estimated prompt plus its output cap — the larger of
+   * max_completion_tokens / max_tokens, else the model's published maxOutputTokens, else
    * limits.maxOutputTokens — times n. Embeddings reserve the input only.
    */
   reservationFor<Req, Res, Chunk>(surface: Surface<Req, Res, Chunk>, req: Req): number {
-    const view = surface.toPluginView(req);
-    const prompt = estimatePromptTokens(view);
+    const prompt = estimatePromptTokens(surface.toPluginView(req));
     if (surface.name === "embeddings") return prompt;
-    const meta = this.deps.catalog.lookup(surface.model(req))?.metadata;
-    const cap =
-      view.maxCompletionTokens ??
-      view.maxTokens ??
-      meta?.maxOutputTokens ??
-      this.deps.maxOutputTokens ??
-      DEFAULT_MAX_OUTPUT_TOKENS;
-    const n = typeof view.n === "number" && Number.isFinite(view.n) && view.n > 1 ? Math.min(view.n, 128) : 1;
-    return prompt + cap * n;
+    return prompt + this.outputCap(surface, req);
   }
 
   /**
@@ -416,6 +480,11 @@ export class Pipeline {
         error = outcome.error;
         target = outcome.target ?? targetOf(outcome.error) ?? "unknown";
         pc.error = outcome.error instanceof Error ? outcome.error : new Error(String(outcome.error));
+        if (outcome.metered) {
+          // No answer, but upstream calls were made (F2 / F3): their tokens count.
+          usage = outcome.metered.usage;
+          usageEstimated = outcome.metered.usageEstimated === true;
+        }
         if (outcome.partial) {
           // Failed mid-stream: tokens were consumed, so after plugins run too.
           usage = outcome.partial.usage;

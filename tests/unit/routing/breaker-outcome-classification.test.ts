@@ -32,30 +32,38 @@ function mkCfg(port: number, extra: any = {}): GatewayConfig {
 }
 
 describe("breaker outcome classification", () => {
-  it("S2: hung upstream hitting requestTimeout never trips the breaker", async () => {
-    const server = Bun.serve({
-      port: 0,
-      fetch: async () => {
-        await Bun.sleep(3000);
-        return new Response("{}");
-      },
-    });
-    try {
-      const cfg = mkCfg(server.port!, { requestTimeout: "1s" });
-      const gw = new Gateway(cfg);
-      const app = createApp(gw, cfg);
-      for (let i = 0; i < 3; i++) {
-        await app.request("/v1/chat/completions", {
-          method: "POST",
-          body: body(),
-          headers: { "content-type": "application/json" },
-        });
+  // S2 (original): a hung upstream hitting requestTimeout never tripped the breaker.
+  // Review 2026-11-05 D4: how long a request runs is up to the caller, so a
+  // gateway timeout counts only when the channel's breaker sets countTimeouts.
+  for (const countTimeouts of [true, false]) {
+    it(`S2: hung upstream hitting requestTimeout ${countTimeouts ? "trips" : "does not trip"} the breaker (countTimeouts ${countTimeouts})`, async () => {
+      const server = Bun.serve({
+        port: 0,
+        fetch: async () => {
+          await Bun.sleep(3000);
+          return new Response("{}");
+        },
+      });
+      try {
+        const cfg = mkCfg(server.port!, { requestTimeout: "1s" });
+        if (countTimeouts) (cfg.targets[0] as any).circuitBreaker.countTimeouts = true;
+        const gw = new Gateway(cfg);
+        const app = createApp(gw, cfg);
+        for (let i = 0; i < 3; i++) {
+          const r = await app.request("/v1/chat/completions", {
+            method: "POST",
+            body: body(),
+            headers: { "content-type": "application/json" },
+          });
+          if (countTimeouts && i === 2) expect(r.status).toBe(503);
+          else expect(r.status).toBe(504);
+        }
+        expect(gw.getCircuitBreakerRegistry().get("a")!.getState()).toBe(countTimeouts ? "OPEN" : "CLOSED");
+      } finally {
+        server.stop(true);
       }
-      expect(gw.getCircuitBreakerRegistry().get("a")!.getState()).toBe("OPEN");
-    } finally {
-      server.stop(true);
-    }
-  }, 10000);
+    }, 10000);
+  }
 
   it("S3: client disconnects mid-stream are counted as upstream failures", async () => {
     const enc = new TextEncoder();

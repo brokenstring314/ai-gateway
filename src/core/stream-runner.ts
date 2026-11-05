@@ -17,7 +17,18 @@
  *
  *  - pull-based body: one upstream chunk is read per pull(), so a client that
  *    stops reading stops upstream reads too (TCP backpressure to upstream)
- *    instead of the gateway buffering the whole answer in memory;
+ *    instead of the gateway buffering the whole answer in memory. Bun keeps
+ *    pulling only while the client socket's kernel send buffer has room, so
+ *    what the gateway process holds per stream is one chunk (plus the
+ *    bounded answer accumulator, core/usage.ts STREAM_ACCUMULATOR_MAX_CHARS);
+ *  - client stall (review 2026-11-05 D6): when a chunk has been waiting for
+ *    the client for clientStallMs (server.streamIdleTimeoutSeconds, default
+ *    120 s) — Bun has stopped pulling because the client stopped reading — the
+ *    upstream is aborted (as a client cancel: never a breaker failure), the
+ *    provider iterator is released (concurrency slot, breaker permit, key
+ *    reservation; the tokens streamed so far are metered) and the response is
+ *    errored so the connection closes. A client that keeps reading is never
+ *    cut, however long the answer;
  *  - `: ping` heartbeat while upstream is silent, enqueued only when the
  *    stream queue has room (never grows the buffer for a stalled client);
  *  - client disconnect (body cancel) aborts the upstream request and stops
@@ -77,6 +88,12 @@ export interface SseStreamOptions<T> {
   idleTimeoutMs: number;
   /** Max total stream duration (0 = off). */
   maxDurationMs: number;
+  /**
+   * Max time a chunk may wait for the client to read it before the stream is
+   * given up as stalled (0 = off; review 2026-11-05 D6). Defaults to
+   * idleTimeoutMs.
+   */
+  clientStallMs?: number;
 }
 
 type TimeoutKind = "idle" | "max_duration";
@@ -87,6 +104,7 @@ function sseData(value: unknown): string {
 
 export function createSseStream<T>(opts: SseStreamOptions<T>): ReadableStream<Uint8Array> {
   const { iterator, serialize, upstreamAbort, heartbeatMs, idleTimeoutMs, maxDurationMs } = opts;
+  const clientStallMs = opts.clientStallMs ?? idleTimeoutMs;
   const encoder = new TextEncoder();
   let pending: T | undefined = opts.firstChunk;
   let hasPending = opts.firstChunk !== undefined;
@@ -94,6 +112,7 @@ export function createSseStream<T>(opts: SseStreamOptions<T>): ReadableStream<Ui
   let heartbeat: SseHeartbeat | undefined;
   let maxTimer: ReturnType<typeof setTimeout> | undefined;
   let idleTimer: ReturnType<typeof setTimeout> | undefined;
+  let stallTimer: ReturnType<typeof setTimeout> | undefined;
   let ctrl: ReadableStreamDefaultController<Uint8Array> | undefined;
 
   const cleanup = (): void => {
@@ -101,7 +120,8 @@ export function createSseStream<T>(opts: SseStreamOptions<T>): ReadableStream<Ui
     heartbeat?.stop();
     if (idleTimer) clearTimeout(idleTimer);
     if (maxTimer) clearTimeout(maxTimer);
-    idleTimer = maxTimer = undefined;
+    if (stallTimer) clearTimeout(stallTimer);
+    idleTimer = maxTimer = stallTimer = undefined;
   };
 
   const releaseIterator = (): void => {
@@ -136,6 +156,35 @@ export function createSseStream<T>(opts: SseStreamOptions<T>): ReadableStream<Ui
     return t;
   };
 
+  // The client stopped reading (D6): give the stream up. The abort reason is
+  // an AbortError, so the attempt settles like a client cancel (breaker:
+  // success after output, never a failure) and the stream ends as
+  // client_cancel with its usage metered. Erroring the body makes Bun close
+  // the connection (and drop what the kernel still buffers for it).
+  const failClientStalled = (): void => {
+    if (finished) return;
+    cleanup();
+    upstreamAbort.abort(
+      new DOMException(`Client stopped reading the stream for more than ${clientStallMs}ms`, "AbortError"),
+    );
+    releaseIterator();
+    console.warn(`[stream] client stopped reading for ${clientStallMs}ms; upstream aborted (stream_client_stalled)`);
+    try {
+      ctrl?.error(new Error("stream_client_stalled"));
+    } catch {
+      // already closed/cancelled
+    }
+  };
+
+  // Runs from an enqueue until the next pull(): pull() is not called while
+  // the chunk waits for a client that is not reading.
+  const awaitClient = (): void => {
+    if (!(clientStallMs > 0) || finished) return;
+    if (stallTimer) clearTimeout(stallTimer);
+    stallTimer = setTimeout(failClientStalled, clientStallMs);
+    (stallTimer as { unref?: () => void }).unref?.();
+  };
+
   return new ReadableStream<Uint8Array>(
     {
       start(controller) {
@@ -144,6 +193,8 @@ export function createSseStream<T>(opts: SseStreamOptions<T>): ReadableStream<Ui
         if (maxDurationMs > 0) maxTimer = startTimer(maxDurationMs, "max_duration");
       },
       async pull(controller) {
+        if (stallTimer) clearTimeout(stallTimer);
+        stallTimer = undefined;
         if (finished) return;
         if (hasPending) {
           hasPending = false;
@@ -151,6 +202,7 @@ export function createSseStream<T>(opts: SseStreamOptions<T>): ReadableStream<Ui
           pending = undefined;
           controller.enqueue(encoder.encode(sseData(serialize(chunk))));
           heartbeat?.touch();
+          awaitClient();
           return;
         }
         // The idle clock only runs while we wait on upstream: a client that
@@ -182,6 +234,7 @@ export function createSseStream<T>(opts: SseStreamOptions<T>): ReadableStream<Ui
         }
         controller.enqueue(encoder.encode(sseData(serialize(result.value))));
         heartbeat?.touch();
+        awaitClient();
       },
       cancel() {
         // Client went away: abort the upstream request and stop the provider

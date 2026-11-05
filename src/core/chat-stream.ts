@@ -113,7 +113,15 @@ export async function* runChatStream(
     if (streamError === undefined) {
       await pipeline.finalize(run, { kind: "ok", value: response, target: target ?? "unknown", usage, usageEstimated });
     } else if (acc.chunks === 0) {
-      await pipeline.finalize(run, { kind: "error", error: streamError, target });
+      // No chunk: nothing streamed, but a call the upstream received before
+      // the client left / the request timed out still costs its prompt (F2).
+      const aborted = pipeline.abortedCallUsage(surface, finalReq, ctx);
+      await pipeline.finalize(run, {
+        kind: "error",
+        error: streamError,
+        target,
+        ...(aborted ? { metered: { usage: aborted, usageEstimated: true } } : {}),
+      });
     } else {
       await pipeline.finalize(run, {
         kind: "error",

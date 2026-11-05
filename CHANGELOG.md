@@ -117,6 +117,13 @@
 
 ### Breaking changes
 
+- **`max_tokens` and `max_completion_tokens` with different values are refused** (review 2026-11-05 F1):
+  `400 conflicting_max_tokens` (`param` `max_completion_tokens`). *Migration:* send one of them, or the same value in
+  both.
+- **The gateway's `requestTimeout` is no longer a circuit-breaker failure by default** (review 2026-11-05 D4). New
+  `circuitBreaker.countTimeouts: true` (config file and Admin API channel settings) restores the old behaviour per
+  channel.
+
 - **Red team 2026-11-02 fixes** (`docs/admin-api.md`):
   - **RC1 / RC2:** `PATCH /admin/channels/:id` that moves a channel with stored keys to another origin (scheme, host
     or port; also via `preset` or `baseURL: null`) must carry `apiKeys` for the new address, else
@@ -323,6 +330,28 @@ now fail `ai-gateway validate` and startup with a migration hint:
   the full `/v1/traces` URL.
 
 ### Security
+
+- **Quota accounting and stream resources** (review 2026-11-05, batch B):
+  - **F1 (高) decoy `max_completion_tokens`:** with `max_completion_tokens: 1` next to `max_tokens: 9999999` the output
+    limit (RB6) and the quota reservation (RB3) only looked at the decoy while both fields went upstream (40
+    concurrent requests on a 1000-token quota used 12,360). The effective cap is now the larger field, different
+    values are `400 conflicting_max_tokens`, and pass-through bodies use the largest of `max_output_tokens` /
+    `max_completion_tokens` / `max_tokens` (a max-token plugin cap lowers every field present).
+  - **D4 (高) / F2 (中) aborted and timed-out calls counted 0 tokens, and a timeout was a breaker failure:** three
+    slow requests from one key opened the circuit for everyone and cost the key nothing, and a client that
+    disconnected before the answer was never charged. A call that reached the upstream and was then cut off (client
+    gone, `requestTimeout`) now counts its estimated prompt, plus 10 output tokens per second for a non-streaming
+    call (at most its output cap; streams cut before their first chunk: prompt only), marked `usageEstimated`; a
+    gateway timeout releases the breaker permit unless `countTimeouts` is set; a client abort never counts.
+  - **F3 (中) failed MCP loops:** `mcp_depth_exceeded` or a later round's upstream error dropped the tokens of the
+    rounds already served (3 requests × 4 calls × 4000 tokens counted 0). They are now metered.
+  - **D6 (中) stalled streaming clients:** a client that stopped reading held the upstream connection and the
+    concurrency slot until Bun's 255 s connection timeout (4 requests locked a `maxConcurrency: 4` channel). A chunk
+    that waits for the client longer than `server.streamIdleTimeoutSeconds` (default 120 s) now ends the stream:
+    upstream aborted (as a client cancel), slot / permit / reservation released, streamed tokens metered, connection
+    closed. Readers are never cut. The answer text a stream keeps for after-request plugins and the usage estimate is
+    capped at 1 Mi characters (longer answers are still counted).
+  - **F5 (低):** with unbounded streams the reservation TTL is max(1 h, `requestTimeout` + 60 s) instead of a fixed 1 h.
 
 - **Console sign-in: a flood of bad attempts locked the real admin out** (red team 2026-11-02 RA1, 中). Anyone
   sending 60 failed sign-ins a minute (from any IPs) made every sign-in `429 login_locked` for everyone. The global

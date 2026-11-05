@@ -120,6 +120,12 @@ export interface AttemptFacts {
   readonly admitted: boolean;
   /** At least one stream chunk was delivered. */
   readonly started?: boolean;
+  /**
+   * The target's breaker counts gateway request timeouts as failures
+   * (circuitBreaker.countTimeouts). Default false: a timeout releases the
+   * permit (review 2026-11-05 D4).
+   */
+  readonly countTimeouts?: boolean;
 }
 
 export interface AttemptClassification {
@@ -131,7 +137,10 @@ export interface AttemptClassification {
 /**
  * The single source of truth for settling a failed attempt (plan §1.4):
  *  - not admitted (breaker open, queue full, aborted / timed out while queued): release;
- *  - gateway deadline before output: failure (upstream too slow), reported as a timeout;
+ *  - gateway deadline before output: reported as a timeout; release by default
+ *    (the caller controls how long a request runs: a few slow requests from
+ *    one key must not open the circuit for everyone, review 2026-11-05 D4),
+ *    failure only when the breaker sets countTimeouts;
  *  - gateway deadline after output started: release (says little about upstream health);
  *  - client abort: success if output had started, else release;
  *  - caller-caused 4xx, upstream 404 and 429: release (see isBreakerFailure);
@@ -142,7 +151,8 @@ export function classifyAttemptError(err: unknown, facts: AttemptFacts): Attempt
   const started = facts.started === true;
   if (!facts.admitted) return { breaker: "release", timedOut: false };
   if (isTimeoutAbort(facts.signal)) {
-    return started ? { breaker: "release", timedOut: false } : { breaker: "failure", timedOut: true };
+    if (started) return { breaker: "release", timedOut: false };
+    return { breaker: facts.countTimeouts === true ? "failure" : "release", timedOut: true };
   }
   if (isAbortError(err) || facts.signal?.aborted) {
     return { breaker: started ? "success" : "release", timedOut: false };

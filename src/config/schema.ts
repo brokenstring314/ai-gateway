@@ -78,6 +78,8 @@ export const CircuitBreakerConfigSchema = strictObject({
   successThreshold: z.number().int().positive().optional().default(1),
   maxHalfThreshold: z.number().int().positive().optional().default(1),
   timeoutMs: z.number().positive().optional().default(30000),
+  // Gateway request timeouts count as breaker failures only when enabled (review 2026-11-05 D4).
+  countTimeouts: z.boolean().optional(),
 });
 
 export const ConcurrencyConfigSchema = strictObject({

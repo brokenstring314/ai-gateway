@@ -99,8 +99,14 @@ export function passthroughMaxTokens(
   field: PassthroughTokenField | undefined,
 ): number | undefined {
   if (field === undefined) return undefined;
-  const v = body[field];
-  return typeof v === "number" ? v : undefined;
+  // Every output-limit field the body carries counts, the largest wins
+  // (review 2026-11-05 F1): the upstream may honour any of them.
+  let max: number | undefined;
+  for (const f of TOKEN_FIELDS) {
+    const v = body[f];
+    if (typeof v === "number" && (max === undefined || v > max)) max = v;
+  }
+  return max;
 }
 
 /**
@@ -114,9 +120,18 @@ export function applyPassthroughMaxTokens(
   viewMaxTokens: number | undefined,
 ): string | undefined {
   if (field === undefined || viewMaxTokens === undefined) return undefined;
-  const current = body[field];
-  if (typeof current === "number" && current <= viewMaxTokens) return undefined;
-  return JSON.stringify({ ...body, [field]: viewMaxTokens });
+  // Lower every present output-limit field above the cap (F1), and set the
+  // chosen field when it is absent.
+  const next: Record<string, unknown> = { ...body };
+  let changed = false;
+  for (const f of TOKEN_FIELDS) {
+    const v = body[f];
+    if ((typeof v === "number" && v > viewMaxTokens) || (f === field && typeof v !== "number")) {
+      next[f] = viewMaxTokens;
+      changed = true;
+    }
+  }
+  return changed ? JSON.stringify(next) : undefined;
 }
 
 // ── Before plugins for a proxied request ──

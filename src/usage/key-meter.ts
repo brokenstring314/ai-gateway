@@ -24,8 +24,9 @@
  *  - safety net for reservation leaks (RB3 follow-up): a reservation that is
  *    never settled (a code path that skips finalize) expires on its own after
  *    a TTL bound to the request lifetime — the longest a request can run
- *    (requestTimeout / server.streamMaxDurationSeconds) plus a minute, or 1 h
- *    when streams are unbounded. Expired reservations are swept lazily the
+ *    (requestTimeout / server.streamMaxDurationSeconds) plus a minute; when
+ *    streams are unbounded, the larger of 1 h and requestTimeout + a minute.
+ *    Expired reservations are swept lazily the
  *    next time the key is admitted (no timer, no DB read); a late settle of
  *    an expired reservation still counts its tokens and releases nothing twice;
  *  - a request that was admitted always finishes — a stream is never cut
@@ -362,10 +363,14 @@ function roll(c: KeyCounters, now: number): void {
 /**
  * TTL of an unsettled reservation from the request lifetime bounds: the
  * longest a request may legitimately run (non-streaming: requestTimeout;
- * streaming: server.streamMaxDurationSeconds) plus a one-minute grace, or
- * DEFAULT_RESERVATION_TTL_MS (1 h) when streams are unbounded (0 / unset).
+ * streaming: server.streamMaxDurationSeconds) plus a one-minute grace. When
+ * streams are unbounded (0 / unset) it is the larger of that non-streaming
+ * bound and DEFAULT_RESERVATION_TTL_MS (1 h), so a long requestTimeout
+ * (e.g. 2 h) never lets a running request's reservation lapse early
+ * (review 2026-11-05 F5).
  */
 export function reservationTtlMs(requestTimeoutMs: number, streamMaxDurationMs: number): number {
-  if (!(streamMaxDurationMs > 0)) return DEFAULT_RESERVATION_TTL_MS;
+  const requestBound = requestTimeoutMs > 0 ? requestTimeoutMs + 60_000 : 0;
+  if (!(streamMaxDurationMs > 0)) return Math.max(DEFAULT_RESERVATION_TTL_MS, requestBound);
   return Math.max(requestTimeoutMs > 0 ? requestTimeoutMs : 0, streamMaxDurationMs) + 60_000;
 }
