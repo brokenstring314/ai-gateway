@@ -111,8 +111,10 @@ it("a client that stops reading is cut after streamIdleTimeoutSeconds: upstream 
   });
 
   // While the stalled stream holds the only slot, another request is refused.
-  const deadline0 = Date.now() + 3000;
-  while (up.state.streams === 0 && Date.now() < deadline0) await Bun.sleep(20);
+  // Wait for both sides: the upstream stream opened AND the gateway's 200 reached the socket
+  // (the upstream sees the request before the response headers arrive on a loaded runner).
+  const deadline0 = Date.now() + 5000;
+  while ((up.state.streams === 0 || firstBytes === "") && Date.now() < deadline0) await Bun.sleep(20);
   expect(firstBytes).toContain("200");
   const blocked = await app.request("/v1/chat/completions", {
     method: "POST",

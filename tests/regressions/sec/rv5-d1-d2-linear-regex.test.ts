@@ -183,11 +183,13 @@ function time(fn: () => unknown): number {
 }
 
 describe("D1/D2 every user-facing text function is fast on adversarial input", () => {
-  // Budgets are generous for slow CI runners; the quadratic versions took
-  // ~10 minutes for 1 MB (D1) and ~30 minutes for 1 MB (D2).
+  // Budgets are generous for slow / loaded CI runners (pii detect on 1 MB took
+  // ~240 ms on a busy 2-core box); the quadratic versions took ~10 minutes for
+  // 1 MB (D1) and ~30 minutes for 1 MB (D2), so these still catch any regression
+  // by orders of magnitude.
   for (const [size, budgetMs] of [
-    [1 * MB, 200],
-    [9 * MB, 2500],
+    [1 * MB, 1000],
+    [9 * MB, 8000],
   ] as const) {
     for (const [fname, fn] of Object.entries(functions)) {
       it(`${fname}: ${size / MB} MB inputs`, () => {
