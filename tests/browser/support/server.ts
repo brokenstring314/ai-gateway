@@ -104,6 +104,9 @@ async function answer(url: URL, init?: RequestInit): Promise<Response> {
 
 globalThis.fetch = (async (input: string | URL | Request, init?: RequestInit) => {
   const url = new URL(input instanceof Request ? input.url : String(input));
+  // A public-policy channel's request is pinned to the checked IP (RA3), the name is in the Host header.
+  const host = new Headers(init?.headers ?? (input instanceof Request ? input.headers : undefined)).get("host");
+  if (host && url.hostname === PUBLIC_IP) url.host = host;
   if (!url.hostname.endsWith(FAKE_SUFFIX)) return original(input as never, init);
   return answer(url, init);
 }) as typeof fetch;

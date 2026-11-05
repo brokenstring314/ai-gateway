@@ -272,7 +272,10 @@ export function createApp(
     }
     // A target without baseURL uses its provider preset's default.
     const resolved = resolveProxyTarget({ ...expanded, apiKey, baseURL: resolveBaseURL(expanded) });
-    return target.publicNetworkOnly === true ? { ...resolved, fetchImpl: defaultPublicHostGuard.fetch() } : resolved;
+    // Public-policy channel: connect only to the checked address (RA3), with the gateway's guard (tests inject DNS).
+    return target.publicNetworkOnly === true
+      ? { ...resolved, fetchImpl: (gateway.publicHostGuard() ?? defaultPublicHostGuard).fetch() }
+      : resolved;
   };
 
   // Gateway-owned routes answer any other method with 405 (never proxied:

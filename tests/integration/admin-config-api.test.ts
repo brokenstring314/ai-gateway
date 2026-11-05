@@ -414,6 +414,52 @@ describe("SSRF: Admin API base URLs are public internet only", () => {
   });
 });
 
+describe("SSRF: request-time connections are pinned to the checked address (RA3 / K5)", () => {
+  it("chat, stream, channel test, fetch-models and pass-through connect to the checked IP with the original Host", async () => {
+    const h = await adminHarness(
+      explicitFile({
+        models: [{ name: "gpt-x", bindings: [{ target: "c" }] }],
+        targets: [yamlTarget("a"), yamlTarget("b"), yamlTarget("c")],
+        strategy: { mode: "fallback", targets: ["a"] },
+        passthroughProxy: { enabled: true },
+      }),
+    );
+    h.dns.set("pin.upstream.test", ["93.184.216.77"]);
+    const c = (await json(await h.admin("GET", "/channels"))).data.find((x: { name: string }) => x.name === "c");
+    const p = await h.admin(
+      "PATCH",
+      `/channels/${c.id}`,
+      { baseURL: "https://pin.upstream.test/v1", apiKeys: [{ key: NEW_KEY_1 }] },
+      { ifMatch: c.revision },
+    );
+    expect(p.status).toBe(200);
+    expect((await h.chat("gpt-x")).status).toBe(200);
+    const stream = await h.chat("gpt-x", { stream: true });
+    expect(stream.status).toBe(200);
+    await stream.text();
+    expect((await h.admin("POST", `/channels/${c.id}/fetch-models`)).status).toBe(200);
+    expect((await json(await h.admin("POST", `/channels/${c.id}/test`, { model: "up-model-1" }))).ok).toBe(true);
+    const pt = await h.app.request("/v1/responses", {
+      method: "POST",
+      headers: { authorization: `Bearer ${h.keys.inference}`, "content-type": "application/json" },
+      body: JSON.stringify({ model: "gpt-x", input: "hi" }),
+    });
+    expect(pt.status).toBe(200);
+    const calls = up.hits("pin.upstream.test");
+    expect(calls.map((x) => x.path)).toEqual([
+      "/v1/chat/completions",
+      "/v1/chat/completions",
+      "/v1/models",
+      "/v1/chat/completions",
+      "/v1/responses",
+    ]);
+    // Every call went to the address the guard checked, never to a fresh lookup of the name.
+    expect(new Set(calls.map((x) => x.connectedTo))).toEqual(new Set(["93.184.216.77"]));
+    // A config-file ("trusted") channel is not pinned.
+    expect(up.calls.filter((x) => x.host !== "pin.upstream.test").every((x) => x.connectedTo === x.host)).toBe(true);
+  });
+});
+
 describe("models and the unavailable-model fix", () => {
   it("U3/U4: null or an empty display name / description clears it; null keyCooldownSeconds reverts to the default", async () => {
     const h = await adminHarness(explicitFile());

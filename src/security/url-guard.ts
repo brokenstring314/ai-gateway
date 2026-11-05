@@ -18,8 +18,14 @@
  *    *.localhost, *.local, *.internal, *.home.arpa).
  *
  * The check runs when the URL is written and again before every upstream
- * call (resolved addresses cached for a short time), so a name that later
- * re-points at a private address (DNS rebinding) is refused at request time.
+ * call. At request time the connection is pinned to the checked address
+ * (red team 2026-11-02 RA3 / K5): the host name is resolved once, every
+ * address must be public, and the request goes to that IP with the original
+ * Host header, TLS SNI (`tls.serverName`) and certificate check against the
+ * original name (`tls.checkServerIdentity`), so the HTTP stack never resolves
+ * the name again and a rebinding DNS answer cannot redirect the connection.
+ * The checked addresses are cached for a short time (30 s), never a bare
+ * "host is fine" verdict. Redirects are never followed.
  * There is no switch to allow private networks (local model servers are on
  * the roadmap as an explicit opt-in). Channels from the config file
  * ("trusted" policy) are the operator's own and are not checked.
@@ -27,6 +33,7 @@
 
 import { lookup as dnsLookup } from "node:dns/promises";
 import { isIP } from "node:net";
+import { checkServerIdentity } from "node:tls";
 
 export class UnsafeUrlError extends Error {
   override name = "UnsafeUrlError";
@@ -198,13 +205,16 @@ export function checkPublicUrlSyntax(raw: string): URL {
   return url;
 }
 
-/** Resolve `host` and require every address to be public; throws UnsafeUrlError. */
-export async function assertPublicHost(host: string, resolve: HostResolver = systemResolver): Promise<void> {
+/**
+ * Resolve `host` and require every address to be public; throws UnsafeUrlError.
+ * Returns the checked addresses (an IP literal: itself).
+ */
+export async function assertPublicHost(host: string, resolve: HostResolver = systemResolver): Promise<string[]> {
   const literal = host.startsWith("[") ? host.slice(1, -1) : host;
   if (isIP(literal) !== 0) {
     const problem = nonPublicReason(literal);
     if (problem) throw new UnsafeUrlError(`host ${host} is a ${problem}`);
-    return;
+    return [literal];
   }
   let addresses: string[];
   try {
@@ -221,6 +231,7 @@ export async function assertPublicHost(host: string, resolve: HostResolver = sys
       );
     }
   }
+  return addresses;
 }
 
 /** Full check of a URL being written: syntax, then every resolved address. */
@@ -231,11 +242,12 @@ export async function assertPublicUrl(raw: string, resolve: HostResolver = syste
 }
 
 /**
- * Request-time guard: host → verdict cache with a short TTL, so the hot path
- * pays one DNS lookup per host per TTL, never per request.
+ * Request-time guard: host → checked addresses, cached with a short TTL, so the
+ * hot path pays one DNS lookup per host per TTL, never per request; and a
+ * fetch pinned to those addresses (RA3).
  */
 export class PublicHostGuard {
-  private readonly cache = new Map<string, { until: number; problem?: string }>();
+  private readonly cache = new Map<string, { until: number; problem?: string; addresses?: string[] }>();
 
   constructor(
     private readonly resolve: HostResolver = systemResolver,
@@ -245,18 +257,27 @@ export class PublicHostGuard {
 
   /** Throws UnsafeUrlError when `url`'s host is (or now resolves to) a non-public address. */
   async check(url: string | URL): Promise<void> {
+    await this.addresses(url);
+  }
+
+  /**
+   * The checked public addresses of `url`'s host (resolved once per TTL); throws
+   * UnsafeUrlError when any address is not public. Connect only to these.
+   */
+  async addresses(url: string | URL): Promise<string[]> {
     const u = typeof url === "string" ? new URL(url) : url;
     const host = u.hostname.toLowerCase();
     const hit = this.cache.get(host);
     const t = this.now();
     if (hit && hit.until > t) {
-      if (hit.problem) throw new UnsafeUrlError(hit.problem);
-      return;
+      if (hit.problem !== undefined || hit.addresses === undefined) throw new UnsafeUrlError(hit.problem ?? "refused");
+      return hit.addresses;
     }
     try {
       checkPublicUrlSyntax(u.toString());
-      await assertPublicHost(host, this.resolve);
-      this.remember(host, { until: t + this.ttlMs });
+      const addresses = await assertPublicHost(host, this.resolve);
+      this.remember(host, { until: t + this.ttlMs, addresses });
+      return addresses;
     } catch (err) {
       const problem = err instanceof Error ? err.message : String(err);
       // Failed lookups are cached briefly too, so a dead name cannot turn every request into a DNS query.
@@ -265,23 +286,85 @@ export class PublicHostGuard {
     }
   }
 
-  private remember(host: string, v: { until: number; problem?: string }): void {
+  private remember(host: string, v: { until: number; problem?: string; addresses?: string[] }): void {
     if (this.cache.size > 1000) this.cache.clear();
     this.cache.set(host, v);
   }
 
   /**
-   * A fetch that checks the URL first and never follows redirects (a public
-   * host could otherwise bounce the request to a private one).
+   * A fetch that checks the URL, connects to the checked IP (never resolving
+   * the name again) and never follows redirects (a public host could otherwise
+   * bounce the request to a private one).
    */
   fetch(): typeof fetch {
     const guarded = async (input: string | URL | Request, init?: RequestInit): Promise<Response> => {
-      const target = input instanceof Request ? input.url : input;
-      await this.check(target);
-      return globalThis.fetch(input, { ...init, redirect: "manual" });
+      const req = input instanceof Request ? input : undefined;
+      const target = new URL(req ? req.url : String(input));
+      const addresses = await this.addresses(target);
+      const base: RequestInit = req
+        ? { method: req.method, headers: req.headers, body: req.body, signal: req.signal, duplex: "half" }
+        : {};
+      const merged: RequestInit = { ...base, ...init };
+      // IPv4 first (a host without IPv6 connectivity would fail on an AAAA answer listed first); on a connection
+      // error the next checked address is tried while the body can be sent again. Never an unchecked address.
+      const candidates = orderAddresses(addresses).slice(0, 3);
+      const replayable = merged.body === undefined || merged.body === null || !(merged.body instanceof ReadableStream);
+      let lastError: unknown;
+      for (const [i, ip] of candidates.entries()) {
+        const pinned = pinnedRequest(target, ip, merged);
+        try {
+          return await globalThis.fetch(pinned.url, pinned.init);
+        } catch (err) {
+          lastError = err;
+          // Only when nothing was sent (could not connect): a POST is never sent twice.
+          if (merged.signal?.aborted || !replayable || !isConnectError(err) || i === candidates.length - 1) throw err;
+        }
+      }
+      throw lastError;
     };
     return guarded as typeof fetch;
   }
+}
+
+const CONNECT_ERRORS = new Set(["ECONNREFUSED", "ENETUNREACH", "EHOSTUNREACH", "EADDRNOTAVAIL", "ConnectionRefused"]);
+
+/** True for an error raised before a connection existed (nothing was sent). */
+function isConnectError(err: unknown): boolean {
+  const code = (err as { code?: unknown } | null)?.code;
+  return typeof code === "string" && CONNECT_ERRORS.has(code);
+}
+
+/** Checked addresses in connection order: IPv4 first, then IPv6, each in resolver order. */
+function orderAddresses(addresses: readonly string[]): string[] {
+  return [...addresses.filter((a) => isIP(a) === 4), ...addresses.filter((a) => isIP(a) !== 4)];
+}
+
+/**
+ * `url` rewritten to connect to `ip` (already checked), keeping what the
+ * server and TLS see: Host header = the original host[:port], SNI and the
+ * certificate's name check = the original host name. Redirects: manual.
+ * An IP-literal URL is used as is.
+ */
+export function pinnedRequest(url: URL, ip: string, init: RequestInit = {}): { url: string; init: RequestInit } {
+  const hostname = url.hostname.toLowerCase();
+  const literal = hostname.startsWith("[") ? hostname.slice(1, -1) : hostname;
+  if (isIP(literal) !== 0 || ip === "") return { url: url.toString(), init: { ...init, redirect: "manual" } };
+  const target = new URL(url.toString());
+  target.hostname = ip.includes(":") ? `[${ip}]` : ip;
+  const headers = new Headers(init.headers);
+  headers.set("Host", url.host);
+  const out: RequestInit & { tls?: Record<string, unknown> } = { ...init, headers, redirect: "manual" };
+  if (url.protocol === "https:") {
+    const prior = (init as { tls?: Record<string, unknown> }).tls ?? {};
+    out.tls = {
+      ...prior,
+      serverName: hostname,
+      // Bun passes serverName here; check the certificate against the original name explicitly.
+      checkServerIdentity: (_host: string, cert: Parameters<typeof checkServerIdentity>[1]) =>
+        checkServerIdentity(hostname, cert),
+    };
+  }
+  return { url: target.toString(), init: out };
 }
 
 /** Shared request-time guard for every public-policy channel. */
@@ -290,7 +373,7 @@ export const defaultPublicHostGuard = new PublicHostGuard();
 export interface LimitedFetchOptions {
   readonly timeoutMs: number;
   readonly maxBytes: number;
-  /** Check the host of the URL before connecting (public-policy channels). */
+  /** Check the host of the URL and connect to the checked address only (public-policy channels). */
   readonly guard?: PublicHostGuard;
 }
 
@@ -309,11 +392,11 @@ export async function limitedFetch(
   init: RequestInit,
   opts: LimitedFetchOptions,
 ): Promise<LimitedFetchResult> {
-  if (opts.guard) await opts.guard.check(url);
+  const doFetch = opts.guard ? opts.guard.fetch() : globalThis.fetch;
   const ctrl = new AbortController();
   const timer = setTimeout(() => ctrl.abort(new DOMException("timed out", "TimeoutError")), opts.timeoutMs);
   try {
-    const res = await globalThis.fetch(url, { ...init, redirect: "manual", signal: ctrl.signal });
+    const res = await doFetch(url, { ...init, redirect: "manual", signal: ctrl.signal });
     if (res.status >= 300 && res.status < 400) {
       await res.body?.cancel().catch(() => undefined);
       throw new UnsafeUrlError(`upstream answered ${res.status} (redirect); redirects are not followed`);

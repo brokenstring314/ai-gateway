@@ -6,9 +6,13 @@
  * Upstreams are host names under `.upstream.test`, answered by a stubbed
  * global fetch (no sockets), so channels created through the Admin API can
  * use them: the injected DNS resolver maps every name to a public address
- * unless a test says otherwise (`dns`).
+ * unless a test says otherwise (`dns`). A public-policy channel's request is
+ * pinned to the checked address (RA3): it arrives for the IP with the name in
+ * the Host header; the fake answers by that name and records the IP
+ * (`UpstreamCall.connectedTo`).
  */
 import { Database } from "bun:sqlite";
+import { isIP } from "node:net";
 import { createApp } from "../../src/app.js";
 import { loadConfigFromObject } from "../../src/config/loader.js";
 import { composeConfig } from "../../src/config/runtime-source.js";
@@ -28,6 +32,17 @@ export interface UpstreamCall {
   readonly path: string;
   readonly auth: string | null;
   readonly body: any;
+  /** The address the request was sent to: the checked IP for a pinned (public-policy) request, else the host. */
+  readonly connectedTo: string;
+}
+
+/** The URL a request is for: a pinned request goes to an IP with the host name in its Host header. */
+export function logicalUrl(input: string | URL | Request, init?: RequestInit): { url: URL; connectedTo: string } {
+  const url = new URL(input instanceof Request ? input.url : String(input));
+  const connectedTo = url.hostname.replace(/^\[|\]$/g, "");
+  const host = new Headers(init?.headers ?? (input instanceof Request ? input.headers : undefined)).get("host");
+  if (host && isIP(connectedTo) !== 0) url.host = host;
+  return { url, connectedTo };
 }
 
 export class FakeUpstreams {
@@ -58,9 +73,9 @@ export class FakeUpstreams {
     this.original = globalThis.fetch;
     const original = this.original;
     globalThis.fetch = (async (input: string | URL | Request, init?: RequestInit) => {
-      const url = new URL(input instanceof Request ? input.url : String(input));
+      const { url, connectedTo } = logicalUrl(input, init);
       if (!url.hostname.endsWith(".upstream.test")) return original(input as never, init);
-      return this.answer(url, init);
+      return this.answer(url, init, connectedTo);
     }) as typeof fetch;
   }
 
@@ -68,7 +83,7 @@ export class FakeUpstreams {
     if (this.original) globalThis.fetch = this.original;
   }
 
-  private async answer(url: URL, init?: RequestInit): Promise<Response> {
+  private async answer(url: URL, init?: RequestInit, connectedTo = url.hostname): Promise<Response> {
     const headers = new Headers(init?.headers);
     const text = typeof init?.body === "string" ? init.body : "";
     let body: any;
@@ -77,7 +92,13 @@ export class FakeUpstreams {
     } catch {
       body = text;
     }
-    const call: UpstreamCall = { host: url.hostname, path: url.pathname, auth: headers.get("authorization"), body };
+    const call: UpstreamCall = {
+      host: url.hostname,
+      path: url.pathname,
+      auth: headers.get("authorization"),
+      body,
+      connectedTo,
+    };
     this.calls.push(call);
     if (this.delayMs > 0) await Bun.sleep(this.delayMs);
     const reply = this.byAuth.get(url.hostname)?.(call.auth) ?? this.queues.get(url.hostname)?.shift() ?? 200;

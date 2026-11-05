@@ -625,7 +625,7 @@ Prometheus 格式的指标，包括：
 | GET | `/admin/audit` | read_only | 谁在何时改了什么（从不含密钥） |
 | GET | `/admin/presets` | read_only | 提供商预设与已知模型 |
 
-所有写操作：JSON 请求体严格校验（未知字段 → 400）、需要 `admin` 作用域、CSRF 防护（跨站 `Origin` / `Sec-Fetch-Site` → 403，非 JSON 请求体 → 415）、必须带 `If-Match`（资源的 revision，即 `ETag`；缺少 → 428，过期 → 409）、在一个事务里写入变更、配置版本和审计记录并切换到新运行时（结果不合法 → `422 config_invalid`，什么都不改，进行中的请求不受影响）。上游 key 永不返回。通过这里写入的 base URL 必须是**公网地址**（回环、内网、链路本地/云元数据、CGNAT、对应的 IPv6 地址以及解析到它们的域名都会被拒绝，并且每次请求上游前都会重新检查以防 DNS 重绑定）；Ollama 等本地服务可以写在配置文件里。完整说明（英文）：[docs/admin-api.md](docs/admin-api.md)。
+所有写操作：JSON 请求体严格校验（未知字段 → 400）、需要 `admin` 作用域、CSRF 防护（跨站 `Origin` / `Sec-Fetch-Site` → 403，非 JSON 请求体 → 415）、必须带 `If-Match`（资源的 revision，即 `ETag`；缺少 → 428，过期 → 409）、在一个事务里写入变更、配置版本和审计记录并切换到新运行时（结果不合法 → `422 config_invalid`，什么都不改，进行中的请求不受影响）。上游 key 永不返回。通过这里写入的 base URL 必须是**公网地址**（回环、内网、链路本地/云元数据、CGNAT、对应的 IPv6 地址以及解析到它们的域名都会被拒绝，每次请求上游前都会重新检查，并直接连接到已检查的 IP（保留原 Host 头与 TLS 证书域名校验），DNS 重绑定无法改变连接目标）；Ollama 等本地服务可以写在配置文件里。完整说明（英文）：[docs/admin-api.md](docs/admin-api.md)。
 
 ```bash
 # 添加一个带两个 key 的渠道，再在上面发布一个模型

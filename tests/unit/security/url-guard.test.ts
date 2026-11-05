@@ -10,6 +10,7 @@ import {
   limitedFetch,
   nonPublicReason,
   PublicHostGuard,
+  pinnedRequest,
   UnsafeUrlError,
 } from "../../../src/security/url-guard.js";
 
@@ -185,6 +186,123 @@ describe("PublicHostGuard (request time, DNS rebinding)", () => {
   it("guarded fetch refuses before connecting and never follows redirects", async () => {
     const guard = new PublicHostGuard(async () => ["10.0.0.1"]);
     await expect(guard.fetch()("https://inside.example.com/v1/models")).rejects.toBeInstanceOf(UnsafeUrlError);
+  });
+});
+
+describe("pinned connections (red team 2026-11-02 RA3 / K5: no second DNS lookup)", () => {
+  it("pinnedRequest: connect to the IP, keep Host, SNI and the certificate name; redirects manual", () => {
+    const p = pinnedRequest(new URL("https://api.example.com:8443/v1/models?x=1"), "93.184.216.34", {
+      headers: { Authorization: "Bearer k", Host: "spoofed.example" },
+      redirect: "follow",
+    });
+    expect(p.url).toBe("https://93.184.216.34:8443/v1/models?x=1");
+    const h = new Headers(p.init.headers);
+    expect(h.get("host")).toBe("api.example.com:8443");
+    expect(h.get("authorization")).toBe("Bearer k");
+    expect(p.init.redirect).toBe("manual");
+    const tls = (p.init as { tls?: { serverName?: string; checkServerIdentity?: unknown } }).tls;
+    expect(tls?.serverName).toBe("api.example.com");
+    expect(typeof tls?.checkServerIdentity).toBe("function");
+    const v6 = pinnedRequest(new URL("http://api.example.com/v1"), "2606:2800:220:1::1");
+    expect(v6.url).toBe("http://[2606:2800:220:1::1]/v1");
+    expect(new Headers(v6.init.headers).get("host")).toBe("api.example.com");
+    expect((v6.init as { tls?: unknown }).tls).toBeUndefined(); // plain http: no TLS options
+    // An IP-literal base URL is used as is.
+    expect(pinnedRequest(new URL("https://93.184.216.34/v1"), "93.184.216.34").url).toBe("https://93.184.216.34/v1");
+  });
+
+  it("PoC: the guard checks a public answer while the system would resolve the name inside → the request goes to the checked IP", async () => {
+    // Red team k5_poc.ts: the guard's resolver says public, the OS says 127.0.0.1 (localtest.me). Before the fix the
+    // fetch resolved the name again and reached the internal server. Now it is sent to the checked address only.
+    let lookups = 0;
+    const guard = new PublicHostGuard(async () => {
+      lookups++;
+      return ["93.184.216.34"];
+    }, 30_000);
+    const seen: Array<{ url: string; host: string | null; redirect: RequestInit["redirect"] }> = [];
+    const original = globalThis.fetch;
+    globalThis.fetch = (async (input: string | URL | Request, init?: RequestInit) => {
+      seen.push({ url: String(input), host: new Headers(init?.headers).get("host"), redirect: init?.redirect });
+      return new Response("public");
+    }) as typeof fetch;
+    try {
+      const f = guard.fetch();
+      await f("http://localtest.me:8080/latest/meta-data/", { method: "GET" });
+      await f(new Request("http://localtest.me:8080/v1/models", { headers: { "x-a": "1" } }));
+      const r = await limitedFetch(
+        "http://localtest.me:8080/v1/models",
+        { method: "GET" },
+        { timeoutMs: 2000, maxBytes: 1024, guard },
+      );
+      expect(r.body).toBe("public");
+    } finally {
+      globalThis.fetch = original;
+    }
+    expect(seen.map((x) => x.url)).toEqual([
+      "http://93.184.216.34:8080/latest/meta-data/",
+      "http://93.184.216.34:8080/v1/models",
+      "http://93.184.216.34:8080/v1/models",
+    ]);
+    expect(seen.every((x) => x.host === "localtest.me:8080" && x.redirect === "manual")).toBe(true);
+    expect(lookups).toBe(1); // one lookup, its addresses are what the connection uses
+  });
+
+  it("IPv4 first; a refused connection falls back to the next checked address only (never re-resolves)", async () => {
+    const guard = new PublicHostGuard(async () => ["2606:2800:220:1::1", "93.184.216.34", "93.184.216.35"]);
+    const tried: string[] = [];
+    const original = globalThis.fetch;
+    globalThis.fetch = (async (input: string | URL | Request) => {
+      tried.push(new URL(String(input)).hostname);
+      if (tried.length === 1) throw Object.assign(new TypeError("ECONNREFUSED"), { code: "ECONNREFUSED" });
+      return new Response("ok");
+    }) as typeof fetch;
+    try {
+      expect(await (await guard.fetch()("https://multi.example.com/v1", { method: "POST", body: "{}" })).text()).toBe(
+        "ok",
+      );
+      expect(tried).toEqual(["93.184.216.34", "93.184.216.35"]); // IPv4 first, then the next checked one
+      // A failure after connecting (e.g. a reset mid-answer) is not retried: the POST is never sent twice.
+      tried.length = 0;
+      globalThis.fetch = (async (input: string | URL | Request) => {
+        tried.push(new URL(String(input)).hostname);
+        throw Object.assign(new TypeError("socket closed"), { code: "ECONNRESET" });
+      }) as unknown as typeof fetch;
+      await expect(guard.fetch()("https://multi.example.com/v1", { method: "POST", body: "{}" })).rejects.toThrow();
+    } finally {
+      globalThis.fetch = original;
+    }
+    expect(tried).toEqual(["93.184.216.34"]);
+  });
+
+  describe("real TLS to a pinned address", () => {
+    const dir = `${import.meta.dir}/../../fixtures/tls`;
+    let server: ReturnType<typeof Bun.serve>;
+    let ca: string;
+    beforeAll(async () => {
+      ca = await Bun.file(`${dir}/pinned.cert.pem`).text();
+      server = Bun.serve({
+        port: 0,
+        hostname: "127.0.0.1",
+        tls: { cert: ca, key: await Bun.file(`${dir}/pinned.key.pem`).text() },
+        fetch: (req) => new Response(`host=${req.headers.get("host")}`),
+      });
+    });
+    afterAll(() => server.stop(true));
+
+    it("SNI, Host and the certificate check use the original name", async () => {
+      const ok = pinnedRequest(new URL(`https://pinned.upstream.test:${server.port}/v1`), "127.0.0.1", {
+        tls: { ca },
+      } as RequestInit);
+      const res = await fetch(ok.url, ok.init);
+      expect(await res.text()).toBe(`host=pinned.upstream.test:${server.port}`);
+    });
+
+    it("a certificate for another name is refused (verification is not switched off by pinning)", async () => {
+      const bad = pinnedRequest(new URL(`https://evil.upstream.test:${server.port}/v1`), "127.0.0.1", {
+        tls: { ca },
+      } as RequestInit);
+      await expect(fetch(bad.url, bad.init)).rejects.toThrow();
+    });
   });
 });
 

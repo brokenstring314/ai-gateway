@@ -98,6 +98,11 @@ export class Gateway {
     this.mcpConfigKey = stableKey(config.mcpServers ?? null);
   }
 
+  /** The request-time SSRF guard injected at construction (tests), else undefined (the shared default applies). */
+  publicHostGuard(): PublicHostGuard | undefined {
+    return this.options.publicHostGuard;
+  }
+
   private assemble(config: GatewayConfig, previous?: GatewayParts): GatewayParts {
     const parts = assembleGateway(
       config,

@@ -100,8 +100,14 @@ with `422 unsafe_base_url`: loopback, private (10/8, 172.16/12, 192.168/16), lin
 (`::ffff:a.b.c.d`, NAT64, 6to4, Teredo); `localhost`, `*.local`, `*.internal`, `*.home.arpa`, single-label names;
 names resolving to any such address (every address must be public) or not resolving; credentials in the URL or
 its query (the error carries `fields: [{ "path": "baseURL", … }]` so the console shows it on the field). The check runs again before every upstream call of such a channel (DNS answers cached 30 s), so a name
-re-pointed at a private address later (DNS rebinding) is refused at request time, and redirects are never
-followed. There is no switch for private networks yet; local model servers (Ollama, vLLM) can still be configured
+re-pointed at a private address later is refused at request time, and redirects are never followed. The
+connection is **pinned** to the checked address (red team RA3 / K5): the name is resolved once, every address
+must be public, and the request goes to that IP (IPv4 first; on a refused connection the next checked address)
+with the original `Host` header, TLS SNI and certificate check against the original name — the HTTP stack never
+resolves the name a second time, so a rebinding DNS server cannot answer "public" to the check and "internal" to
+the connection. This covers chat / completions / embeddings (streamed or not), `test`, `fetch-models`, `balance`
+and the pass-through proxy. Note: with `HTTPS_PROXY` / `HTTP_PROXY` set, the proxy is asked for the IP, and a
+`NO_PROXY` entry naming the host no longer matches these requests. There is no switch for private networks yet; local model servers (Ollama, vLLM) can still be configured
 in the config file, which is trusted. An explicit opt-in for local/LAN services is on the roadmap.
 
 ### Changing a channel's origin needs its keys again

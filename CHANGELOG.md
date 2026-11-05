@@ -333,6 +333,16 @@ now fail `ai-gateway validate` and startup with a migration hint:
   `X-Forwarded-For` hop was used, so a client could rotate it to dodge the per-IP lockout or name a victim's IP to
   lock it out for 15 minutes. Now nothing is trusted by default and the client is the rightmost untrusted hop (see
   Breaking changes).
+- **SSRF via DNS rebinding: check and connection resolved the name separately** (RA3 / review K5, 中). PoC
+  (`k5_poc.ts`): the guard's lookup said public, the connection's own lookup said `127.0.0.1` → the internal server
+  answered. Requests of public-policy channels are now pinned: the name is resolved once, every address must be
+  public, and the request is sent to that IP with the original `Host` header, TLS SNI (`tls.serverName`) and an
+  explicit certificate check against the original name (`tls.checkServerIdentity`), so nothing resolves the name a
+  second time. Checked addresses (not a "host is fine" flag) are cached 30 s; IPv4 is tried first and, only when a
+  connection is refused / unreachable, the next checked address (never a request that may have been sent). Applies
+  to chat / completions / embeddings, streams, channel `test`, `fetch-models`, `balance` and the pass-through proxy
+  (which now also uses the gateway's guard); redirects are still never followed. With `HTTPS_PROXY` set the proxy is
+  asked for the IP, and a `NO_PROXY` host entry no longer matches these requests.
 - **Rotating a leaked admin key did not end its console sessions** (RA4 / review K3, 低). `POST /admin/keys/:id/rotate`
   kept every session opened with the old secret alive (revoke already ended them). Now rotate and revoke end that
   key's sessions at once (audit `sessionsEnded`), and each session remembers the secret version it signed in with,
