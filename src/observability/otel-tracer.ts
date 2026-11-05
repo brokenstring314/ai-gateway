@@ -23,6 +23,7 @@ import {
 } from "./otel.js";
 import type { OtelConfig } from "./otel.js";
 import { applyPrivacy } from "./otel-policy.js";
+import { clampText } from "./redact.js";
 
 export interface StartSpanOptions {
   /** Correlate the span's trace id with the request's X-Request-Id. */
@@ -74,6 +75,9 @@ export function filterSpanAttributes(
 
 const otelSpanByWrapper = new WeakMap<Span, OtelSpan>();
 
+/** Longest exception message / stack kept on a span (characters). */
+export const MAX_ERROR_TEXT = 4096;
+
 /** Upper bound on locally buffered spans to keep long-running memory bounded. */
 const MAX_BUFFERED_SPANS = 10_000;
 
@@ -114,12 +118,19 @@ export class OtelTracer {
 
   /**
    * Record an error on a span. Error messages and stacks routinely carry
-   * secrets (upstream "Incorrect API key provided: sk-..." etc.), so they are
-   * passed through redactMessage unless privacyLevel is explicitly "none".
+   * secrets (upstream "Incorrect API key provided: sk-..." etc.) and text the
+   * caller chose (the requested model name), so both are first cut to
+   * MAX_ERROR_TEXT characters (red team 2026-11-05 D1: a 9 MB model name went
+   * through the redaction regexes twice per failed request) and, on spans that
+   * leave the process (OpenTelemetry), passed through redactMessage unless
+   * privacyLevel is explicitly "none". Local spans (tracing disabled) never
+   * leave the process, so they skip the redaction work.
    */
   recordError(span: Span, error: Error): void {
-    const message = this.redactErrorText(error.message ?? "");
-    const stack = this.redactErrorText(error.stack ?? "");
+    const otelSpan = otelSpanByWrapper.get(span);
+    const exported = otelSpan !== undefined;
+    const message = this.errorText(error.message ?? "", exported);
+    const stack = this.errorText(error.stack ?? "", exported);
     span.status = "error";
     span.events.push({
       name: "exception",
@@ -130,17 +141,17 @@ export class OtelTracer {
         "exception.stacktrace": stack,
       },
     });
-    const otelSpan = otelSpanByWrapper.get(span);
     if (otelSpan !== undefined) {
       otelSpan.recordException({ name: error.name, message, stack });
       otelSpan.setStatus({ code: SpanStatusCode.ERROR, message });
     }
   }
 
-  private redactErrorText(text: string): string {
-    if (this.privacyLevel === "none") return text;
+  private errorText(text: string, exported: boolean): string {
+    const bounded = clampText(text, MAX_ERROR_TEXT);
+    if (!exported || this.privacyLevel === "none") return bounded;
     // "metadata" and "full" (and unset) both strip known secret patterns.
-    return applyPrivacy(text, "metadata");
+    return applyPrivacy(bounded, "metadata");
   }
 
   /** Get all spans tracked by this tracer (including fallback spans). */

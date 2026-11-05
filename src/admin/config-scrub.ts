@@ -50,7 +50,8 @@ export function isSensitiveConfigKey(key: string): boolean {
 export function scrubUrl(value: string): string {
   if (isEnvTemplate(value)) return value;
   let out = value.replace(/^([a-z][a-z0-9+.-]*:\/\/)([^/?#]*@)/i, (_m, scheme: string) => `${scheme}${REDACTED}@`);
-  out = out.replace(/([?&;])([^=&#;]+)=([^&#;]*)/g, (m, sep: string, name: string, v: string) => {
+  // The name stops at "?" too: otherwise every "?" of "???…" would scan to the end (quadratic).
+  out = out.replace(/([?&;])([^=&#;?]+)=([^&#;]*)/g, (m, sep: string, name: string, v: string) => {
     let decoded = name;
     try {
       decoded = decodeURIComponent(name);
