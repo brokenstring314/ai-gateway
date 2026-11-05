@@ -29,6 +29,7 @@ import { getRequestLogger, initRequestLogger } from "../observability/request-lo
 import { initOtel } from "../observability/otel.js";
 import { initOtelTracer } from "../observability/otel-tracer.js";
 import { parseShutdownGrace } from "../observability/otel-policy.js";
+import { publishedModelNameProblem } from "../core/request-limits.js";
 
 export interface ServeOverrides {
   /** Overrides config.server.port (CLI -p). */
@@ -388,6 +389,22 @@ export function publishedModelWarnings(gateway: Gateway, config: GatewayConfig):
           : "List each target's models in targets[].models, or add a models: section."),
     );
     return out;
+  }
+  // Names saved before the Admin API checked them (B7) still load; say which ones clients may fail to send.
+  for (const m of catalog.list()) {
+    const problem = publishedModelNameProblem(m.name);
+    if (problem !== undefined) {
+      out.push(
+        `[models] published model ${JSON.stringify(m.name.slice(0, 80))} has an invalid name: ${problem} ` +
+          "It is still served; rename it in the console (models → edit).",
+      );
+    }
+    if (m.enabled && m.targets.length === 0) {
+      out.push(
+        `[models] published model ${JSON.stringify(m.name.slice(0, 80))} is enabled but has no usable binding (none, or all disabled / on disabled channels): ` +
+          "requests for it get 503 model_unavailable. Bind a channel or disable it.",
+      );
+    }
   }
   const unused = catalog.unusedTargets(config.targets.map((t) => t.name));
   if (unused.length > 0) {

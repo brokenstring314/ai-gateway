@@ -4,6 +4,7 @@
  *   POST   /admin/session/login    { key } → session cookie + CSRF cookie (public; per-IP lockout, global slowdown)
  *   POST   /admin/session/logout   ends the session (cookies cleared)
  *   GET    /admin/session          who is signed in (+ csrfToken for a cookie session)
+ *   GET    /admin/session/status   public probe: 200 { authenticated: false } or the same as /admin/session (B5)
  *   GET    /admin/sessions         live console sessions
  *   DELETE /admin/sessions/:id     revoke one (admin, or your own)
  *
@@ -105,6 +106,32 @@ function stillValid(s: ConsoleSession, deps: SessionDeps): boolean {
   return true;
 }
 
+/** Name of a store key (U8: the console shows it instead of `key:<uuid>`); undefined for other credentials. */
+function keyNameOf(deps: SessionDeps, keyId: string | undefined): string | undefined {
+  if (keyId === undefined || deps.keyStore === undefined) return undefined;
+  try {
+    return deps.keyStore.get(keyId)?.name ?? undefined;
+  } catch {
+    return undefined;
+  }
+}
+
+/** GET /admin/session (and /session/status) for a cookie session. */
+function sessionView(s: ConsoleSession, deps: SessionDeps) {
+  const keyName = keyNameOf(deps, s.keyId);
+  return {
+    authenticated: true,
+    via: "session" as const,
+    actor: s.actor,
+    ...(keyName ? { keyName } : {}),
+    scopes: s.scopes,
+    sessionId: s.id,
+    csrfToken: s.csrfToken,
+    expiresAt: new Date(s.expiresAt).toISOString(),
+    idleTimeoutSeconds: deps.sessions.idleMs / 1000,
+  };
+}
+
 /** Public login / logout routes; register before the admin auth middleware. */
 export function registerSessionPublicRoutes(app: Hono<never>, deps: SessionDeps): void {
   const r = app as unknown as Hono;
@@ -161,14 +188,34 @@ export function registerSessionPublicRoutes(app: Hono<never>, deps: SessionDeps)
     });
     setSessionCookies(c, deps, token, session.csrfToken);
     deps.audit?.(cred.actor, "console_login", session.id, { ip });
+    const keyName = keyNameOf(deps, session.keyId);
     return c.json({
+      authenticated: true,
+      via: "session",
       actor: session.actor,
+      ...(keyName ? { keyName } : {}),
       scopes: session.scopes,
       sessionId: session.id,
       csrfToken: session.csrfToken,
       expiresAt: new Date(session.expiresAt).toISOString(),
       idleTimeoutSeconds: deps.sessions.idleMs / 1000,
     });
+  });
+
+  // Public sign-in probe for the console's first paint (B5): never a 401, so
+  // the login page logs no error. Reads only the session cookie (header
+  // credentials are not checked here: they would bypass the failure lockout).
+  r.get("/session/status", (c) => {
+    c.header("Cache-Control", "no-store");
+    const token = readCookie(c.req.header("Cookie"), SESSION_COOKIE);
+    if (token === undefined) return c.json({ authenticated: false });
+    const s = deps.sessions.touch(token);
+    if (!s || !stillValid(s, deps)) {
+      if (s) deps.sessions.end(s);
+      clearSessionCookies(c, deps);
+      return c.json({ authenticated: false, expired: true });
+    }
+    return c.json(sessionView(s, deps));
   });
 
   r.post("/session/logout", guard, (c) => {
@@ -270,16 +317,11 @@ export function registerSessionRoutes(app: Hono<never>, deps: SessionDeps): void
     const s = getVar(c, "consoleSession") as ConsoleSession | undefined;
     const scopes = (getVar(c, "keyScopes") as string[] | undefined) ?? [];
     const actor = (getVar(c, "actor") as string | undefined) ?? "admin";
-    if (!s) return c.json({ via: "header", actor, scopes });
-    return c.json({
-      via: "session",
-      actor,
-      scopes,
-      sessionId: s.id,
-      csrfToken: s.csrfToken,
-      expiresAt: new Date(s.expiresAt).toISOString(),
-      idleTimeoutSeconds: deps.sessions.idleMs / 1000,
-    });
+    if (!s) {
+      const keyName = keyNameOf(deps, actor.startsWith("key:") ? actor.slice(4) : undefined);
+      return c.json({ authenticated: true, via: "header", actor, scopes, ...(keyName ? { keyName } : {}) });
+    }
+    return c.json(sessionView(s, deps));
   });
 
   r.get("/sessions", (c) => {

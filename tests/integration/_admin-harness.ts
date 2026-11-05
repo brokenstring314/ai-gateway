@@ -19,6 +19,7 @@ import { composeConfig } from "../../src/config/runtime-source.js";
 import { Gateway } from "../../src/gateway.js";
 import { ConfigStore } from "../../src/persistence/config-store.js";
 import { KeyStore } from "../../src/persistence/key-store.js";
+import type { RequestLogStore } from "../../src/persistence/request-log-store.js";
 import { SecretBox } from "../../src/secrets/secret-box.js";
 import { PublicHostGuard } from "../../src/security/url-guard.js";
 import { persistKeyHealth } from "../../src/server/bootstrap.js";
@@ -169,7 +170,12 @@ export function yamlTarget(name: string, models: string[] = ["gpt-x"], extra: Re
 
 export async function adminHarness(
   file: Record<string, unknown>,
-  opts: { store?: boolean; probe?: { perActorPerMinute?: number; globalPerMinute?: number } } = {},
+  opts: {
+    store?: boolean;
+    probe?: { perActorPerMinute?: number; globalPerMinute?: number };
+    /** Persisted request log behind GET /admin/logs. */
+    logStore?: RequestLogStore;
+  } = {},
 ): Promise<Harness> {
   const config0 = loadConfigFromObject(file);
   const dns = new Map<string, string[]>();
@@ -200,6 +206,7 @@ export async function adminHarness(
     usageStore,
     usageRecorder: recorder,
     ...(store ? { configStore: store } : {}),
+    ...(opts.logStore ? { logStore: opts.logStore } : {}),
     configApi: { resolver, probe: opts.probe ?? {} },
   });
   const admin: Harness["admin"] = async (method, path, body, o = {}) => {

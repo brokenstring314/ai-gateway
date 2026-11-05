@@ -156,7 +156,10 @@ export function createAdminApp(
   // Every state-changing admin request: no cross-site origin, JSON bodies only (admin/guards.ts).
   app.use("*", csrfGuard({ allowedOrigins: () => config.cors?.origins }));
 
-  const logState: LogHandlerState = { logStore: options?.logStore ?? null };
+  const logState: LogHandlerState = {
+    logStore: options?.logStore ?? null,
+    ...(keyStore ? { keyStore } : {}),
+  };
   const configState: ConfigState = { config, configPath, current: () => gateway.getConfig() };
 
   // Console session info and management (list / revoke).

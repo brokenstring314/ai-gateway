@@ -76,6 +76,7 @@ import {
 import { isSensitiveConfigKey, scrubUrl } from "./config-scrub.js";
 import { actorOf, adminError, csrfGuard, etag, parseIfMatch, WindowLimiter } from "./guards.js";
 import { requireScope, SCOPE_ADMIN } from "./key-handlers.js";
+import { publishedModelNameProblem } from "../core/request-limits.js";
 
 export interface RuntimeConfigApiOptions {
   readonly gateway: Gateway;
@@ -1032,6 +1033,33 @@ export function registerRuntimeConfigApi(app: Hono<never>, opts: RuntimeConfigAp
     }
   }
 
+  /** 400 invalid_model_name unless `name` is a valid published model name (B7). */
+  function checkModelName(name: string): void {
+    const problem = publishedModelNameProblem(name);
+    if (problem !== undefined) {
+      throw new HttpError(400, "invalid_model_name", problem, {
+        param: "name",
+        fields: [{ path: "name", message: problem }],
+      });
+    }
+  }
+
+  /**
+   * An enabled model needs at least one binding (B7): with none it is
+   * published but every request gets 503 model_unavailable. Save it
+   * disabled (enabled: false) to keep a draft without bindings.
+   */
+  function checkHasBindings(enabled: boolean, bindings: number): void {
+    if (enabled && bindings === 0) {
+      throw new HttpError(
+        400,
+        "model_no_bindings",
+        "An enabled model needs at least one binding (a channel serving it). Add a binding, or save the model disabled.",
+        { param: "bindings", fields: [{ path: "bindings", message: "at least one binding is required" }] },
+      );
+    }
+  }
+
   function writeBindings(s: ConfigStore, modelId: string, modelName: string, bindings: readonly BindingInput[]): void {
     const seen = new Set<string>();
     bindings.forEach((b, i) => {
@@ -1056,6 +1084,8 @@ export function registerRuntimeConfigApi(app: Hono<never>, opts: RuntimeConfigAp
       const s = writable();
       const body = await parseBody(c, ModelCreateSchema);
       requireExplicit(s);
+      checkModelName(body.name);
+      checkHasBindings(body.enabled !== false, (body.bindings ?? []).length);
       const id = newId("mdl");
       const { version } = commit(
         s,
@@ -1100,6 +1130,8 @@ export function registerRuntimeConfigApi(app: Hono<never>, opts: RuntimeConfigAp
       requireExplicit(s);
       const current = s.getModel(id);
       if (!current) throw new ConfigNotFoundError(`model ${id} not found`);
+      if (body.name !== undefined) checkModelName(body.name);
+      checkHasBindings(body.enabled ?? current.enabled, (body.bindings ?? current.bindings).length);
       const fields = Object.keys(body);
       const { version } = commit(
         s,
@@ -1165,6 +1197,7 @@ export function registerRuntimeConfigApi(app: Hono<never>, opts: RuntimeConfigAp
       requireExplicit(s);
       const current = s.getModel(id);
       if (!current) throw new ConfigNotFoundError(`model ${id} not found`);
+      checkHasBindings(current.enabled, body.bindings.length);
       const { version } = commit(
         s,
         {

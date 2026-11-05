@@ -13,6 +13,7 @@ import type { ModelCatalog } from "./routing/model-catalog.js";
 import type { ChatShapedSurface } from "./core/chat-stream.js";
 import { connectMcpServers, createMcpExecutor, mcpReadiness } from "./core/mcp-runtime.js";
 import type { Pipeline, RequestLogSink } from "./core/pipeline.js";
+import { withPublishedModel } from "./core/pipeline.js";
 import { chatSurface } from "./core/surfaces/chat.js";
 import { embeddingsSurface } from "./core/surfaces/embeddings.js";
 import { imagesSurface } from "./core/surfaces/images.js";
@@ -257,7 +258,7 @@ export class Gateway {
   async embed(ctx: RequestContext, req: EmbeddingRequest): Promise<EmbeddingResponse> {
     const { config, parts } = this.snapshot;
     const model = config.aliases?.[req.model] ?? req.model;
-    return (await parts.pipeline.attempt(embeddingsSurface, { ...req, model }, ctx)).value;
+    return withPublishedModel((await parts.pipeline.attempt(embeddingsSurface, { ...req, model }, ctx)).value, model);
   }
 
   /** Image generation request without plugins (see embed()). */

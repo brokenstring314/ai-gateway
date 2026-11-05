@@ -92,27 +92,35 @@ export function usageHandler(state: UsageHandlerState) {
     const q = (k: string) => c.req.query(k);
     const groupBy = (q("groupBy") ?? "key") as GroupBy;
     if (!GROUP_BY.includes(groupBy)) {
-      return adminError(c, 400, "invalid_request", `groupBy must be one of: ${GROUP_BY.join(", ")}`);
+      return adminError(c, 400, "invalid_group_by", `groupBy must be one of: ${GROUP_BY.join(", ")}`, {
+        param: "groupBy",
+      });
     }
     const tz = validZone(q("tz") ?? "UTC");
     if (tz === undefined) {
-      return adminError(c, 400, "invalid_request", 'tz must be an IANA time zone such as "UTC" or "Asia/Shanghai"');
+      return adminError(c, 400, "invalid_timezone", 'tz must be an IANA time zone such as "UTC" or "Asia/Shanghai"', {
+        param: "tz",
+      });
     }
     const dateOf = dateFormatter(tz);
     const today = parseDate(dateOf(Date.now())) as number;
     const toRaw = q("to");
     const fromRaw = q("from");
     const to = toRaw === undefined ? today : parseDate(toRaw);
-    if (to === undefined) return adminError(c, 400, "invalid_request", "to must be a date: YYYY-MM-DD");
+    if (to === undefined) return adminError(c, 400, "invalid_date", "to must be a date: YYYY-MM-DD", { param: "to" });
     const from = fromRaw === undefined ? to - (DEFAULT_DAYS - 1) * DAY_MS : parseDate(fromRaw);
-    if (from === undefined) return adminError(c, 400, "invalid_request", "from must be a date: YYYY-MM-DD");
-    if (from > to) return adminError(c, 400, "invalid_request", "from must not be after to");
+    if (from === undefined)
+      return adminError(c, 400, "invalid_date", "from must be a date: YYYY-MM-DD", { param: "from" });
+    if (from > to) return adminError(c, 400, "date_range_inverted", "from must not be after to", { param: "from" });
     if ((to - from) / DAY_MS + 1 > MAX_USAGE_DAYS) {
-      return adminError(c, 400, "invalid_request", `at most ${MAX_USAGE_DAYS} days per query`);
+      return adminError(c, 400, "date_range_too_long", `at most ${MAX_USAGE_DAYS} days per query`, {
+        param: "from",
+        maxDays: MAX_USAGE_DAYS,
+      });
     }
     const dailyRaw = q("daily");
     if (dailyRaw !== undefined && dailyRaw !== "true" && dailyRaw !== "false") {
-      return adminError(c, 400, "invalid_request", "daily must be true or false");
+      return adminError(c, 400, "invalid_parameter", "daily must be true or false", { param: "daily" });
     }
     const daily = dailyRaw === "true";
     if (!state.store) {

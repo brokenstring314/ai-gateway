@@ -142,8 +142,13 @@ export async function* runChatStream(
     throw err;
   }
   const clientWantsUsage = finalReq.streamOptions?.includeUsage === true;
-  for await (const chunk of iterateStream(result, ctx?.signal, toPipelineError)) {
-    accumulateChunk(acc, chunk);
+  // Every chunk carries the published model name, never the binding's
+  // upstream id (B3); the accumulator keeps the upstream's for the log.
+  const published = finalReq.model;
+  for await (const upstreamChunk of iterateStream(result, ctx?.signal, toPipelineError)) {
+    accumulateChunk(acc, upstreamChunk);
+    const chunk =
+      published !== "" && upstreamChunk.model !== published ? { ...upstreamChunk, model: published } : upstreamChunk;
     if (!clientWantsUsage && chunk.usage !== undefined) {
       // Metered above; the client did not ask for usage. Some upstreams
       // (DeepSeek) put it on the last content chunk, others on a usage-only

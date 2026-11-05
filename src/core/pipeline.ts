@@ -101,7 +101,10 @@ export class Pipeline {
     ctx: RequestContext,
   ): Promise<Result<Res>> {
     const begun = await this.begin(surface, req, ctx);
-    if (begun.kind === "answered") return { kind: "ok", value: begun.value, target: NO_UPSTREAM_PROVIDER };
+    // Clients see the published model name, never a binding's upstream name (B3).
+    const published = surface.model(begun.run.request);
+    if (begun.kind === "answered")
+      return { kind: "ok", value: withPublishedModel(begun.value, published), target: NO_UPSTREAM_PROVIDER };
     const { run } = begun;
     let target: string | undefined;
     // Metered usage of every completed upstream call (RB1), kept outside the
@@ -139,7 +142,7 @@ export class Pipeline {
       }
       if (ctx) ctx.servedTarget = target;
       value = await this.finalize(run, { kind: "ok", value, target, usage, usageEstimated });
-      return { kind: "ok", value, target, usage };
+      return { kind: "ok", value: withPublishedModel(value, published), target, usage };
     } catch (err) {
       // Completed rounds (F3) plus an estimate for a call the upstream
       // received before the request was aborted (F2 / D4).
@@ -478,7 +481,10 @@ export class Pipeline {
     let usage: Usage | undefined;
     let usageEstimated = false;
     let target: string = NO_UPSTREAM_PROVIDER;
-    let model = run.requestedModel;
+    // The published model (aliases resolved) for successes and failures alike (B3);
+    // what the upstream called it is kept apart, in upstreamModel.
+    const model = surface.model(run.request);
+    let upstreamModel: string | undefined;
     let error: unknown;
     let pluginError: unknown;
 
@@ -490,10 +496,11 @@ export class Pipeline {
         surface.exposeResult?.(pc, outcome.value);
         pc.metadata["_target"] = target;
         const view = surface.toPluginResponse(outcome.value, target);
+        upstreamModel =
+          reportedModel(view?.model) ?? reportedModel(outcome.value) ?? this.boundUpstreamModel(model, target);
         pc.response = view && usage && view.usage !== usage ? { ...view, usage } : view;
         await this.deps.plugins.runAfter(pc);
         if (surface.fromPluginResponse && pc.response) value = surface.fromPluginResponse(outcome.value, pc.response);
-        model = pc.response?.model ?? model;
       } else if (outcome.kind === "error") {
         error = outcome.error;
         target = outcome.target ?? targetOf(outcome.error) ?? "unknown";
@@ -507,7 +514,7 @@ export class Pipeline {
           // Failed mid-stream: tokens were consumed, so after plugins run too.
           usage = outcome.partial.usage;
           usageEstimated = outcome.partial.usageEstimated === true;
-          model = outcome.partial.response.model || model;
+          upstreamModel = reportedModel(outcome.partial.response.model);
           pc.metadata["_target"] = target;
           pc.response = outcome.partial.response;
           await this.deps.plugins.runOnError(pc);
@@ -515,6 +522,7 @@ export class Pipeline {
         } else {
           await this.deps.plugins.runOnError(pc);
         }
+        upstreamModel ??= this.boundUpstreamModel(model, target);
       } else if (outcome.kind === "rejected") {
         error = outcome.error;
       }
@@ -545,8 +553,9 @@ export class Pipeline {
       durationMs,
       surface: surface.logLabel,
     };
+    if (upstreamModel !== undefined) entry.upstreamModel = upstreamModel;
     if (ctx?.client?.id) entry.keyId = ctx.client.id;
-    entry.publishedModel = surface.model(run.request);
+    entry.publishedModel = model;
     // A failed request naming no published model is counted under one usage
     // bucket, not one row per made-up name (D3); request_logs keep the name.
     if (error !== undefined && entry.publishedModel !== "" && !this.deps.catalog.lookup(entry.publishedModel))
@@ -590,6 +599,18 @@ export class Pipeline {
 
     if (pluginError !== undefined) throw pluginError;
     return value;
+  }
+
+  /**
+   * The upstream model name `target` is sent for `published` (its binding's
+   * name), from the in-memory catalog; undefined when the target is not one
+   * of the model's bindings (no upstream reached, unknown model).
+   */
+  private boundUpstreamModel(published: string, target: string): string | undefined {
+    if (target === NO_UPSTREAM_PROVIDER || target === "unknown" || target === "") return undefined;
+    const entry = this.deps.catalog.lookup(published);
+    if (!entry || !entry.targets.includes(target)) return undefined;
+    return entry.route.upstreamModel(target);
   }
 
   /** Request-log entry for a request that never went through begin() (pass-through before plugins). */
@@ -657,6 +678,26 @@ function meteredUsage<Req, Res, Chunk>(
   const estimate = surface.estimateUsage;
   if (!estimate) return { usage: reported, estimated: false };
   return resolveUsage(reported, () => estimate(req, res));
+}
+
+/** A non-empty model name reported by an upstream: a string, or the `model` field of a result object. */
+function reportedModel(v: unknown): string | undefined {
+  const m =
+    typeof v === "string" ? v : v !== null && typeof v === "object" ? (v as { model?: unknown }).model : undefined;
+  return typeof m === "string" && m !== "" ? m : undefined;
+}
+
+/**
+ * `value` with its top-level `model` set to the published name (B3): a
+ * response (chat, completions, embeddings) answers with the name the client
+ * can call, never a binding's upstream model id. Values without a string
+ * `model` field (images) are returned unchanged.
+ */
+export function withPublishedModel<T>(value: T, published: string): T {
+  if (published === "" || value === null || typeof value !== "object") return value;
+  const current = (value as { model?: unknown }).model;
+  if (typeof current !== "string" || current === published) return value;
+  return { ...value, model: published };
 }
 
 function unavailableModel(model: string) {

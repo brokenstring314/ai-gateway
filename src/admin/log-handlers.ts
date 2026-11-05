@@ -11,7 +11,9 @@
  */
 
 import type { Context } from "hono";
-import type { RequestLogStore } from "@/persistence/request-log-store";
+import type { RequestLogEntry, RequestLogStore } from "@/persistence/request-log-store";
+import type { KeyStore } from "@/persistence/key-store";
+import { adminError } from "./guards.js";
 
 /** A single log entry. */
 export interface LogEntry {
@@ -61,11 +63,34 @@ export const logBuffer = new LogBuffer(1000);
 /** Persistent request-log state shared by the log handlers. */
 export interface LogHandlerState {
   logStore: RequestLogStore | null;
+  /** Client keys, for the key names on listed entries (read per listing; never on the request path). */
+  keyStore?: KeyStore;
+}
+
+/** Who a log entry's keyId is (U8): a store key (its name), a config key, the console Playground, or deleted. */
+export type LogKeyKind = "store" | "config" | "console" | "deleted";
+
+/** A listed entry with its key's name joined in at read time. */
+export type LogEntryView = RequestLogEntry & { keyName?: string | null; keyKind?: LogKeyKind };
+
+function withKeyNames(entries: readonly RequestLogEntry[], keyStore: KeyStore | undefined): LogEntryView[] {
+  if (!entries.some((e) => e.keyId !== undefined)) return [...entries];
+  const names = new Map<string, string>();
+  if (keyStore) for (const k of keyStore.list()) names.set(k.id, k.name);
+  return entries.map((e) => {
+    const id = e.keyId;
+    if (id === undefined) return e;
+    if (id === "console-playground") return { ...e, keyName: null, keyKind: "console" };
+    if (id.startsWith("cfg_")) return { ...e, keyName: null, keyKind: "config" };
+    const name = names.get(id);
+    return name !== undefined ? { ...e, keyName: name, keyKind: "store" } : { ...e, keyName: null, keyKind: "deleted" };
+  });
 }
 
 interface LogFilters {
   stage?: string;
   model?: string;
+  upstreamModel?: string;
   provider?: string;
   since?: Date;
   status?: "error" | "ok";
@@ -78,6 +103,8 @@ function parseFilters(c: Context): LogFilters {
   const provider = c.req.query("provider");
   if (stage !== undefined && stage !== "") filters.stage = stage;
   if (model !== undefined && model !== "") filters.model = model;
+  const upstreamModel = c.req.query("upstreamModel");
+  if (upstreamModel !== undefined && upstreamModel !== "") filters.upstreamModel = upstreamModel;
   if (provider !== undefined && provider !== "") filters.provider = provider;
   const status = c.req.query("status");
   if (status === "error" || status === "ok") filters.status = status;
@@ -111,7 +138,7 @@ export function getLogsHandler(state: LogHandlerState | LogBuffer) {
     const offsetRaw = c.req.query("offset");
     const offset = offsetRaw === undefined ? 0 : Math.max(Number(offsetRaw) || 0, 0);
     const { data, total } = state.logStore.list({ limit, offset, ...parseFilters(c) });
-    return c.json({ entries: data, total });
+    return c.json({ entries: withKeyNames(data, state.keyStore), total });
   };
 }
 
@@ -140,11 +167,11 @@ export function deleteLogsHandler(state: LogHandlerState) {
     }
     const beforeRaw = c.req.query("before");
     if (beforeRaw === undefined || beforeRaw === "") {
-      return c.json({ error: "Missing required query parameter: before" }, 400);
+      return adminError(c, 400, "missing_parameter", "Missing required query parameter: before", { param: "before" });
     }
     const before = new Date(beforeRaw);
     if (Number.isNaN(before.getTime())) {
-      return c.json({ error: "Invalid value for query parameter: before" }, 400);
+      return adminError(c, 400, "invalid_parameter", "Invalid value for query parameter: before", { param: "before" });
     }
     const { stage, model, provider } = parseFilters(c);
     const deleted = state.logStore.delete({ before, stage, model, provider });

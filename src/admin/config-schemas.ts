@@ -117,7 +117,8 @@ export const BindingSchema = strictObject({
   }
 });
 
-const modelName = z.string().min(1).max(200);
+/** Shape only; the name rules (charset, ≤ 256) answer 400 invalid_model_name in config-api (B7). */
+const modelName = z.string().max(4096);
 
 /** Optional free text where an empty (or blank) value means "none": stored as null, so clearing a field clears it (review 2026-11-02 U3). */
 const clearableText = (max: number) =>

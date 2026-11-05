@@ -175,7 +175,7 @@ export const ModelMetadataSchema = strictObject({
 });
 
 export const PublishedModelSchema = strictObject({
-  name: z.string().min(1).max(200),
+  name: z.string().min(1).max(256), // = MAX_MODEL_NAME_LENGTH (core/request-limits.ts)
   enabled: z.boolean().optional(),
   displayName: z.string().max(200).optional(),
   description: z.string().max(2000).optional(),

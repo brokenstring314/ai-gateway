@@ -1466,6 +1466,24 @@ export class ConfigStore {
    */
   restoreVersion(version: number, newVersion: number, now: string): void {
     const snap = this.parseSnapshot(version);
+    // Key health is runtime state, not configuration (B4, UI test 2026-11-05):
+    // a key the gateway disabled after an upstream 401 / 402 since `version`
+    // must not come back as "ok". A restored key keeps its current health
+    // when it is the same key — same id and same stored value; a different
+    // value (or a key that no longer exists) is another key and takes the
+    // health the snapshot recorded with it.
+    const health = new Map(
+      (
+        this.db.query("SELECT id, kind, value, status, last_error, last_error_at FROM channel_keys").all() as Array<{
+          id: string;
+          kind: string;
+          value: string;
+          status: string;
+          last_error: string | null;
+          last_error_at: string | null;
+        }>
+      ).map((k) => [k.id, k]),
+    );
     this.db.exec(
       "DELETE FROM model_bindings; DELETE FROM models; DELETE FROM channel_keys; DELETE FROM channels; DELETE FROM runtime_settings;",
     );
@@ -1492,12 +1510,16 @@ export class ConfigStore {
         ...(settings !== undefined ? { settings_json: settings } : {}),
       });
     }
-    for (const k of snap.keys)
+    for (const k of snap.keys) {
+      const live = health.get(String(k["id"]));
+      const sameKey = live !== undefined && live.kind === k["kind"] && live.value === k["value"];
       insert("channel_keys", KEY_COLUMNS, k, {
         revision: newVersion,
         updated_at: now,
         created_at: k["created_at"] ?? now,
+        ...(sameKey ? { status: live.status, last_error: live.last_error, last_error_at: live.last_error_at } : {}),
       });
+    }
     for (const m of snap.models ?? []) insert("models", MODEL_COLUMNS, m, { revision: newVersion, updated_at: now });
     for (const b of snap.bindings ?? []) insert("model_bindings", BINDING_COLUMNS, b, {});
     for (const s of snap.settings ?? []) {

@@ -57,6 +57,27 @@ export function modelNameProblem(name: string): GatewayError | undefined {
   return undefined;
 }
 
+/** Characters a published model name may use (B7): letters, digits and . _ : / @ - (no spaces). */
+export const PUBLISHED_MODEL_NAME_PATTERN = /^[A-Za-z0-9._:/@-]+$/;
+
+/**
+ * Why `name` cannot be a published model name (B7, UI test 2026-11-05: a
+ * model named "bad name!" was saved), else undefined. At most
+ * MAX_MODEL_NAME_LENGTH characters — the longest name a request may send
+ * (D3) — from PUBLISHED_MODEL_NAME_PATTERN. Enforced by the Admin API;
+ * names already stored or in a config file only warn at startup.
+ */
+export function publishedModelNameProblem(name: string): string | undefined {
+  if (name.length === 0) return "The model name is empty.";
+  if (name.length > MAX_MODEL_NAME_LENGTH) {
+    return `The model name is ${name.length} characters long; model names are at most ${MAX_MODEL_NAME_LENGTH} characters.`;
+  }
+  if (!PUBLISHED_MODEL_NAME_PATTERN.test(name)) {
+    return "Model names use letters, digits and . _ : / @ - only (no spaces or other characters).";
+  }
+  return undefined;
+}
+
 /** A model name safe to log / label: at most MAX_MODEL_NAME_LENGTH characters. */
 export function loggableModelName(name: string): string {
   return clampText(name, MAX_MODEL_NAME_LENGTH);
@@ -67,6 +88,8 @@ export function boundLogEntry(entry: RequestLogEntry): RequestLogEntry {
   const model = clampText(entry.model, MAX_LOG_NAME_LENGTH);
   const publishedModel =
     entry.publishedModel === undefined ? undefined : clampText(entry.publishedModel, MAX_LOG_NAME_LENGTH);
+  const upstreamModel =
+    entry.upstreamModel === undefined ? undefined : clampText(entry.upstreamModel, MAX_LOG_NAME_LENGTH);
   const provider = clampText(entry.provider, MAX_LOG_NAME_LENGTH);
   const plugin = entry.plugin === undefined ? undefined : clampText(entry.plugin, MAX_LOG_NAME_LENGTH);
   const error = entry.error === undefined ? undefined : clampText(entry.error, MAX_LOG_ERROR_LENGTH);
@@ -74,6 +97,7 @@ export function boundLogEntry(entry: RequestLogEntry): RequestLogEntry {
   if (
     model === entry.model &&
     publishedModel === entry.publishedModel &&
+    upstreamModel === entry.upstreamModel &&
     provider === entry.provider &&
     plugin === entry.plugin &&
     error === entry.error &&
@@ -87,6 +111,7 @@ export function boundLogEntry(entry: RequestLogEntry): RequestLogEntry {
     provider,
     requestId,
     ...(publishedModel !== undefined ? { publishedModel } : {}),
+    ...(upstreamModel !== undefined ? { upstreamModel } : {}),
     ...(plugin !== undefined ? { plugin } : {}),
     ...(error !== undefined ? { error } : {}),
   };

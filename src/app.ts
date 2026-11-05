@@ -11,6 +11,7 @@
  */
 
 import { Hono } from "hono";
+import { HTTPException } from "hono/http-exception";
 import type { Context } from "hono";
 import { respondError } from "./handlers/error-response.js";
 import type { Gateway } from "./gateway.js";
@@ -38,6 +39,7 @@ import { registerHealthHandler, registerLivenessHandler, registerReadinessHandle
 import { registerCapabilitiesHandler } from "./handlers/capabilities.js";
 import { createAdminApp, type AdminAppOptions } from "./admin/handlers.js";
 import { createDashboardApp } from "./dashboard/index.js";
+import { registerStaticIcons, STATIC_ICON_PATHS } from "./server/static-icons.js";
 import { createProxyHandler, createProxyKeyValidator, resolveProxyTarget } from "./proxy/proxy.js";
 import {
   compileRouteAllowlist,
@@ -108,6 +110,30 @@ export function createApp(
   options?: Omit<CreateAppOptions, "keyStore">,
 ): AppType {
   const app: AppType = new Hono<AppEnv>({ getPath: getNormalizedPath });
+  // Every error body is JSON with a stable `code` (U2: the console translates by code),
+  // including routes nobody registered and errors no handler caught.
+  app.notFound((c) => {
+    const path = new URL(c.req.url).pathname;
+    const admin = path === "/admin" || path.startsWith("/admin/");
+    return c.json(
+      {
+        error: {
+          message: `Unknown route ${c.req.method} ${path}`,
+          type: admin ? "not_found" : "invalid_request_error",
+          code: admin ? "not_found" : "unknown_route",
+        },
+      },
+      404,
+    );
+  });
+  app.onError((err, c) => {
+    if (err instanceof HTTPException) return err.getResponse();
+    console.error("[gateway] unhandled error:", err);
+    return c.json(
+      { error: { message: "Internal server error", type: "internal_error", code: "unhandled_exception" } },
+      500,
+    );
+  });
 
   // One gate for every route: bootstrap keys stop working as soon as a real
   // admin credential exists (store admin key, adminSecret or auth.keys).
@@ -207,7 +233,8 @@ export function createApp(
         bootstrapKey: options?.bootstrapKey,
         bootstrapReadOnlyKey: options?.bootstrapReadOnlyKey,
         bootstrap,
-        skipPaths: ["/health", "/metrics", "/livez", "/readyz"],
+        // Static icons browsers fetch on their own (B5): never a 401 in the console.
+        skipPaths: ["/health", "/metrics", "/livez", "/readyz", ...STATIC_ICON_PATHS],
         configKeys: () => config.auth?.keys,
       }),
     );
@@ -394,6 +421,7 @@ export function createApp(
   // Registered before the admin API so its auth middleware does not apply:
   // the page and its hashed assets carry no data; the app signs in through
   // POST /admin/session/login and reads everything from the /admin API.
+  registerStaticIcons(app as never);
   app.route("/", createDashboardApp());
 
   // Console Playground: a chat completion through the real routing, authorized

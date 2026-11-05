@@ -8,7 +8,10 @@ import { runMigrations, type MigrationStep, DeferredStepError } from "@/persiste
 export interface RequestLogEntry {
   traceId: string;
   stage: string;
+  /** Published model name (B3; rows written before 0.3.0 may hold the upstream's name for successes). */
   model: string;
+  /** Model name the upstream answered with / was sent (B3); absent when no upstream was involved or on older rows. */
+  upstreamModel?: string;
   provider: string;
   promptTokens: number;
   completionTokens: number;
@@ -28,6 +31,7 @@ export interface RequestLogQuery {
   offset?: number;
   stage?: string;
   model?: string;
+  upstreamModel?: string;
   provider?: string;
   since?: Date;
   /** "error": entries with an error message (or stage on_error); "ok": the rest. */
@@ -120,6 +124,17 @@ function buildMigrationSteps(): MigrationStep[] {
         add("status", "status INTEGER");
       },
     },
+    {
+      // B3 (UI test 2026-11-05): `model` is the published name; the upstream's own name is kept apart.
+      version: 4,
+      name: "request_logs_upstream_model",
+      fn: (db: Database) => {
+        const cols = new Set(
+          (db.query("PRAGMA table_info(request_logs)").all() as Array<{ name: string }>).map((c) => c.name),
+        );
+        if (!cols.has("upstream_model")) db.exec("ALTER TABLE request_logs ADD COLUMN upstream_model TEXT");
+      },
+    },
   ];
 }
 
@@ -163,6 +178,7 @@ interface WhereClauseResult {
 function buildWhereClause(query: {
   stage?: string;
   model?: string;
+  upstreamModel?: string;
   provider?: string;
   since?: Date;
   status?: "error" | "ok";
@@ -177,6 +193,10 @@ function buildWhereClause(query: {
   if (query.model && query.model !== "") {
     clauses.push("model = ?");
     args.push(query.model);
+  }
+  if (query.upstreamModel && query.upstreamModel !== "") {
+    clauses.push("upstream_model = ?");
+    args.push(query.upstreamModel);
   }
   if (query.provider && query.provider !== "") {
     clauses.push("provider = ?");
@@ -247,8 +267,8 @@ export class RequestLogStore {
     // query() caches the compiled statement (one prepare per process, not per request).
     this.db
       .query(
-        `INSERT INTO request_logs(trace_id, stage, model, provider, prompt_tokens, completion_tokens, total_tokens, error_message, created_at, key_id, cache_hit_tokens, reasoning_tokens, duration_ms, status)
-         VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+        `INSERT INTO request_logs(trace_id, stage, model, provider, prompt_tokens, completion_tokens, total_tokens, error_message, created_at, key_id, cache_hit_tokens, reasoning_tokens, duration_ms, status, upstream_model)
+         VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
       )
       .run(
         entry.traceId,
@@ -265,6 +285,7 @@ export class RequestLogStore {
         Math.round(entry.reasoningTokens ?? 0),
         entry.durationMs !== undefined ? Math.round(entry.durationMs) : null,
         entry.status ?? null,
+        entry.upstreamModel !== undefined && entry.upstreamModel !== "" ? entry.upstreamModel : null,
       );
   }
 
@@ -286,7 +307,7 @@ export class RequestLogStore {
     const rows = this.db
       .prepare(
         `SELECT trace_id, stage, model, provider, prompt_tokens, completion_tokens, total_tokens, error_message, created_at,
-                key_id, cache_hit_tokens, reasoning_tokens, duration_ms, status
+                key_id, cache_hit_tokens, reasoning_tokens, duration_ms, status, upstream_model
          FROM request_logs${whereSQL}
          ORDER BY created_at DESC
          LIMIT ? OFFSET ?`,
@@ -306,12 +327,14 @@ export class RequestLogStore {
       reasoning_tokens: number;
       duration_ms: number | null;
       status: number | null;
+      upstream_model: string | null;
     }>;
 
     const data: RequestLogEntry[] = rows.map((row) => ({
       traceId: row.trace_id ?? "",
       stage: row.stage,
       model: row.model ?? "",
+      ...(row.upstream_model !== null ? { upstreamModel: row.upstream_model } : {}),
       provider: row.provider ?? "",
       promptTokens: row.prompt_tokens,
       completionTokens: row.completion_tokens,

@@ -207,6 +207,7 @@ export function createKeyHandler(state: KeyHandlerState) {
             message: "Request body must include a non-empty 'name' string",
             type: "invalid_request",
             code: "invalid_request",
+            param: "name",
           },
         },
         400,
@@ -221,11 +222,11 @@ export function createKeyHandler(state: KeyHandlerState) {
     let expiresAt: Date | undefined;
     if (body.expiresAt !== undefined && body.expiresAt !== null) {
       if (typeof body.expiresAt !== "string") {
-        return invalidRequest(c, "'expiresAt' must be an ISO date string");
+        return invalidRequest(c, "'expiresAt' must be an ISO date string", "expiresAt");
       }
       expiresAt = new Date(body.expiresAt);
       if (Number.isNaN(expiresAt.getTime())) {
-        return invalidRequest(c, "'expiresAt' must be an ISO date string");
+        return invalidRequest(c, "'expiresAt' must be an ISO date string", "expiresAt");
       }
     }
 
@@ -233,7 +234,7 @@ export function createKeyHandler(state: KeyHandlerState) {
     try {
       allowedModels = parseAllowedModelsField(body.allowedModels);
     } catch (err) {
-      return invalidRequest(c, err instanceof Error ? err.message : "invalid 'allowedModels'");
+      return invalidRequest(c, err instanceof Error ? err.message : "invalid 'allowedModels'", "allowedModels");
     }
 
     try {
@@ -241,7 +242,7 @@ export function createKeyHandler(state: KeyHandlerState) {
       assertLimit("rpm", body.rpm, 1);
       assertLimit("tpm", body.tpm, 1);
     } catch (err) {
-      return invalidRequest(c, err instanceof Error ? err.message : "invalid limit");
+      return invalidRequest(c, err instanceof Error ? err.message : "invalid limit", limitParamOf(err));
     }
     const limits = {
       ...(body.quotaTokens !== undefined ? { quotaTokens: body.quotaTokens as number | null } : {}),
@@ -299,7 +300,7 @@ export function updateKeyHandler(state: KeyHandlerState) {
     try {
       allowedModels = parseAllowedModelsField(body?.allowedModels);
     } catch (err) {
-      return invalidRequest(c, err instanceof Error ? err.message : "invalid 'allowedModels'");
+      return invalidRequest(c, err instanceof Error ? err.message : "invalid 'allowedModels'", "allowedModels");
     }
 
     try {
@@ -344,12 +345,12 @@ export function deleteKeyHandler(state: KeyHandlerState | ConfigState) {
     const id = Number(idParam);
 
     if (Number.isNaN(id) || !Number.isInteger(id) || id < 0) {
-      return c.json({ error: "Key id must be a non-negative integer" }, 400);
+      return adminError(c, 400, "invalid_request", "Key id must be a non-negative integer", { param: "id" });
     }
 
     const keys = state.config.auth?.keys;
     if (!keys || id >= keys.length) {
-      return c.json({ error: `Key id ${id} not found` }, 404);
+      return adminError(c, 404, "key_not_found", `Key id ${id} not found`);
     }
 
     keys.splice(id, 1);
@@ -562,9 +563,11 @@ export function getKeysHandler(state: ConfigState) {
 /** POST /admin/keys — add a new key. Body: { key: string } */
 export function addKeyHandler(state: ConfigState) {
   return async (c: Context) => {
-    const body = await c.req.json();
+    const body = (await c.req.json().catch(() => null)) as { key?: unknown } | null;
     if (typeof body?.key !== "string" || body.key.trim().length === 0) {
-      return c.json({ error: "Request body must include a non-empty 'key' string" }, 400);
+      return adminError(c, 400, "invalid_request", "Request body must include a non-empty 'key' string", {
+        param: "key",
+      });
     }
 
     // Ensure auth section exists
@@ -603,18 +606,26 @@ function parseScopes(raw: unknown): string[] | null {
 }
 
 function invalidScopes(c: Context) {
-  return invalidRequest(c, `'scopes' must be an array of: ${VALID_SCOPES.map((s) => `"${s}"`).join(", ")}`);
+  return invalidRequest(c, `'scopes' must be an array of: ${VALID_SCOPES.map((s) => `"${s}"`).join(", ")}`, "scopes");
 }
 
-function invalidRequest(c: Context, message: string) {
+/** 400 invalid_request; `param` names the field (the console puts the message next to it). */
+function invalidRequest(c: Context, message: string, param?: string) {
   return c.json(
     {
       error: {
         message,
         type: "invalid_request",
         code: "invalid_request",
+        ...(param !== undefined ? { param } : {}),
       },
     },
     400,
   );
+}
+
+/** The limit field an assertLimit error is about ('rpm' must be …). */
+function limitParamOf(err: unknown): string | undefined {
+  const m = err instanceof Error ? /^'(quotaTokens|rpm|tpm)'/.exec(err.message) : null;
+  return m?.[1];
 }

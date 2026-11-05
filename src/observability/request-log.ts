@@ -8,9 +8,19 @@ import type { RequestLogStore } from "../persistence/request-log-store.js";
 export interface RequestLogEntry {
   timestamp: string;
   requestId: string;
-  /** Model as reported by the upstream response (else the requested name). */
+  /**
+   * Published model the request asked for, aliases resolved — for successes
+   * and failures alike (B3). A name that is not published is kept as sent
+   * (cut to its log size).
+   */
   model: string;
-  /** Published model the request asked for, aliases resolved (usage rollups group by this). */
+  /**
+   * Model name the upstream answered with (else the binding's upstream name
+   * for the channel that served / failed it). Unset when no upstream was
+   * involved (rejected before routing, plugin short-circuit).
+   */
+  upstreamModel?: string;
+  /** Usage-rollup model: `model`, or "(unknown)" for a failed request naming no published model (D3). */
   publishedModel?: string;
   provider: string;
   strategy: string;
@@ -128,6 +138,7 @@ export function requestLogStoreSink(store: RequestLogStore): (entry: RequestLogE
         traceId: entry.requestId,
         stage: entry.surface ?? "chat",
         model: entry.model,
+        ...(entry.upstreamModel !== undefined ? { upstreamModel: entry.upstreamModel } : {}),
         provider: entry.provider,
         promptTokens: entry.tokens?.prompt ?? 0,
         completionTokens: entry.tokens?.completion ?? 0,
