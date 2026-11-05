@@ -88,15 +88,20 @@ test("validation errors from the server are shown on their fields (wizard name a
   await modal.getByRole("button", { name: "下一步" }).click();
   await modal.getByRole("button", { name: "创建" }).click();
   // Back on step 1 with the message on the name field.
-  await expect(nameField.locator(".field-error")).toContainText("no spaces");
+  // The server's message, in Chinese (UI test 2026-11-05 U2); the toast only points at the field (U3).
+  await expect(nameField.locator(".field-error")).toContainText("不能有空格");
   await expect(nameField).toHaveClass(/invalid/);
+  await toast(page, "保存失败：请修正标红的字段");
 
+  // A private address is caught on step 1, before any key is typed (U3).
   await nameField.locator("input").fill("internal");
   await urlField.locator("input").fill("http://10.1.2.3/v1");
   await modal.getByRole("button", { name: "下一步" }).click();
-  await modal.getByRole("button", { name: "创建" }).click();
-  await expect(urlField.locator(".field-error")).toContainText("private address");
+  await expect(urlField.locator(".field-error")).toContainText("内网");
+  await expect(modal.getByRole("button", { name: "创建" })).toHaveCount(0);
+  acceptConfirm(page); // unsaved wizard input: closing asks first (U15)
   await page.keyboard.press("Escape");
+  await expect(modal).toBeHidden();
   expect((await gw.admin<{ data: unknown[] }>("GET", "/channels")).body.data).toHaveLength(1); // only the seed
   await watch.assertClean();
   await s.context.close();
@@ -139,7 +144,7 @@ test("explicit models + second channel: model drawer edit, reorder bindings by b
   const firstChannel = await rows.nth(0).locator("select option:checked").textContent();
   expect(firstChannel).toBe("alpha");
   await drawer.locator("label.field", { hasText: "显示名" }).locator("input").fill("Fake Chat");
-  await rows.nth(1).getByRole("button", { name: "up" }).click();
+  await rows.nth(1).getByRole("button", { name: "上移" }).click();
   await expect(rows.nth(0).locator("select option:checked")).toHaveText("beta");
   const before = await headVersion();
   await drawer.getByRole("button", { name: "保存" }).click();
@@ -275,7 +280,7 @@ test("usage page renders charts and totals; logs page lists the requests", async
 
 test("playground: non-stream answer, streaming answer, and stop mid-stream", async ({ browser }) => {
   const { context, page, watch } = await signedIn(browser, gw, adminKey);
-  await goTo(page, "Playground");
+  await goTo(page, "调试台");
   const model = page.locator("label.field", { hasText: "模型" }).locator("select");
   const composer = page.locator("form.composer textarea");
   const last = page.locator(".msg.assistant .bubble").last();
@@ -345,7 +350,7 @@ test("versions: diff with previous, rollback → live; audit list shows the writ
   await goTo(page, "版本与审计");
   const head = await headVersion();
   const versions = page.locator("section.card", { hasText: "配置版本" });
-  const headRow = versions.locator("tbody tr", { hasText: "HEAD" });
+  const headRow = versions.locator("tbody tr").filter({ has: page.locator('.badge[title="HEAD"]') });
   await expect(headRow).toContainText(`#${head}`);
   await headRow.getByRole("button", { name: "与上一版对比" }).click();
   const diff = page.getByRole("dialog", { name: `#${head - 1} → #${head}` });
@@ -379,7 +384,7 @@ test("versions: diff with previous, rollback → live; audit list shows the writ
   const audit = page.locator("section.card", { hasText: "审计日志" });
   await expect(audit.locator("tbody tr").first()).toBeVisible();
   await expect(audit).toContainText("rollback");
-  await expect(audit).toContainText("session");
+  await expect(audit).toContainText("控制台会话");
   await watch.assertClean();
   await context.close();
 });

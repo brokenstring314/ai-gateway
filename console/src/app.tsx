@@ -1,8 +1,8 @@
 /** Console shell: session check, sign-in, navigation, language switch. */
 import type { ComponentType } from "preact";
 import { useEffect, useState } from "preact/hooks";
-import { ApiError, api, type SessionInfo, setCsrfToken, setUnauthorizedHandler } from "./api";
-import { type Lang, type MsgKey, setLang, t, useLang } from "./i18n";
+import { ApiError, api, get, probeSession, type SessionInfo, setCsrfToken, setUnauthorizedHandler } from "./api";
+import { fmtDuration, type Lang, type MsgKey, setLang, t, useLang } from "./i18n";
 import { ChannelsPage } from "./pages/channels";
 import { KeysPage } from "./pages/keys";
 import { LogsPage } from "./pages/logs";
@@ -12,7 +12,7 @@ import { PlaygroundPage } from "./pages/playground";
 import { SettingsPage } from "./pages/settings";
 import { UsagePage } from "./pages/usage";
 import { VersionsPage } from "./pages/versions";
-import { Field, Toasts, notify } from "./ui";
+import { Field, Toasts, errText, notify } from "./ui";
 
 export const BASE = "/admin/dashboard";
 
@@ -55,10 +55,10 @@ export function App() {
         return null;
       });
     });
-    api<SessionInfo>("/session").then(
-      (r) => {
-        if (r.data.csrfToken) setCsrfToken(r.data.csrfToken);
-        setSession(r.data);
+    probeSession().then(
+      (s) => {
+        if (s?.csrfToken) setCsrfToken(s.csrfToken);
+        setSession(s);
       },
       () => setSession(null),
     );
@@ -93,10 +93,7 @@ export function App() {
             </a>
           ))}
         </nav>
-        <span class="who" title={session.actor}>
-          {session.actor}
-          {canWrite ? "" : ` · ${t("readOnly")}`}
-        </span>
+        <Who actor={session.actor} keyName={session.keyName} canWrite={canWrite} />
         <LangSwitch />
         <button
           type="button"
@@ -120,6 +117,28 @@ export function App() {
       </main>
       <Toasts />
     </div>
+  );
+}
+
+/** Signed-in actor; a store key shows its name instead of "key:<uuid>" (U8). */
+function Who(props: { actor: string; keyName?: string | undefined; canWrite: boolean }) {
+  const [keyName, setKeyName] = useState(props.keyName ?? "");
+  useEffect(() => {
+    const id = props.actor.startsWith("key:") ? props.actor.slice(4) : "";
+    if (!id || props.keyName) return;
+    get<{ keys?: Array<{ id: string; name: string }>; data?: Array<{ id: string; name: string }> }>("/keys").then(
+      (r) => {
+        const hit = (r.keys ?? r.data ?? []).find((k) => k.id === id);
+        if (hit) setKeyName(hit.name);
+      },
+      () => {},
+    );
+  }, [props.actor, props.keyName]);
+  return (
+    <span class="who" title={props.actor}>
+      {keyName ? `${t("who.key")}: ${keyName}` : props.actor}
+      {props.canWrite ? "" : ` · ${t("readOnly")}`}
+    </span>
   );
 }
 
@@ -161,13 +180,13 @@ export function Login(props: { onDone: (s: SessionInfo) => void }) {
             props.onDone({ ...r.data, via: "session" });
           } catch (err) {
             if (err instanceof ApiError && err.status === 429) {
-              setError(t("login.locked", { s: err.retryAfter ?? 60 }));
+              setError(t("login.locked", { s: fmtDuration(err.retryAfter ?? 60) }));
             } else if (err instanceof ApiError && err.status === 403) {
               setError(t("login.scope"));
             } else if (err instanceof ApiError && err.status === 401) {
               setError(t("login.invalid"));
             } else {
-              setError(err instanceof Error ? err.message : String(err));
+              setError(errText(err));
             }
           } finally {
             setBusy(false);

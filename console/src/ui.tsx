@@ -2,7 +2,7 @@
 import type { ComponentChildren } from "preact";
 import { useCallback, useEffect, useRef, useState } from "preact/hooks";
 import { ApiError, type ApiResult } from "./api";
-import { t } from "./i18n";
+import { errorMessage, localizeServerText, t } from "./i18n";
 
 // ── Data loading ──
 
@@ -45,22 +45,45 @@ export function useLoad<T>(fn: () => Promise<T>, deps: readonly unknown[] = []):
 
 // ── Toasts ──
 
-type Toast = { id: number; text: string; kind: "ok" | "error" };
+type Toast = { id: number; text: string; kind: "ok" | "error"; timer: ReturnType<typeof setTimeout> | undefined };
 let toastId = 0;
 const toastListeners = new Set<(t: Toast[]) => void>();
 let toasts: Toast[] = [];
+/** At most this many toasts at once; the oldest goes first. */
+export const MAX_TOASTS = 3;
 
-export function notify(text: string, kind: "ok" | "error" = "ok"): void {
-  const toast = { id: ++toastId, text, kind };
-  toasts = [...toasts, toast].slice(-4);
+function publishToasts(): void {
   for (const fn of toastListeners) fn(toasts);
-  setTimeout(
-    () => {
-      toasts = toasts.filter((x) => x.id !== toast.id);
-      for (const fn of toastListeners) fn(toasts);
-    },
-    kind === "error" ? 8000 : 4000,
-  );
+}
+
+export function dismissToast(id: number): void {
+  const hit = toasts.find((x) => x.id === id);
+  if (hit?.timer) clearTimeout(hit.timer);
+  toasts = toasts.filter((x) => x.id !== id);
+  publishToasts();
+}
+
+/** Remove every toast (sign-out, tests). */
+export function clearToasts(): void {
+  for (const x of toasts) if (x.timer) clearTimeout(x.timer);
+  toasts = [];
+  publishToasts();
+}
+
+/**
+ * Show a toast. The same text again does not stack a second copy: the
+ * existing one moves to the end and its timer restarts (UI test U3).
+ */
+export function notify(text: string, kind: "ok" | "error" = "ok"): void {
+  const same = toasts.find((x) => x.text === text && x.kind === kind);
+  if (same?.timer) clearTimeout(same.timer);
+  const toast: Toast = { id: ++toastId, text, kind, timer: undefined };
+  toast.timer = setTimeout(() => dismissToast(toast.id), kind === "error" ? 8000 : 4000);
+  const rest = toasts.filter((x) => x !== same);
+  const dropped = rest.slice(0, Math.max(0, rest.length - (MAX_TOASTS - 1)));
+  for (const d of dropped) if (d.timer) clearTimeout(d.timer);
+  toasts = [...rest.slice(dropped.length), toast];
+  publishToasts();
 }
 
 export function Toasts() {
@@ -74,12 +97,21 @@ export function Toasts() {
   return (
     <div class="toasts" role="status" aria-live="polite">
       {list.map((x) => (
-        <div key={x.id} class={`toast ${x.kind}`}>
+        // biome-ignore lint/a11y/useKeyWithClickEvents lint/a11y/noStaticElementInteractions: optional click-to-dismiss; it also times out
+        <div key={x.id} class={`toast ${x.kind}`} title={t("dismiss")} onClick={() => dismissToast(x.id)}>
           {x.text}
         </div>
       ))}
     </div>
   );
+}
+
+/** The text to show for an error: an Admin API error by its code (zh / en), else its message. */
+export function errText(err: unknown): string {
+  if (err instanceof ApiError) {
+    return errorMessage(err.code, err.message, err.retryAfter !== undefined ? { retryAfter: err.retryAfter } : {});
+  }
+  return err instanceof Error ? err.message : String(err);
 }
 
 /** Toast for a successful write: "已生效 · 版本 #N" when it created a config version. */
@@ -97,22 +129,26 @@ export function fieldErrorsOf(err: unknown): FieldErrors {
   if (err instanceof ApiError) {
     for (const f of err.fields) {
       const top = f.path.split(".")[0] ?? f.path;
-      out[f.path] ??= f.message;
-      out[top] ??= f.message;
+      const msg = localizeServerText(f.message);
+      out[f.path] ??= msg;
+      out[top] ??= msg;
     }
   }
   return out;
 }
 
-/** Toast for a failed write; 409 → "已被修改，请刷新". Returns field errors for the form. */
+/**
+ * Toast for a failed write; 409 → "已被修改，请刷新". Returns field errors for
+ * the form. When the error names fields, the form shows each message next to
+ * its input and the toast only says to fix them (no duplicate text, U3).
+ */
 export function failed(err: unknown): FieldErrors {
   if (err instanceof ApiError && err.status === 409 && err.code === "revision_mismatch") {
     notify(t("conflict"), "error");
     return {};
   }
   const fields = fieldErrorsOf(err);
-  const msg = err instanceof Error ? err.message : String(err);
-  notify(Object.keys(fields).length > 0 ? (msg.split("\n")[0] ?? msg) : msg, "error");
+  notify(Object.keys(fields).length > 0 ? t("fixFields") : errText(err), "error");
   return fields;
 }
 
@@ -139,15 +175,31 @@ export function Field(props: {
   );
 }
 
-export function Drawer(props: { title: string; onClose: () => void; children: ComponentChildren; wide?: boolean }) {
-  useEscape(props.onClose);
+/** Close unless there are unsaved changes the user does not want to drop (U15). */
+function guardedClose(dirty: boolean | undefined, onClose: () => void): () => void {
+  return () => {
+    if (dirty && !confirm(t("unsavedConfirm"))) return;
+    onClose();
+  };
+}
+
+export function Drawer(props: {
+  title: string;
+  onClose: () => void;
+  children: ComponentChildren;
+  wide?: boolean;
+  /** Unsaved edits: Escape / backdrop / × ask before closing. */
+  dirty?: boolean;
+}) {
+  const close = guardedClose(props.dirty, props.onClose);
+  useEscape(close);
   return (
     // biome-ignore lint/a11y/useKeyWithClickEvents lint/a11y/noStaticElementInteractions: backdrop click; Escape closes too
-    <div class="overlay" onClick={(e) => e.target === e.currentTarget && props.onClose()}>
+    <div class="overlay" onClick={(e) => e.target === e.currentTarget && close()}>
       <aside class={`drawer${props.wide ? " wide" : ""}`} role="dialog" aria-label={props.title}>
         <header>
           <h2>{props.title}</h2>
-          <button type="button" class="ghost" onClick={props.onClose} aria-label={t("close")}>
+          <button type="button" class="ghost" onClick={close} aria-label={t("close")}>
             ×
           </button>
         </header>
@@ -157,15 +209,16 @@ export function Drawer(props: { title: string; onClose: () => void; children: Co
   );
 }
 
-export function Modal(props: { title: string; onClose: () => void; children: ComponentChildren }) {
-  useEscape(props.onClose);
+export function Modal(props: { title: string; onClose: () => void; children: ComponentChildren; dirty?: boolean }) {
+  const close = guardedClose(props.dirty, props.onClose);
+  useEscape(close);
   return (
     // biome-ignore lint/a11y/useKeyWithClickEvents lint/a11y/noStaticElementInteractions: backdrop click; Escape closes too
-    <div class="overlay center" onClick={(e) => e.target === e.currentTarget && props.onClose()}>
+    <div class="overlay center" onClick={(e) => e.target === e.currentTarget && close()}>
       <div class="modal" role="dialog" aria-label={props.title}>
         <header>
           <h2>{props.title}</h2>
-          <button type="button" class="ghost" onClick={props.onClose} aria-label={t("close")}>
+          <button type="button" class="ghost" onClick={close} aria-label={t("close")}>
             ×
           </button>
         </header>
@@ -191,12 +244,17 @@ export function Badge(props: { kind: "ok" | "warn" | "bad" | "muted"; children: 
 
 export function ErrorBox(props: { error: unknown }) {
   if (!props.error) return null;
-  const msg = props.error instanceof Error ? props.error.message : String(props.error);
+  const msg = errText(props.error);
   return (
     <p class="error-box" role="alert">
       {msg}
     </p>
   );
+}
+
+/** A table that scrolls sideways inside its own box instead of widening the page (B1 / B2). */
+export function TableWrap(props: { children: ComponentChildren; class?: string }) {
+  return <div class={`table-wrap${props.class ? ` ${props.class}` : ""}`}>{props.children}</div>;
 }
 
 export function Loading() {
@@ -236,8 +294,30 @@ export interface Series {
   values: number[];
 }
 
+/** Width of an element in CSS px, following resizes (charts draw at their real size so text stays 10px, U1). */
+function useWidth(fallback: number): [(el: HTMLDivElement | null) => void, number] {
+  const [w, setW] = useState(fallback);
+  const obs = useRef<ResizeObserver | null>(null);
+  const ref = useCallback((el: HTMLDivElement | null) => {
+    obs.current?.disconnect();
+    obs.current = null;
+    if (!el) return;
+    const measure = () => {
+      const px = Math.round(el.getBoundingClientRect().width);
+      if (px > 0) setW(px);
+    };
+    measure();
+    if (typeof ResizeObserver !== "undefined") {
+      obs.current = new ResizeObserver(measure);
+      obs.current.observe(el);
+    }
+  }, []);
+  return [ref, w];
+}
+
 export function LineChart(props: { labels: string[]; series: Series[]; height?: number }) {
-  const w = 640;
+  const [ref, measured] = useWidth(640);
+  const w = Math.max(240, measured);
   const h = props.height ?? 200;
   const pad = { l: 48, r: 12, t: 10, b: 24 };
   const n = props.labels.length;
@@ -245,10 +325,10 @@ export function LineChart(props: { labels: string[]; series: Series[]; height?: 
   const x = (i: number) => pad.l + (n <= 1 ? (w - pad.l - pad.r) / 2 : (i * (w - pad.l - pad.r)) / (n - 1));
   const y = (v: number) => pad.t + (h - pad.t - pad.b) * (1 - v / max);
   const ticks = [0, 0.5, 1].map((f) => Math.round(max * f));
-  const every = Math.max(1, Math.ceil(n / 8));
+  const every = Math.max(1, Math.ceil(n / Math.max(2, Math.floor(w / 70))));
   if (n === 0) return <p class="muted">{t("noData")}</p>;
   return (
-    <div class="chart">
+    <div class="chart" ref={ref}>
       <svg viewBox={`0 0 ${w} ${h}`} role="img" aria-label={props.series.map((s) => s.name).join(", ")}>
         {ticks.map((v) => (
           <g key={v}>

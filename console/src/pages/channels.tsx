@@ -2,7 +2,7 @@
 import { useEffect, useState } from "preact/hooks";
 import type { PageProps } from "../app";
 import { type Channel, type ChannelKey, type Model, type ModelMeta, ApiError, api, get } from "../api";
-import { fmtTime, t } from "../i18n";
+import { DICTIONARY, type MsgKey, fmtTime, t } from "../i18n";
 import {
   Badge,
   Drawer,
@@ -11,11 +11,93 @@ import {
   type FieldErrors,
   Loading,
   Modal,
+  TableWrap,
+  errText,
   failed,
   notify,
   savedToast,
   useLoad,
 } from "../ui";
+
+/** Key strategy code → "轮询 (round_robin)". */
+export function strategyOption(v: string): string {
+  const key = `ks.${v}`;
+  return DICTIONARY[key] ? `${t(key as MsgKey)} (${v})` : v;
+}
+
+function ipv4Private(host: string): boolean {
+  const m = host.match(/^(\d{1,3})\.(\d{1,3})\.(\d{1,3})\.(\d{1,3})$/);
+  if (!m) return false;
+  const [a, b] = [Number(m[1]), Number(m[2])];
+  return (
+    a === 0 ||
+    a === 10 ||
+    a === 127 ||
+    (a === 100 && b >= 64 && b <= 127) ||
+    (a === 169 && b === 254) ||
+    (a === 172 && b >= 16 && b <= 31) ||
+    (a === 192 && b === 168) ||
+    (a === 198 && (b === 18 || b === 19)) ||
+    a >= 224
+  );
+}
+
+function ipv6Private(host: string): boolean {
+  const h = host.replace(/^\[|\]$/g, "").toLowerCase();
+  if (!h.includes(":")) return false;
+  return h === "::" || h === "::1" || /^f[cd]/.test(h) || /^fe[89ab]/.test(h) || /^::ffff:/.test(h);
+}
+
+/**
+ * Client-side Base URL check before the key step (U3): the same rules the
+ * server enforces without DNS (public http(s) only). Returns the message key
+ * of the problem, or undefined. "" (preset default) is fine.
+ */
+export function baseUrlProblem(raw: string): MsgKey | undefined {
+  const v = raw.trim();
+  if (v === "") return undefined;
+  let u: URL;
+  try {
+    u = new URL(v);
+  } catch {
+    return "ch.urlInvalid";
+  }
+  if (u.protocol !== "https:" && u.protocol !== "http:") return "ch.urlScheme";
+  if (u.username !== "" || u.password !== "") return "ch.urlCreds";
+  const host = u.hostname.toLowerCase().replace(/\.$/, "");
+  if (host === "") return "ch.urlInvalid";
+  if (ipv4Private(host) || ipv6Private(host)) return "ch.urlPrivate";
+  if (/^\d+\.\d+\.\d+\.\d+$/.test(host) || host.startsWith("[")) return undefined;
+  if (
+    host === "localhost" ||
+    /\.(localhost|local|internal|home\.arpa|localdomain)$/.test(host) ||
+    !host.includes(".")
+  ) {
+    return "ch.urlLocal";
+  }
+  return undefined;
+}
+
+/** "sk-…6789" twice in one channel → "sk-…6789 · 第 2 个" for the second one (U5). */
+export function keyHints(keys: readonly ChannelKey[]): Map<string, string> {
+  const count = new Map<string, number>();
+  for (const k of keys) count.set(k.hint, (count.get(k.hint) ?? 0) + 1);
+  const seen = new Map<string, number>();
+  const out = new Map<string, string>();
+  for (const k of keys) {
+    if ((count.get(k.hint) ?? 0) < 2) {
+      out.set(k.id, k.hint);
+      continue;
+    }
+    const n = (seen.get(k.hint) ?? 0) + 1;
+    seen.set(k.hint, n);
+    out.set(k.id, `${k.hint} · ${t("ch.dupHint", { n })}`);
+  }
+  return out;
+}
+
+/** Last test result per channel, kept while the console is open (U4: not lost when the list reloads). */
+const lastLatency: Record<string, string> = {};
 
 export type KeyState = "ok" | "cooling" | "disabled";
 
@@ -62,7 +144,7 @@ export function BalanceCell(props: { channel: Channel }) {
     try {
       setB(await get<Balance>(`/channels/${encodeURIComponent(props.channel.id)}/balance`));
     } catch (err) {
-      setB({ supported: true, ok: false, error: err instanceof Error ? err.message : String(err) });
+      setB({ supported: true, ok: false, error: errText(err) });
     } finally {
       setBusy(false);
     }
@@ -77,17 +159,31 @@ export function BalanceCell(props: { channel: Channel }) {
   if (!b.supported) return <span class="muted">—</span>;
   if (!b.ok)
     return (
-      <span class="muted" title={b.error}>
+      <span class="muted">
         ⚠{" "}
         <button type="button" class="link" onClick={() => void load()}>
           {t("refresh")}
         </button>
+        {b.error ? (
+          <div class="small error-text" title={b.error}>
+            {t("ch.balanceFailed", { e: b.error.length > 60 ? `${b.error.slice(0, 57)}…` : b.error })}
+          </div>
+        ) : null}
       </span>
     );
   return (
-    <span title={t("ch.balanceHint")}>
+    <span title={t("ch.balanceHint")} class="nowrap">
       {(b.balances ?? []).map((x) => `${x.total} ${x.currency}`).join(" · ") || "—"}
-      {b.available === false ? <Badge kind="bad">!</Badge> : null}
+      {b.available === false ? <Badge kind="bad">!</Badge> : null}{" "}
+      <button
+        type="button"
+        class="link small"
+        onClick={() => void load()}
+        aria-label={t("refresh")}
+        title={t("refresh")}
+      >
+        ↻
+      </button>
     </span>
   );
 }
@@ -96,7 +192,13 @@ export function ChannelsPage(props: PageProps) {
   const list = useLoad(() => get<{ data: Channel[]; readOnly?: boolean }>("/channels"));
   const [editing, setEditing] = useState<string | null>(null);
   const [adding, setAdding] = useState(false);
-  const [latency, setLatency] = useState<Record<string, string>>({});
+  const [latency, setLatencyState] = useState<Record<string, string>>({ ...lastLatency });
+  const setLatency = (fn: (l: Record<string, string>) => Record<string, string>) =>
+    setLatencyState((l) => {
+      const next = fn(l);
+      Object.assign(lastLatency, next);
+      return next;
+    });
   const canWrite = props.canWrite && list.data?.readOnly !== true;
 
   const test = async (ch: Channel) => {
@@ -111,7 +213,7 @@ export function ChannelsPage(props: PageProps) {
         [ch.id]: r.data.ok ? t("ch.testOk", { ms: r.data.latencyMs }) : t("ch.testFail", { e: r.data.error ?? "" }),
       }));
     } catch (err) {
-      setLatency((l) => ({ ...l, [ch.id]: t("ch.testFail", { e: err instanceof Error ? err.message : "" }) }));
+      setLatency((l) => ({ ...l, [ch.id]: t("ch.testFail", { e: errText(err) }) }));
     }
   };
 
@@ -131,78 +233,89 @@ export function ChannelsPage(props: PageProps) {
       {list.loading && !list.data ? (
         <Loading />
       ) : (
-        <table class="card">
-          <thead>
-            <tr>
-              <th>{t("name")}</th>
-              <th>{t("ch.preset")}</th>
-              <th>{t("status")}</th>
-              <th>{t("ch.keys")}</th>
-              <th>{t("ch.latency")}</th>
-              <th>{t("ch.balance")}</th>
-              <th>{t("actions")}</th>
-            </tr>
-          </thead>
-          <tbody>
-            {(list.data?.data ?? []).map((ch) => (
-              <tr key={ch.id}>
-                <td>
-                  <strong>{ch.name}</strong>
-                  <div class="muted small">{ch.effectiveBaseURL}</div>
-                </td>
-                <td>{ch.preset}</td>
-                <td>
-                  <span class={`dot ${ch.enabled ? "ok" : "muted"}`} />
-                  {ch.enabled ? t("enabled") : t("disabled")}
-                </td>
-                <td>
-                  {ch.keys.length === 0 ? <span class="muted">{t("none")}</span> : null}
-                  {ch.keys.map((k) => (
-                    <span key={k.id} class="keychip" title={k.lastError ?? ""}>
-                      <code>{k.hint}</code> <KeyBadge k={k} />
-                    </span>
-                  ))}
-                </td>
-                <td class="small">{latency[ch.id] ?? "—"}</td>
-                <td>
-                  <BalanceCell channel={ch} />
-                </td>
-                <td class="nowrap">
-                  {canWrite ? (
-                    <button type="button" onClick={() => void test(ch)}>
-                      {t("ch.test")}
-                    </button>
-                  ) : null}{" "}
-                  <button type="button" onClick={() => setEditing(ch.id)}>
-                    {t("edit")}
-                  </button>{" "}
-                  {canWrite ? (
-                    <button
-                      type="button"
-                      class="danger"
-                      onClick={async () => {
-                        if (!confirm(t("confirmDelete", { name: ch.name }))) return;
-                        try {
-                          savedToast(
-                            await api(`/channels/${encodeURIComponent(ch.id)}`, {
-                              method: "DELETE",
-                              revision: ch.revision,
-                            }),
-                          );
-                          list.reload();
-                        } catch (err) {
-                          failed(err);
-                        }
-                      }}
-                    >
-                      {t("delete")}
-                    </button>
-                  ) : null}
-                </td>
+        <TableWrap>
+          <table class="card">
+            <thead>
+              <tr>
+                <th>{t("name")}</th>
+                <th>{t("ch.preset")}</th>
+                <th>{t("status")}</th>
+                <th>{t("ch.keys")}</th>
+                <th>{t("ch.latency")}</th>
+                <th>{t("ch.balance")}</th>
+                <th>{t("actions")}</th>
               </tr>
-            ))}
-          </tbody>
-        </table>
+            </thead>
+            <tbody>
+              {(list.data?.data ?? []).map((ch) => (
+                <tr key={ch.id}>
+                  <td>
+                    <strong>{ch.name}</strong>
+                    <div class="muted small">{ch.effectiveBaseURL}</div>
+                  </td>
+                  <td>{ch.preset}</td>
+                  <td class="nowrap">
+                    <span class={`dot ${ch.enabled ? "ok" : "muted"}`} />
+                    {ch.enabled ? t("enabled") : t("disabled")}
+                  </td>
+                  <td>
+                    {ch.keys.length === 0 ? <span class="muted">{t("none")}</span> : null}
+                    {(() => {
+                      const hints = keyHints(ch.keys);
+                      return ch.keys.map((k) => (
+                        <span key={k.id} class="keychip" title={k.lastError ?? ""}>
+                          <code>{hints.get(k.id)}</code> <KeyBadge k={k} />
+                        </span>
+                      ));
+                    })()}
+                  </td>
+                  <td class="small">
+                    {latency[ch.id] ?? (
+                      <span class="muted" title={t("ch.testNever")}>
+                        —
+                      </span>
+                    )}
+                  </td>
+                  <td>
+                    <BalanceCell channel={ch} />
+                  </td>
+                  <td class="nowrap">
+                    {canWrite ? (
+                      <button type="button" onClick={() => void test(ch)}>
+                        {t("ch.test")}
+                      </button>
+                    ) : null}{" "}
+                    <button type="button" onClick={() => setEditing(ch.id)}>
+                      {canWrite ? t("edit") : t("view")}
+                    </button>{" "}
+                    {canWrite ? (
+                      <button
+                        type="button"
+                        class="danger"
+                        onClick={async () => {
+                          if (!confirm(t("confirmDelete", { name: ch.name }))) return;
+                          try {
+                            savedToast(
+                              await api(`/channels/${encodeURIComponent(ch.id)}`, {
+                                method: "DELETE",
+                                revision: ch.revision,
+                              }),
+                            );
+                            list.reload();
+                          } catch (err) {
+                            failed(err);
+                          }
+                        }}
+                      >
+                        {t("delete")}
+                      </button>
+                    ) : null}
+                  </td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </TableWrap>
       )}
       {editing ? (
         <ChannelDrawer
@@ -258,18 +371,24 @@ function ChannelDrawer(props: { id: string; canWrite: boolean; onClose: () => vo
   const [reKeys, setReKeys] = useState("");
   const c = ch.data;
   const needKeys = c ? needsKeysForBaseURL(c.baseURL, String(form["baseURL"] ?? ""), c.keys.length) : false;
+  const initialForm = (x: Channel): Record<string, string | boolean> => ({
+    name: x.name,
+    baseURL: x.baseURL ?? "",
+    enabled: x.enabled,
+    priority: String(x.priority),
+    keyStrategy: x.keyStrategy,
+    keyCooldownSeconds: x.keyCooldownSeconds === null ? "" : String(x.keyCooldownSeconds),
+    models: x.models.join("\n"),
+  });
   useEffect(() => {
     if (!c) return;
-    setForm({
-      name: c.name,
-      baseURL: c.baseURL ?? "",
-      enabled: c.enabled,
-      priority: String(c.priority),
-      keyStrategy: c.keyStrategy,
-      keyCooldownSeconds: c.keyCooldownSeconds === null ? "" : String(c.keyCooldownSeconds),
-      models: c.models.join("\n"),
-    });
+    setForm(initialForm(c));
   }, [c]);
+  const dirty =
+    props.canWrite &&
+    c !== undefined &&
+    Object.keys(form).length > 0 &&
+    (JSON.stringify(form) !== JSON.stringify(initialForm(c)) || reKeys.trim() !== "" || newKeys.trim() !== "");
   const set = (k: string) => (e: Event) => {
     const el = e.currentTarget as HTMLInputElement;
     setForm((f) => ({ ...f, [k]: el.type === "checkbox" ? el.checked : el.value }));
@@ -291,7 +410,7 @@ function ChannelDrawer(props: { id: string; canWrite: boolean; onClose: () => vo
     }
   };
   return (
-    <Drawer title={c?.name ?? t("loading")} onClose={props.onClose} wide>
+    <Drawer title={c?.name ?? t("loading")} onClose={props.onClose} wide dirty={dirty}>
       <ErrorBox error={ch.error} />
       {!c ? (
         <Loading />
@@ -301,7 +420,6 @@ function ChannelDrawer(props: { id: string; canWrite: boolean; onClose: () => vo
             class="grid2"
             onSubmit={async (e) => {
               e.preventDefault();
-              const cd = String(form["keyCooldownSeconds"] ?? "");
               const apiKeys = reKeys
                 .split("\n")
                 .map((s) => s.trim())
@@ -311,19 +429,31 @@ function ChannelDrawer(props: { id: string; canWrite: boolean; onClose: () => vo
                 setErrors({ apiKeys: t("ch.rekeyRequired") });
                 return;
               }
-              const body = {
-                name: form["name"],
-                baseURL: String(form["baseURL"] ?? "") === "" ? null : form["baseURL"],
-                enabled: form["enabled"],
-                priority: Number(form["priority"]),
-                keyStrategy: form["keyStrategy"],
+              const toBody = (fm: Record<string, string | boolean>) => ({
+                name: fm["name"],
+                baseURL: String(fm["baseURL"] ?? "") === "" ? null : fm["baseURL"],
+                enabled: fm["enabled"],
+                priority: Number(fm["priority"]),
+                keyStrategy: fm["keyStrategy"],
                 // Cleared = null: back to the default (30 s). Omitting it kept the old value (review 2026-11-02 U4).
-                keyCooldownSeconds: cd.trim() === "" ? null : Number(cd),
-                models: String(form["models"] ?? "")
+                keyCooldownSeconds:
+                  String(fm["keyCooldownSeconds"] ?? "").trim() === "" ? null : Number(fm["keyCooldownSeconds"]),
+                models: String(fm["models"] ?? "")
                   .split(/\s*[\n,]\s*/)
                   .filter(Boolean),
-                ...(needKeys ? { apiKeys } : {}),
-              };
+              });
+              // Only the changed fields (U9: the version summary names just those).
+              const now = toBody(form);
+              const was = toBody(initialForm(c));
+              const body: Record<string, unknown> = {};
+              for (const [k, v] of Object.entries(now)) {
+                if (JSON.stringify(v) !== JSON.stringify((was as Record<string, unknown>)[k])) body[k] = v;
+              }
+              if (needKeys) body["apiKeys"] = apiKeys;
+              if (Object.keys(body).length === 0) {
+                notify(t("noChanges"));
+                return;
+              }
               try {
                 const r = await api(`/channels/${encodeURIComponent(c.id)}`, {
                   method: "PATCH",
@@ -386,9 +516,11 @@ function ChannelDrawer(props: { id: string; canWrite: boolean; onClose: () => vo
                 onChange={set("keyStrategy")}
                 disabled={!props.canWrite}
               >
-                <option value="round_robin">round_robin</option>
-                <option value="weighted">weighted</option>
-                <option value="fill_first">fill_first</option>
+                {["round_robin", "weighted", "fill_first"].map((v) => (
+                  <option key={v} value={v}>
+                    {strategyOption(v)}
+                  </option>
+                ))}
               </select>
             </Field>
             <Field label={t("ch.cooldown")} error={errors["keyCooldownSeconds"]}>
@@ -430,72 +562,74 @@ function ChannelDrawer(props: { id: string; canWrite: boolean; onClose: () => vo
 
           <section>
             <h3>{t("ch.keys")}</h3>
-            <table>
-              <thead>
-                <tr>
-                  <th>key</th>
-                  <th>{t("status")}</th>
-                  <th>{t("ch.weight")}</th>
-                  <th>{t("ch.lastError")}</th>
-                  <th>{t("actions")}</th>
-                </tr>
-              </thead>
-              <tbody>
-                {c.keys.map((k) => (
-                  <tr key={k.id}>
-                    <td>
-                      <code>{k.hint}</code>
-                      {k.kind === "env_ref" ? <span class="muted small"> env</span> : null}
-                    </td>
-                    <td>
-                      <KeyBadge k={k} />
-                      {k.cooldownUntil ? <div class="muted small">→ {fmtTime(k.cooldownUntil)}</div> : null}
-                    </td>
-                    <td>
-                      <input
-                        class="narrow"
-                        type="number"
-                        min="0"
-                        value={String(k.weight)}
-                        disabled={!props.canWrite}
-                        onChange={(e) =>
-                          void keyOp(`/keys/${k.id}`, "PATCH", {
-                            weight: Number((e.currentTarget as HTMLInputElement).value),
-                          })
-                        }
-                      />
-                    </td>
-                    <td class="small">{k.lastError ? `${k.lastError} (${fmtTime(k.lastErrorAt)})` : "—"}</td>
-                    <td class="nowrap">
-                      {props.canWrite ? (
-                        <>
-                          <button
-                            type="button"
-                            onClick={() =>
-                              void keyOp(
-                                `/keys/${k.id}/${k.enabled && k.status === "ok" ? "disable" : "enable"}`,
-                                "POST",
-                              )
-                            }
-                          >
-                            {k.enabled && k.status === "ok" ? t("ch.disable") : t("ch.enable")}
-                          </button>{" "}
-                          <button
-                            type="button"
-                            class="danger"
-                            onClick={() =>
-                              confirm(t("confirmDelete", { name: k.hint })) && void keyOp(`/keys/${k.id}`, "DELETE")
-                            }
-                          >
-                            {t("delete")}
-                          </button>
-                        </>
-                      ) : null}
-                    </td>
+            <TableWrap>
+              <table>
+                <thead>
+                  <tr>
+                    <th>{t("ch.keys")}</th>
+                    <th>{t("status")}</th>
+                    <th>{t("ch.weight")}</th>
+                    <th>{t("ch.lastError")}</th>
+                    <th>{t("actions")}</th>
                   </tr>
-                ))}
-              </tbody>
-            </table>
+                </thead>
+                <tbody>
+                  {c.keys.map((k) => (
+                    <tr key={k.id}>
+                      <td class="nowrap">
+                        <code>{keyHints(c.keys).get(k.id)}</code>
+                        {k.kind === "env_ref" ? <span class="muted small"> env</span> : null}
+                      </td>
+                      <td>
+                        <KeyBadge k={k} />
+                        {k.cooldownUntil ? <div class="muted small">→ {fmtTime(k.cooldownUntil)}</div> : null}
+                      </td>
+                      <td>
+                        <input
+                          class="narrow"
+                          type="number"
+                          min="0"
+                          value={String(k.weight)}
+                          disabled={!props.canWrite}
+                          onChange={(e) =>
+                            void keyOp(`/keys/${k.id}`, "PATCH", {
+                              weight: Number((e.currentTarget as HTMLInputElement).value),
+                            })
+                          }
+                        />
+                      </td>
+                      <td class="small">{k.lastError ? `${k.lastError} (${fmtTime(k.lastErrorAt)})` : "—"}</td>
+                      <td class="nowrap">
+                        {props.canWrite ? (
+                          <>
+                            <button
+                              type="button"
+                              onClick={() =>
+                                void keyOp(
+                                  `/keys/${k.id}/${k.enabled && k.status === "ok" ? "disable" : "enable"}`,
+                                  "POST",
+                                )
+                              }
+                            >
+                              {k.enabled && k.status === "ok" ? t("ch.disable") : t("ch.enable")}
+                            </button>{" "}
+                            <button
+                              type="button"
+                              class="danger"
+                              onClick={() =>
+                                confirm(t("confirmDelete", { name: k.hint })) && void keyOp(`/keys/${k.id}`, "DELETE")
+                              }
+                            >
+                              {t("delete")}
+                            </button>
+                          </>
+                        ) : null}
+                      </td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </TableWrap>
             {props.canWrite ? (
               <form
                 class="inline-form"
@@ -547,6 +681,16 @@ export function AddChannelWizard(props: { onClose: () => void }) {
   const [selected, setSelected] = useState<Record<string, string>>({});
   const [busy, setBusy] = useState(false);
   const p = presets.data?.data.find((x) => x.id === preset);
+  const urlProblem = baseUrlProblem(baseURL);
+  const toKeys = () => {
+    const bad = baseUrlProblem(baseURL);
+    if (bad) {
+      setErrors({ baseURL: t(bad) });
+      return;
+    }
+    setErrors({});
+    setStep(2);
+  };
 
   const create = async () => {
     setBusy(true);
@@ -668,7 +812,11 @@ export function AddChannelWizard(props: { onClose: () => void }) {
 
   const steps = ["ch.step1", "ch.step2", "ch.step3", "ch.step4", "ch.step5"] as const;
   return (
-    <Modal title={t("ch.add")} onClose={props.onClose}>
+    <Modal
+      title={t("ch.add")}
+      onClose={props.onClose}
+      dirty={channel === null && (name !== "" || baseURL !== "" || keys.trim() !== "")}
+    >
       <ol class="steps">
         {steps.map((s, i) => (
           <li key={s} class={i + 1 === step ? "active" : i + 1 < step ? "done" : ""}>
@@ -697,11 +845,22 @@ export function AddChannelWizard(props: { onClose: () => void }) {
               onInput={(e) => setName((e.currentTarget as HTMLInputElement).value)}
             />
           </Field>
-          <Field label={t("ch.baseURL")} error={errors["baseURL"]} hint={t("ch.baseURLHint")}>
+          <Field
+            label={t("ch.baseURL")}
+            error={errors["baseURL"]}
+            hint={/^http:\/\//i.test(baseURL.trim()) && !urlProblem ? t("ch.urlHttp") : t("ch.baseURLHint")}
+          >
             <input
               value={baseURL}
               placeholder={p?.baseURL ?? "https://…/v1"}
-              onInput={(e) => setBaseURL((e.currentTarget as HTMLInputElement).value)}
+              onInput={(e) => {
+                setBaseURL((e.currentTarget as HTMLInputElement).value);
+                if (errors["baseURL"]) setErrors(({ baseURL: _drop, ...rest }) => rest);
+              }}
+              onBlur={() => {
+                const bad = baseUrlProblem(baseURL);
+                if (bad) setErrors((x) => ({ ...x, baseURL: t(bad) }));
+              }}
             />
           </Field>
           <div class="actions">
@@ -709,7 +868,7 @@ export function AddChannelWizard(props: { onClose: () => void }) {
               type="button"
               class="primary"
               disabled={p?.baseURLRequired === true && baseURL === ""}
-              onClick={() => setStep(2)}
+              onClick={toKeys}
             >
               {t("next")}
             </button>
@@ -729,9 +888,11 @@ export function AddChannelWizard(props: { onClose: () => void }) {
           </Field>
           <Field label={t("ch.keyStrategy")}>
             <select value={keyStrategy} onChange={(e) => setKeyStrategy((e.currentTarget as HTMLSelectElement).value)}>
-              <option value="round_robin">round_robin</option>
-              <option value="weighted">weighted</option>
-              <option value="fill_first">fill_first</option>
+              {["round_robin", "weighted", "fill_first"].map((v) => (
+                <option key={v} value={v}>
+                  {strategyOption(v)}
+                </option>
+              ))}
             </select>
           </Field>
           <div class="actions">

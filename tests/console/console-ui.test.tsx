@@ -95,7 +95,8 @@ describe("sign-in", () => {
     await settle();
     el.querySelector("form")!.dispatchEvent(new Event("submit", { bubbles: true, cancelable: true }));
     await settle(40);
-    expect(el.textContent).toContain("120 秒");
+    // U12: minutes, not "120 秒".
+    expect(el.textContent).toContain("请 2 分钟后再试");
   });
 });
 
@@ -265,14 +266,20 @@ describe("review 2026-11-02 U2 / U5", () => {
       />,
     );
     await settle(40);
+    // Change one field and one binding: both go out together, and nothing else (UI test U9).
+    const display = el.querySelectorAll<HTMLInputElement>(".grid2 input")[1]!;
+    type(display, "Model One");
+    const weight = el.querySelector<HTMLInputElement>("table.bindings input.narrow")!;
+    type(weight, "3");
+    await settle();
     el.querySelector("form")!.dispatchEvent(new Event("submit", { bubbles: true, cancelable: true }));
     await settle(40);
     const writes = dom.calls.filter((c) => c.method !== "GET");
     expect(writes.map((c) => `${c.method} ${c.path}`)).toEqual(["PATCH /admin/models/mdl1"]);
     expect(writes[0]!.headers["if-match"]).toBe('"5"');
-    expect(writes[0]!.body).toMatchObject({
-      name: "m1",
-      bindings: [{ channelId: "ch1", upstreamModel: "up-1", priority: 0, weight: 1, enabled: true }],
+    expect(writes[0]!.body).toEqual({
+      displayName: "Model One",
+      bindings: [{ channelId: "ch1", upstreamModel: "up-1", priority: 0, weight: 3, enabled: true }],
     });
     expect(closed).toBe(true);
   });
@@ -392,5 +399,180 @@ describe("helpers", () => {
     expect(mod.settings.withRateLimit(daily, null, null)).toEqual([
       { name: "rate_limit", stage: "before_request", config: { maxRequestsPerDay: 100 } },
     ]);
+  });
+});
+
+describe("UI test 2026-11-05 fixes", () => {
+  it("U3: toasts are de-duplicated and capped at 3", async () => {
+    const ui = await import("../../console/src/ui");
+    ui.clearToasts();
+    const el = mount(<ui.Toasts />);
+    await settle();
+    ui.notify("same", "error");
+    ui.notify("same", "error");
+    ui.notify("same", "error");
+    await settle();
+    expect(el.querySelectorAll(".toast").length).toBe(1);
+    for (const n of [1, 2, 3, 4, 5]) ui.notify(`t${n}`);
+    await settle();
+    const texts = [...el.querySelectorAll(".toast")].map((x) => x.textContent);
+    expect(texts).toEqual(["t3", "t4", "t5"]);
+    (el.querySelector(".toast") as HTMLElement).click();
+    await settle();
+    expect(el.querySelectorAll(".toast").length).toBe(2);
+  });
+
+  it("U3: the wizard checks the Base URL before the key step", () => {
+    const p = mod.channels.baseUrlProblem;
+    expect(p("")).toBeUndefined();
+    expect(p("https://api.deepseek.com/v1")).toBeUndefined();
+    expect(p("http://8.8.8.8/v1")).toBeUndefined();
+    expect(p("api.example.com")).toBe("ch.urlInvalid");
+    expect(p("ftp://api.example.com")).toBe("ch.urlScheme");
+    expect(p("https://u:p@api.example.com")).toBe("ch.urlCreds");
+    for (const local of ["http://localhost:11434/v1", "http://ollama.local/v1", "http://gpu-box/v1"]) {
+      expect(p(local)).toBe("ch.urlLocal");
+    }
+    for (const priv of ["http://127.0.0.1/v1", "http://10.1.2.3/v1", "http://192.168.1.5/v1", "http://[::1]/v1"]) {
+      expect(p(priv)).toBe("ch.urlPrivate");
+    }
+  });
+
+  it("U2: server errors are shown by code in the console's language, else as sent", () => {
+    const { errorMessage, setLang } = mod.i18n;
+    setLang("zh");
+    expect(
+      errorMessage("channel_in_use", 'the channel is bound by model(s) "a", "b"; remove those bindings first'),
+    ).toBe("该渠道仍被模型 “a”、“b” 绑定，请先移除这些绑定");
+    expect(errorMessage("name_taken", 'a model named "m1" already exists')).toBe("名称“m1”已被占用");
+    expect(errorMessage("invalid_request", "from must not be after to")).toBe("开始日期不能晚于结束日期");
+    expect(errorMessage("date_range_inverted", "from must not be after to")).toBe("开始日期不能晚于结束日期");
+    expect(errorMessage("auth_locked", "x", { retryAfter: 900 })).toBe("失败次数过多，请 15 分钟后再试");
+    expect(
+      errorMessage(
+        "unsafe_base_url",
+        "baseURL points to a private address (10.0.0.0/8); only public internet addresses are allowed",
+      ),
+    ).toBe("Base URL 不被允许：指向非公网地址（private address (10.0.0.0/8)），只允许公网地址");
+    expect(errorMessage("brand_new_code", "Something new")).toBe("Something new");
+    setLang("en");
+    expect(errorMessage("name_taken", 'a model named "m1" already exists')).toBe('The name "m1" is already taken');
+    setLang("zh");
+  });
+
+  it("U2: no Chinese-mode string is left in English except technical terms", () => {
+    const allowed = new Set(["Base URL", "RPM", "TPM", "logprobs", "IP", "key"]);
+    for (const table of [mod.i18n.DICTIONARY, ...Object.values(mod.i18n.LABEL_TABLES)]) {
+      for (const [k, [zh, en]] of Object.entries(table)) {
+        if (allowed.has(zh)) continue;
+        expect(zh === en && /[A-Za-z]{3}/.test(zh), `${k}: "${zh}"`).toBe(false);
+      }
+    }
+  });
+
+  it("U9: version summaries and diffs are readable; internal columns hidden, secrets masked", async () => {
+    const vf = await import("../../console/src/versions-format");
+    expect(vf.summaryText('Update model "fake-slow" (name, displayName)')).toBe("修改模型“fake-slow”（名称、显示名）");
+    expect(vf.summaryText("Roll back to config version 16")).toBe("回滚到配置版本 #16");
+    expect(vf.summaryText('disable key sk-…6789 on channel "alpha"')).toBe("停用 key sk-…6789（渠道“alpha”）");
+    expect(vf.summaryText("Something the console does not know")).toBe("Something the console does not know");
+    const snap = (weight: number) => ({
+      format: 2,
+      channels: [
+        {
+          id: "ch_1",
+          name: "alpha",
+          base_url: "https://a.example/v1",
+          enabled: 1,
+          settings_json: '{"keyStrategy":"weighted"}',
+          revision: weight,
+          updated_at: String(weight),
+        },
+      ],
+      keys: [{ id: "chk_1", channel_id: "ch_1", hint: "sk-…aaaa", enabled: 1, status: "ok", weight, position: 0 }],
+      models: [{ id: "mdl_1", name: "m", enabled: 1, metadata_json: "{}", routing_json: '{"strategy":"fallback"}' }],
+      bindings: [
+        {
+          id: "bnd_1",
+          model_id: "mdl_1",
+          channel_id: "ch_1",
+          upstream_model: "up",
+          priority: 0,
+          weight,
+          enabled: 1,
+          overrides_json: "{}",
+        },
+      ],
+      settings: [{ key: "aliases", value_json: '{"x":"m"}' }],
+      meta: { models_explicit: "1" },
+    });
+    const d = vf.readableDiff(snap(1), snap(2));
+    expect(d.map((x) => vf.pathText(x.segs))).toEqual([
+      "渠道 › alpha › 上游 key › sk-…aaaa › 权重",
+      "模型 › m › 绑定 › alpha → up › 权重",
+    ]);
+    const text = JSON.stringify(
+      vf.readableSnapshot({
+        ...snap(1),
+        channels: [{ ...snap(1).channels[0]!, api_key: "sk-live-abcdefghijkl" }],
+      }),
+    );
+    expect(text).not.toContain("sk-live-abcdefghijkl");
+    expect(text).not.toMatch(/ch_1|bnd_1|revision|updated_at|_json/);
+    const pairs = vf.auditPairs({ changed: ["name", "rpm"], token: "fgw_0123456789abcdef" });
+    expect(pairs).toEqual([
+      { label: "修改的字段", value: "名称, RPM" },
+      { label: "token", value: "fgw…cdef" },
+    ]);
+  });
+
+  it("U11: Enter sends, Shift+Enter and IME composition do not", async () => {
+    const pg = await import("../../console/src/pages/playground");
+    const k = (o: Partial<KeyboardEvent>) => ({ key: "Enter", shiftKey: false, isComposing: false, keyCode: 13, ...o });
+    expect(pg.isSendKey(k({}))).toBe(true);
+    expect(pg.isSendKey(k({ shiftKey: true }))).toBe(false);
+    expect(pg.isSendKey(k({ isComposing: true }))).toBe(false);
+    expect(pg.isSendKey(k({ keyCode: 229 }))).toBe(false);
+    expect(pg.isSendKey(k({ key: "a" }))).toBe(false);
+  });
+
+  it("B6: a bad usage query is caught before the request, in Chinese", async () => {
+    const u = await import("../../console/src/pages/usage");
+    expect(u.usageProblem("2026-11-06", "2026-11-01", "UTC")).toBe("开始日期不能晚于结束日期");
+    expect(u.usageProblem("2026-11-01", "2026-11-06", "Mars/Base")).toContain("不是有效的时区");
+    expect(u.usageProblem("2026-11-01", "2026-11-06", "Asia/Shanghai")).toBeUndefined();
+  });
+
+  it("U6 / U8: loadbalance bindings are one weighted set; logs show key names", async () => {
+    const g = mod.models.bindingGroups({
+      strategy: "loadbalance",
+      bindings: [
+        { channel: "a", upstreamModel: "x", priority: 0, weight: 3 },
+        { channel: "b", upstreamModel: "y", priority: 1, weight: 1 },
+      ],
+    });
+    expect(g.balanced).toBe(true);
+    expect(g.groups).toHaveLength(1);
+    expect(g.groups[0]!.map((b) => b.share)).toEqual([75, 25]);
+    const f = mod.models.bindingGroups({
+      strategy: "fallback",
+      bindings: [
+        { channel: "a", upstreamModel: "x", priority: 0 },
+        { channel: "b", upstreamModel: "y", priority: 1 },
+      ],
+    });
+    expect(f.groups).toHaveLength(2);
+    const logs = await import("../../console/src/pages/logs");
+    const names = new Map([["644fb848-0555-4d00-bf31-2d18413d0545", "probe-all"]]);
+    expect(logs.keyLabel({ keyId: "644fb848-0555-4d00-bf31-2d18413d0545" }, names)).toBe("probe-all");
+    expect(logs.keyLabel({ keyId: "644fb848-0555-4d00-bf31-2d18413d0545", keyName: "srv" }, names)).toBe("srv");
+    expect(logs.keyLabel({ keyId: "11111111-2222-3333-4444-555555555555" }, names)).toBe("11111111");
+    expect(logs.keyLabel({ keyId: "console-playground", keyKind: "console" }, names)).toBe("控制台调试台");
+  });
+
+  it("U5: two keys with the same last four characters are told apart", () => {
+    const k = (id: string, hint: string) => ({ id, hint }) as never;
+    const hints = mod.channels.keyHints([k("a", "sk-…6789"), k("b", "sk-…6789"), k("c", "sk-…aaaa")]);
+    expect([...hints.values()]).toEqual(["sk-…6789 · 第 1 个", "sk-…6789 · 第 2 个", "sk-…aaaa"]);
   });
 });

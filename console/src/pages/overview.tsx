@@ -1,7 +1,7 @@
 /** 概览: request / token / error trends and channel health. */
 import { type Channel, type UsageReport, get } from "../api";
-import { fmtNum, t } from "../i18n";
-import { Badge, ErrorBox, LineChart, Loading, browserTz, dateRange, todayIn, useLoad } from "../ui";
+import { DICTIONARY, fmtNum, type MsgKey, t } from "../i18n";
+import { Badge, ErrorBox, LineChart, Loading, TableWrap, browserTz, dateRange, todayIn, useLoad } from "../ui";
 import { keyState } from "./channels";
 
 interface Status {
@@ -12,6 +12,12 @@ interface Status {
 }
 
 const DAYS = 14;
+
+/** Circuit breaker state → label (closed / open / half-open; unknown states as sent). */
+export function breakerLabel(state: string): string {
+  const key = `breaker.${state.replace("-", "_")}`;
+  return DICTIONARY[key] ? t(key as MsgKey) : state;
+}
 
 export function OverviewPage() {
   const tz = browserTz();
@@ -105,53 +111,57 @@ export function OverviewPage() {
         {channels.loading ? (
           <Loading />
         ) : (
-          <table>
-            <thead>
-              <tr>
-                <th>{t("name")}</th>
-                <th>{t("status")}</th>
-                <th>{t("ov.breaker")}</th>
-                <th>{t("ov.keys")}</th>
-              </tr>
-            </thead>
-            <tbody>
-              {(channels.data?.data ?? []).map((ch) => {
-                const breaker = status.data?.circuitBreakers[ch.name] ?? "closed";
-                const counts = { ok: 0, cooling: 0, disabled: 0 };
-                for (const k of ch.keys) counts[keyState(k)]++;
-                return (
-                  <tr key={ch.id}>
-                    <td>{ch.name}</td>
-                    <td>
-                      {ch.enabled ? (
-                        <Badge kind="ok">{t("enabled")}</Badge>
-                      ) : (
-                        <Badge kind="muted">{t("disabled")}</Badge>
-                      )}
-                    </td>
-                    <td>
-                      <Badge kind={breaker === "closed" ? "ok" : breaker === "open" ? "bad" : "warn"}>{breaker}</Badge>
-                    </td>
-                    <td>
-                      <Badge kind="ok">
-                        {t("ch.keyStatus.ok")} {counts.ok}
-                      </Badge>{" "}
-                      {counts.cooling > 0 ? (
-                        <Badge kind="warn">
-                          {t("ch.keyStatus.cooling")} {counts.cooling}
+          <TableWrap>
+            <table>
+              <thead>
+                <tr>
+                  <th>{t("name")}</th>
+                  <th>{t("status")}</th>
+                  <th>{t("ov.breaker")}</th>
+                  <th>{t("ov.keys")}</th>
+                </tr>
+              </thead>
+              <tbody>
+                {(channels.data?.data ?? []).map((ch) => {
+                  const breaker = status.data?.circuitBreakers[ch.name] ?? "closed";
+                  const counts = { ok: 0, cooling: 0, disabled: 0 };
+                  for (const k of ch.keys) counts[keyState(k)]++;
+                  return (
+                    <tr key={ch.id}>
+                      <td>{ch.name}</td>
+                      <td>
+                        {ch.enabled ? (
+                          <Badge kind="ok">{t("enabled")}</Badge>
+                        ) : (
+                          <Badge kind="muted">{t("disabled")}</Badge>
+                        )}
+                      </td>
+                      <td>
+                        <Badge kind={breaker === "closed" ? "ok" : breaker === "open" ? "bad" : "warn"}>
+                          {breakerLabel(breaker)}
                         </Badge>
-                      ) : null}{" "}
-                      {counts.disabled > 0 ? (
-                        <Badge kind="bad">
-                          {t("ch.keyStatus.disabled")} {counts.disabled}
-                        </Badge>
-                      ) : null}
-                    </td>
-                  </tr>
-                );
-              })}
-            </tbody>
-          </table>
+                      </td>
+                      <td>
+                        <Badge kind="ok">
+                          {t("ch.keyStatus.ok")} {counts.ok}
+                        </Badge>{" "}
+                        {counts.cooling > 0 ? (
+                          <Badge kind="warn">
+                            {t("ch.keyStatus.cooling")} {counts.cooling}
+                          </Badge>
+                        ) : null}{" "}
+                        {counts.disabled > 0 ? (
+                          <Badge kind="bad">
+                            {t("ch.keyStatus.disabled")} {counts.disabled}
+                          </Badge>
+                        ) : null}
+                      </td>
+                    </tr>
+                  );
+                })}
+              </tbody>
+            </table>
+          </TableWrap>
         )}
       </section>
     </div>

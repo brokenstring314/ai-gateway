@@ -61,7 +61,7 @@ test("every page renders with no console error and no CSP violation; sign out re
   browser,
 }) => {
   const { context, page, watch } = await signedIn(browser, gw, adminKey);
-  for (const label of ["渠道", "模型", "密钥", "用量", "日志", "Playground", "设置", "版本与审计", "概览"]) {
+  for (const label of ["渠道", "模型", "密钥", "用量", "日志", "调试台", "设置", "版本与审计", "概览"]) {
     await goTo(page, label);
     await expect(page.locator("main .error-box")).toHaveCount(0);
   }
@@ -185,7 +185,7 @@ test("lockout: after the configured failures the sign-in page says to wait", asy
   }
   await input.fill(adminKey);
   await submit.click();
-  await expect(page.locator(".field-error")).toContainText(/登录失败次数过多，请 \d+ 秒后再试/);
+  await expect(page.locator(".field-error")).toContainText(/登录失败次数过多，请 \d+ (秒|分)/);
   await expect(page.locator("header.top")).toHaveCount(0);
   await watch.assertClean();
   await context.close();

@@ -16,7 +16,7 @@ const D = {
   "nav.keys": ["密钥", "Keys"],
   "nav.usage": ["用量", "Usage"],
   "nav.logs": ["日志", "Logs"],
-  "nav.playground": ["Playground", "Playground"],
+  "nav.playground": ["调试台", "Playground"],
   "nav.settings": ["设置", "Settings"],
   "nav.versions": ["版本与审计", "Versions & audit"],
   logout: ["退出登录", "Sign out"],
@@ -34,7 +34,7 @@ const D = {
     "这个密钥不能使用控制台（需要 admin 或 read_only 权限）",
     "This key cannot use the console (admin or read_only needed)",
   ],
-  "login.locked": ["登录失败次数过多，请 {s} 秒后再试", "Too many failed sign-ins; try again in {s}s"],
+  "login.locked": ["登录失败次数过多，请 {s}后再试", "Too many failed sign-ins; try again in {s}"],
   "session.expired": ["会话已过期，请重新登录", "Session expired; sign in again"],
   // common
   save: ["保存", "Save"],
@@ -67,7 +67,7 @@ const D = {
   copied: ["已复制", "Copied"],
   // overview
   "ov.requests": ["请求数", "Requests"],
-  "ov.tokens": ["Token", "Tokens"],
+  "ov.tokens": ["Token 数", "Tokens"],
   "ov.errors": ["错误", "Errors"],
   "ov.errorRate": ["错误率", "Error rate"],
   "ov.trend": ["近 {n} 天趋势", "Last {n} days"],
@@ -208,7 +208,7 @@ const D = {
   "l.model": ["模型", "Model"],
   "l.provider": ["渠道", "Channel"],
   "l.key": ["密钥", "Key"],
-  "l.tokens": ["Token", "Tokens"],
+  "l.tokens": ["Token 数", "Tokens"],
   "l.duration": ["耗时", "Duration"],
   "l.onlyErrors": ["只看错误", "Errors only"],
   "l.prev": ["上一页", "Previous"],
@@ -270,6 +270,120 @@ const D = {
   "v.resource": ["资源", "Resource"],
   "v.noDiff": ["没有差异", "No differences"],
   "v.more": ["加载更多", "Load more"],
+  // added 2026-11-05 (real-usage UI test fixes)
+  view: ["查看", "View"],
+  listSep: ["、", ", "],
+  head: ["当前", "HEAD"],
+  fixFields: ["保存失败：请修正标红的字段", "Not saved: fix the highlighted fields"],
+  unsavedConfirm: ["有未保存的修改，确定关闭？", "Discard unsaved changes?"],
+  noChanges: ["没有修改", "No changes"],
+  dismiss: ["关闭提示", "Dismiss"],
+  "dur.s": ["{n} 秒", "{n}s"],
+  "dur.m": ["{n} 分钟", "{n} min"],
+  "dur.ms": ["{m} 分 {s} 秒", "{m} min {s}s"],
+  "who.key": ["密钥", "key"],
+  more: ["展开", "More"],
+  less: ["收起", "Less"],
+  other: ["其他", "Other"],
+  noKey: ["（无密钥）", "(no key)"],
+  noneParen: ["（无）", "(none)"],
+  "breaker.closed": ["正常（闭合）", "closed"],
+  "breaker.open": ["熔断中（断开）", "open"],
+  "breaker.half_open": ["试探中（半开）", "half-open"],
+  "ch.testNever": ["点“测试连通性”测量", "Click Test connection to measure"],
+  "ch.balanceFailed": ["查询失败：{e}", "Lookup failed: {e}"],
+  "ch.urlInvalid": [
+    "不是合法的 URL，例如 https://api.example.com/v1",
+    "Not a valid URL, e.g. https://api.example.com/v1",
+  ],
+  "ch.urlScheme": ["只支持 http/https 地址", "Only http/https addresses"],
+  "ch.urlCreds": [
+    "地址里不能带用户名/密码，请把 key 填在下一步",
+    "No user:password in the URL; put the key in the next step",
+  ],
+  "ch.urlLocal": [
+    "这是本机或内网主机名，只允许公网地址（例如 https://api.example.com/v1）",
+    "This is a local / intranet host name; only public addresses (e.g. https://api.example.com/v1)",
+  ],
+  "ch.urlPrivate": [
+    "这是内网 / 本机 IP，只允许公网地址",
+    "This is a private / loopback IP; only public internet addresses",
+  ],
+  "ch.urlHttp": ["建议使用 https，http 会明文传输 key", "Prefer https: http sends the key in clear text"],
+  "ch.dupHint": ["第 {n} 个", "#{n}"],
+  "ks.round_robin": ["轮询", "round robin"],
+  "ks.weighted": ["按权重", "weighted"],
+  "ks.fill_first": ["用满再换", "fill first"],
+  "ms.fallback": ["故障转移", "fallback"],
+  "ms.loadbalance": ["负载均衡", "load balance"],
+  "mb.weighted": ["按权重", "weighted"],
+  "mb.round_robin": ["轮询", "round robin"],
+  "mb.least_inflight": ["最少并发", "least in-flight"],
+  "scope.inference": ["调用模型", "inference"],
+  "scope.read_only": ["只读", "read only"],
+  "scope.admin": ["管理员", "admin"],
+  "m.lbSet": ["负载均衡：按权重分配", "Load balanced by weight"],
+  "m.lbHint": [
+    "负载均衡模式：所有启用的绑定按权重分流，优先级组不起作用。",
+    "Load balance: every enabled binding shares traffic by weight; priority groups are ignored.",
+  ],
+  "m.share": ["占比", "Share"],
+  "m.sameGroup": ["与上一行同组", "same group as above"],
+  "m.drag": ["拖动排序", "drag to reorder"],
+  "m.up": ["上移", "up"],
+  "m.down": ["下移", "down"],
+  "m.keysDown": ["绑定渠道的 key 全部不可用", "every key of the bound channels is unusable"],
+  "m.noBindings": ["还没有绑定任何渠道：保存后调用会失败。", "No binding yet: calls will fail until one is added."],
+  "k.rotate": ["轮换", "Rotate"],
+  "k.confirmRotate": [
+    "确定轮换 {name}？旧密钥立即失效，用它登录的控制台会话也会结束。",
+    "Rotate {name}? The old secret stops working at once and its console sessions end.",
+  ],
+  "k.rotated": ["新密钥（{name}）", "New secret ({name})"],
+  "l.upstream": ["上游：{m}", "upstream: {m}"],
+  "l.keyConsole": ["控制台调试台", "console Playground"],
+  "l.keyConfig": ["配置文件密钥 {id}", "config key {id}"],
+  "l.keyDeleted": ["已删除的密钥 {id}", "deleted key {id}"],
+  "p.empty": [
+    "选择模型，输入消息后按 Enter 发送（Shift+Enter 换行）。",
+    "Pick a model, type a message and press Enter to send (Shift+Enter for a new line).",
+  ],
+  "p.stopped": ["已停止", "stopped"],
+  "p.enterHint": ["Enter 发送 · Shift+Enter 换行", "Enter to send · Shift+Enter for a new line"],
+  "u.fromAfterTo": ["开始日期不能晚于结束日期", "The start date must not be after the end date"],
+  "u.badTz": [
+    "“{tz}” 不是有效的时区，例如 Asia/Shanghai 或 UTC",
+    '"{tz}" is not a valid time zone, e.g. Asia/Shanghai or UTC',
+  ],
+  "u.badDate": ["请填写完整的日期", "Enter complete dates"],
+  "v.detail": ["详情", "Detail"],
+  "v.wholeItem": ["（整项）", "(whole item)"],
+  "v.field.name": ["名称", "name"],
+  // version summaries (the server writes English; parsed back into these)
+  "vs.create": ["创建{type}“{name}”", 'Create {type} "{name}"'],
+  "vs.update": ["修改{type}“{name}”（{fields}）", 'Update {type} "{name}" ({fields})'],
+  "vs.delete": ["删除{type}“{name}”", 'Delete {type} "{name}"'],
+  "vs.addKeys": ["向渠道“{name}”添加 {n} 个 key", 'Add {n} key(s) to channel "{name}"'],
+  "vs.keyOp": ["{op} {hint}（渠道“{name}”）", '{op} {hint} on channel "{name}"'],
+  "vs.bindings": ["设置模型“{name}”的 {n} 个绑定", 'Set {n} binding(s) of model "{name}"'],
+  "vs.settings": ["修改设置（{fields}）", "Update settings ({fields})"],
+  "vs.rollback": ["回滚到配置版本 #{v}", "Roll back to config version #{v}"],
+  "vs.import": [
+    "从配置文件导入 {n} 个渠道及路由设置",
+    "Imported {n} channel(s) and routing settings from the config file",
+  ],
+  "vs.noFields": ["无字段", "no fields"],
+  "vs.op.update_key": ["修改 key", "Update key"],
+  "vs.op.enable_key": ["启用 key", "Enable key"],
+  "vs.op.disable_key": ["停用 key", "Disable key"],
+  "vs.op.delete_key": ["删除 key", "Delete key"],
+  "rt.channel": ["渠道", "channel"],
+  "rt.model": ["模型", "model"],
+  "rt.channel_key": ["渠道 key", "channel key"],
+  "rt.api_key": ["密钥", "key"],
+  "rt.console_session": ["控制台会话", "console session"],
+  "rt.runtime_config": ["运行配置", "runtime config"],
+  "rt.settings": ["设置", "settings"],
 } as const;
 
 export type MsgKey = keyof typeof D;
@@ -333,6 +447,263 @@ export function fmtTime(iso: string | null | undefined): string {
   if (Number.isNaN(d.getTime())) return iso;
   return d.toLocaleString(current === "zh" ? "zh-CN" : "en-US", { hour12: false });
 }
+
+type Pair = readonly [string, string];
+
+/** Audit actions (server codes) → labels. Unknown actions show their code. */
+const ACTIONS: Record<string, Pair> = {
+  create: ["创建", "create"],
+  update: ["修改", "update"],
+  delete: ["删除", "delete"],
+  import: ["导入配置", "import"],
+  rollback: ["回滚", "rollback"],
+  add_keys: ["添加 key", "add keys"],
+  update_key: ["修改 key", "update key"],
+  enable_key: ["启用 key", "enable key"],
+  disable_key: ["停用 key", "disable key"],
+  delete_key: ["删除 key", "delete key"],
+  set_bindings: ["设置绑定", "set bindings"],
+  key_create: ["创建密钥", "key create"],
+  key_update: ["修改密钥", "key update"],
+  key_rotate: ["轮换密钥", "key rotate"],
+  key_revoke: ["吊销密钥", "key revoke"],
+  key_delete: ["删除密钥", "key delete"],
+  key_reset_usage: ["用量清零", "key usage reset"],
+  key_auto_disabled: ["上游 key 自动停用", "upstream key auto-disabled"],
+  key_auto_enabled: ["上游 key 自动恢复", "upstream key auto-enabled"],
+  console_login: ["控制台登录", "console sign-in"],
+  console_login_failed: ["控制台登录失败", "console sign-in failed"],
+  console_logout: ["控制台退出", "console sign-out"],
+  console_session_revoked: ["吊销控制台会话", "console session revoked"],
+  channel_test: ["测试渠道", "channel test"],
+  channel_fetch_models: ["拉取模型列表", "fetch models"],
+};
+
+/** Field / column names in summaries, diffs and audit details → labels. */
+const FIELDS: Record<string, Pair> = {
+  name: ["名称", "name"],
+  displayName: ["显示名", "display name"],
+  display_name: ["显示名", "display name"],
+  description: ["描述", "description"],
+  enabled: ["启用", "enabled"],
+  metadata: ["元数据", "metadata"],
+  strategy: ["路由策略", "strategy"],
+  balance: ["组内均衡", "balance mode"],
+  bindings: ["绑定", "bindings"],
+  baseURL: ["Base URL", "base URL"],
+  base_url: ["Base URL", "base URL"],
+  priority: ["优先级", "priority"],
+  models: ["模型", "models"],
+  keyStrategy: ["多 key 策略", "key strategy"],
+  keyCooldownSeconds: ["429 冷却秒数", "429 cooldown"],
+  preset: ["预设", "preset"],
+  settings: ["设置", "settings"],
+  aliases: ["别名", "aliases"],
+  plugins: ["插件", "plugins"],
+  limits: ["请求上限", "limits"],
+  modelSource: ["模型来源", "model source"],
+  models_explicit: ["显式模型", "explicit models"],
+  compatibility: ["兼容设置", "compatibility"],
+  weight: ["权重", "weight"],
+  status: ["状态", "status"],
+  hint: ["key", "key"],
+  kind: ["类型", "kind"],
+  upstreamModel: ["上游模型", "upstream model"],
+  upstream_model: ["上游模型", "upstream model"],
+  channel: ["渠道", "channel"],
+  channels: ["渠道", "channels"],
+  keys: ["上游 key", "upstream keys"],
+  apiKeys: ["上游 key", "upstream keys"],
+  allowedModels: ["可用模型", "allowed models"],
+  quotaTokens: ["token 额度", "token quota"],
+  rpm: ["RPM", "RPM"],
+  tpm: ["TPM", "TPM"],
+  expiresAt: ["过期时间", "expires"],
+  scopes: ["权限", "scopes"],
+  url_policy: ["地址策略", "URL policy"],
+  last_error: ["最近错误", "last error"],
+  params: ["参数覆盖", "parameter overrides"],
+  contextWindow: ["上下文窗口", "context window"],
+  maxOutputTokens: ["最大输出 token", "max output tokens"],
+  inputModalities: ["输入类型", "input types"],
+  structuredOutput: ["结构化输出", "structured output"],
+  tools: ["工具调用", "tools"],
+  parallelTools: ["并行工具调用", "parallel tools"],
+  reasoning: ["推理", "reasoning"],
+  webSearch: ["联网搜索", "web search"],
+  systemMessage: ["系统消息", "system message"],
+  developerRole: ["developer 角色", "developer role"],
+  changed: ["修改的字段", "changed"],
+  fields: ["字段", "fields"],
+  ip: ["IP", "IP"],
+  error: ["错误", "error"],
+  httpStatus: ["HTTP 状态", "HTTP status"],
+  to: ["目标版本", "to version"],
+  from: ["原版本", "from version"],
+  ok: ["成功", "ok"],
+  latencyMs: ["延迟（ms）", "latency (ms)"],
+  usedTokensBefore: ["清零前已用", "used before reset"],
+  sessionsEnded: ["结束的会话数", "sessions ended"],
+  channelId: ["渠道", "channel"],
+  count: ["数量", "count"],
+};
+
+/** Stable Admin API error codes → messages. {detail} = the server's own text. */
+const ERRORS: Record<string, Pair> = {
+  invalid_credentials: ["密钥无效", "Invalid key"],
+  session_expired: ["会话已过期，请重新登录", "Session expired; sign in again"],
+  login_locked: ["失败次数过多，请 {wait}后再试", "Too many failures; try again in {wait}"],
+  auth_locked: ["失败次数过多，请 {wait}后再试", "Too many failures; try again in {wait}"],
+  insufficient_scope: ["权限不足：这个操作需要管理员权限", "Not allowed: this needs the admin scope"],
+  csrf_token_invalid: ["安全校验失败，请刷新页面后重试", "Security check failed; reload the page and retry"],
+  csrf_rejected: ["跨站请求被拒绝", "Cross-site request rejected"],
+  revision_mismatch: ["已被修改，请刷新", "Changed by someone else; please refresh"],
+  precondition_required: ["缺少版本信息，请刷新后重试", "Missing revision; refresh and retry"],
+  invalid_if_match: ["版本信息无效，请刷新后重试", "Invalid revision; refresh and retry"],
+  name_taken: ["名称“{name}”已被占用", 'The name "{name}" is already taken'],
+  channel_in_use: [
+    "该渠道仍被模型 {models} 绑定，请先移除这些绑定",
+    "The channel is still bound by model(s) {models}; remove those bindings first",
+  ],
+  unsafe_base_url: ["Base URL 不被允许：{detail}", "Base URL not allowed: {detail}"],
+  api_keys_required_on_base_url_change: [
+    "更换到新地址时必须重新输入至少一个 key",
+    "Enter at least one key: a new origin needs its key(s) again",
+  ],
+  config_invalid: ["配置校验未通过，修改未生效：{detail}", "The change was not applied: {detail}"],
+  config_read_only: [
+    "当前为文件配置模式（只读），不能在控制台修改",
+    "File config mode (read-only): the console cannot change it",
+  ],
+  not_found: ["未找到（可能已被删除），请刷新", "Not found (maybe deleted); please refresh"],
+  key_not_found: ["密钥不存在（可能已被删除），请刷新", "Key not found (maybe deleted); please refresh"],
+  invalid_json: ["请求格式错误", "Malformed request"],
+  unsupported_media_type: ["请求格式错误", "Malformed request"],
+  internal_error: ["服务器内部错误，修改未生效", "Internal error; the change was not applied"],
+  rate_limited: ["请求过于频繁，请稍后再试", "Too many requests; try again later"],
+  upstream_unreachable: ["无法连接上游：{detail}", "Upstream unreachable: {detail}"],
+  upstream_error: ["上游返回错误：{detail}", "Upstream error: {detail}"],
+  upstream_invalid_response: ["上游响应无法解析：{detail}", "Upstream response not understood: {detail}"],
+  model_no_bindings: ["模型至少需要绑定一个渠道", "A model needs at least one binding"],
+  invalid_model_name: ["模型名不合法：{detail}", "Invalid model name: {detail}"],
+  model_not_found: ["模型不存在或未发布", "Model not found or not published"],
+  model_unavailable: ["模型暂时没有可用的渠道", "The model has no available channel right now"],
+  model_not_allowed: ["这个密钥不能调用该模型", "This key may not call that model"],
+  max_tokens_exceeded: ["max_tokens 超过了模型的最大输出：{detail}", "max_tokens is over the model's limit: {detail}"],
+  conflicting_max_tokens: ["max_tokens 与 max_completion_tokens 不一致", "max_tokens and max_completion_tokens differ"],
+  insufficient_quota: ["额度已用完", "Quota exhausted"],
+  quota_exhausted: ["额度已用完", "Quota exhausted"],
+  invalid_request: ["请求参数有误：{detail}", "Invalid request: {detail}"],
+  invalid_parameter: ["参数有误：{detail}", "Invalid parameter: {detail}"],
+  missing_parameter: ["缺少参数：{detail}", "Missing parameter: {detail}"],
+  invalid_group_by: ["分组方式无效", "Invalid group-by"],
+  invalid_timezone: ["时区无效，例如 Asia/Shanghai 或 UTC", "Invalid time zone, e.g. Asia/Shanghai or UTC"],
+  invalid_date: ["日期格式应为 YYYY-MM-DD", "Dates are YYYY-MM-DD"],
+  date_range_inverted: ["开始日期不能晚于结束日期", "The start date must not be after the end date"],
+  date_range_too_long: ["查询的日期范围太长：{detail}", "Date range too long: {detail}"],
+  unhandled_exception: ["服务器内部错误", "Internal server error"],
+  unknown_route: ["接口不存在", "Unknown endpoint"],
+};
+
+const pickPair = (p: Pair): string => (current === "zh" ? p[0] : p[1]);
+
+export function actionLabel(action: string): string {
+  const p = ACTIONS[action];
+  return p ? pickPair(p) : action;
+}
+
+export function fieldLabel(field: string): string {
+  const p = FIELDS[field];
+  return p ? pickPair(p) : field;
+}
+
+/** "900" → "15 分钟" / "15 min"; "75" → "1 分 15 秒". */
+export function fmtDuration(seconds: number): string {
+  const s = Math.max(0, Math.round(seconds));
+  if (s < 60) return t("dur.s", { n: s });
+  if (s % 60 === 0) return t("dur.m", { n: s / 60 });
+  return t("dur.ms", { m: Math.floor(s / 60), s: s % 60 });
+}
+
+/** Known English server phrases → Chinese (field errors, generic invalid_request texts). English mode: unchanged. */
+const PHRASES: Array<[RegExp, (m: RegExpMatchArray) => string]> = [
+  [/^use letters, digits and (.+?) \(no spaces\)$/, (m) => `只能使用字母、数字和 ${m[1]}（不能有空格）`],
+  [/^from must not be after to$/, () => "开始日期不能晚于结束日期"],
+  [/^tz must be an IANA time zone/, () => "时区无效，例如 Asia/Shanghai 或 UTC"],
+  [/^(from|to) must be a date/, () => "日期格式应为 YYYY-MM-DD"],
+  [/^at most (\d+) days per query$/, (m) => `一次最多查询 ${m[1]} 天`],
+  [
+    /points to an? (.+?); only public internet addresses are allowed$/,
+    (m) => `指向非公网地址（${m[1]}），只允许公网地址`,
+  ],
+  [/^baseURL host "(.+)" is a local name/, (m) => `主机“${m[1]}”是本机/内网名称，只允许公网地址`],
+  [/^baseURL host "(.+)" is not a fully qualified public host name$/, (m) => `主机“${m[1]}”不是完整的公网域名`],
+  [
+    /^host "(.+)" resolves to (\S+), an? (.+?); only public/,
+    (m) => `主机“${m[1]}”解析到 ${m[2]}（${m[3]}），只允许公网地址`,
+  ],
+  [/^cannot resolve host "(.+?)"/, (m) => `无法解析主机“${m[1]}”`],
+  [/^host "(.+)" did not resolve to any address$/, (m) => `主机“${m[1]}”没有解析到任何地址`],
+  [/^baseURL is not a valid URL$/, () => "Base URL 不是合法的 URL"],
+  [/^baseURL must use http or https$/, () => "Base URL 只支持 http/https"],
+  [/^baseURL must not contain credentials/, () => "Base URL 里不能带用户名/密码，请把 key 作为渠道 key 添加"],
+  [
+    /^baseURL must not carry a credential in its query/,
+    () => "Base URL 的查询参数里不能带凭据，请把 key 作为渠道 key 添加",
+  ],
+  [/^baseURL must be a literal URL/, () => "Base URL 必须是字面地址（环境变量引用只能写在配置文件里）"],
+  [/^Too small: expected (?:number|int) to be >=?\s*(\S+)$/, (m) => `不能小于 ${m[1]}`],
+  [/^Too big: expected (?:number|int) to be <=?\s*(\S+)$/, (m) => `不能大于 ${m[1]}`],
+  [/^Too small: expected string to have >=?\s*(\d+) characters?$/, (m) => `至少 ${m[1]} 个字符`],
+  [/^Too big: expected string to have <=?\s*(\d+) characters?$/, (m) => `最多 ${m[1]} 个字符`],
+  [/^Too small: expected array to have >=?\s*(\d+) items?$/, (m) => `至少需要 ${m[1]} 项`],
+  [/^Invalid input: expected (\w+), received (\w+)$/, (m) => `类型错误：应为 ${m[1]}，实际是 ${m[2]}`],
+  [/^Required$|^Invalid input: expected \w+, received undefined$/, () => "必填"],
+];
+
+export function localizeServerText(msg: string): string {
+  if (current !== "zh") return msg;
+  for (const [re, fn] of PHRASES) {
+    const m = msg.match(re);
+    if (m) return fn(m);
+  }
+  return msg;
+}
+
+/**
+ * The message to show for an Admin API error: by its stable `code` when the
+ * console knows it (zh / en), else the server's own message.
+ */
+export function errorMessage(code: string, serverMessage: string, extra: { retryAfter?: number } = {}): string {
+  const p = ERRORS[code];
+  const local = localizeServerText(serverMessage);
+  if (!p) return local;
+  // A generic code whose text the console knows: the translated text alone reads better than "参数有误：…".
+  if ((code === "invalid_request" || code === "invalid_model_name") && local !== serverMessage) return local;
+  const name = serverMessage.match(/"([^"]+)"/)?.[1] ?? "";
+  const models = (serverMessage.match(/model\(s\) (.+?);/)?.[1] ?? "").replace(/"/g, "");
+  return pickPair(p)
+    .split("{wait}")
+    .join(fmtDuration(extra.retryAfter ?? Number(serverMessage.match(/(\d+)s\b/)?.[1] ?? 60)))
+    .split("{name}")
+    .join(name)
+    .split("{models}")
+    .join(
+      models
+        ? current === "zh"
+          ? models
+              .split(", ")
+              .map((x) => `“${x}”`)
+              .join("、")
+          : models
+        : "",
+    )
+    .split("{detail}")
+    .join(local.replace(/^The change was not applied: /, ""));
+}
+
+/** For tests: the extra label tables. */
+export const LABEL_TABLES: Readonly<Record<string, Readonly<Record<string, Pair>>>> = { ACTIONS, FIELDS, ERRORS };
 
 /** For tests: the dictionary's keys and both languages. */
 export const DICTIONARY: Readonly<Record<string, readonly [string, string]>> = D;

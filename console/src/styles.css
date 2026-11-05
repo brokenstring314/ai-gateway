@@ -105,6 +105,7 @@ main {
   padding: 20px;
   max-width: 1400px;
   margin: 0 auto;
+  min-width: 0;
 }
 
 .stack {
@@ -307,6 +308,7 @@ fieldset.field > legend {
 
 .badge {
   display: inline-block;
+  white-space: nowrap;
   padding: 1px 8px;
   border-radius: 999px;
   font-size: 12px;
@@ -338,6 +340,7 @@ fieldset.field > legend {
 }
 .keychip {
   display: inline-flex;
+  white-space: nowrap;
   align-items: center;
   gap: 2px;
   margin: 2px 6px 2px 0;
@@ -594,6 +597,25 @@ fieldset.field > legend {
   gap: 8px;
   align-items: flex-end;
 }
+.composer textarea {
+  flex: 1;
+  min-width: 0;
+}
+.composer button {
+  white-space: nowrap;
+  flex-shrink: 0;
+}
+.composer-hint {
+  margin: 4px 0 0;
+}
+.msg-empty {
+  margin: auto;
+  text-align: center;
+  max-width: 360px;
+}
+.msg .stopped {
+  color: var(--warn);
+}
 
 .diff div {
   padding: 2px 0;
@@ -644,5 +666,180 @@ fieldset.field > legend {
   }
   .bar-row {
     grid-template-columns: 110px 1fr 70px;
+  }
+}
+
+/* Tables scroll inside their own box; the page itself never scrolls sideways (B1 / B2). */
+.table-wrap {
+  max-width: 100%;
+  overflow-x: auto;
+  -webkit-overflow-scrolling: touch;
+}
+.table-wrap > table.card {
+  min-width: 100%;
+}
+.table-wrap th {
+  white-space: nowrap;
+}
+.card > .table-wrap {
+  margin: 0 -16px;
+  padding: 0 16px;
+  max-width: calc(100% + 32px);
+}
+td.num,
+td.tokens {
+  white-space: nowrap;
+  font-variant-numeric: tabular-nums;
+}
+td.err-cell {
+  min-width: 90px;
+}
+td.err-cell .error-text {
+  max-width: 360px;
+  overflow-wrap: anywhere;
+}
+.audit-detail {
+  min-width: 220px;
+  max-width: 520px;
+}
+.audit-detail dl {
+  margin: 0;
+  display: grid;
+  grid-template-columns: max-content minmax(0, 1fr);
+  gap: 0 8px;
+}
+.audit-detail dt {
+  color: var(--muted);
+}
+.audit-detail dd {
+  margin: 0;
+  overflow-wrap: anywhere;
+  word-break: break-word;
+}
+.audit-detail .clip {
+  display: -webkit-box;
+  -webkit-line-clamp: 3;
+  -webkit-box-orient: vertical;
+  overflow: hidden;
+}
+.code-tag {
+  color: var(--muted);
+  font-size: 11px;
+  margin-left: 4px;
+}
+.bindings select,
+.bindings input:not([type="checkbox"]):not(.narrow) {
+  min-width: 140px;
+}
+.lb-set {
+  display: inline-flex;
+  flex-wrap: wrap;
+  gap: 4px;
+  align-items: center;
+}
+.chip {
+  display: inline-block;
+  padding: 0 6px;
+  border: 1px solid var(--line);
+  border-radius: 6px;
+  white-space: nowrap;
+}
+.chain-sep {
+  color: var(--muted);
+  margin: 0 2px;
+}
+.diff .section {
+  font-weight: 600;
+  margin-top: 8px;
+  border-bottom: 1px solid var(--line);
+}
+.toast {
+  cursor: pointer;
+}
+
+@media (max-width: 800px) {
+  /* Narrow screens: columns keep a readable width and the table scrolls sideways, instead of one character per line. */
+  .table-wrap td {
+    min-width: 80px;
+  }
+  .table-wrap td:first-child {
+    min-width: 120px;
+  }
+  .table-wrap td.handle,
+  .table-wrap td:has(> input[type="checkbox"]:only-child) {
+    min-width: 0;
+  }
+}
+
+@media (max-width: 640px) {
+  main {
+    padding: 12px;
+  }
+  .top {
+    padding: 8px 12px;
+    gap: 8px;
+  }
+  .top nav {
+    order: 10;
+    flex: 1 1 100%;
+    flex-wrap: nowrap;
+    overflow-x: auto;
+    margin: 0 -12px;
+    padding: 0 12px 2px;
+    scrollbar-width: thin;
+  }
+  .top nav a {
+    white-space: nowrap;
+    flex-shrink: 0;
+  }
+  .who {
+    max-width: 110px;
+    margin-left: auto;
+  }
+  .drawer,
+  .drawer.wide {
+    width: 100%;
+  }
+  .drawer-body {
+    padding: 12px;
+  }
+  .overlay.center {
+    padding-top: 0;
+  }
+  .modal {
+    width: 100%;
+    max-height: 100%;
+    border-radius: 0;
+  }
+  .modal > :not(header) {
+    margin-left: 12px;
+    margin-right: 12px;
+  }
+  .filters .field {
+    min-width: 0;
+    flex: 1 1 140px;
+  }
+  .grid2 {
+    grid-template-columns: minmax(0, 1fr);
+  }
+  .pick-row {
+    grid-template-columns: minmax(0, 1fr);
+  }
+  .inline-form {
+    flex-direction: column;
+    align-items: stretch;
+  }
+  .card > .table-wrap {
+    margin: 0 -16px;
+  }
+  .toasts {
+    left: 12px;
+    right: 12px;
+  }
+  .toast {
+    max-width: none;
+  }
+  .audit-detail {
+    min-width: 180px;
   }
 }

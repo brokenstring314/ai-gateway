@@ -2,7 +2,7 @@
 import { useState } from "preact/hooks";
 import type { PageProps } from "../app";
 import { type ClientKey, ApiError, api, get } from "../api";
-import { fmtNum, fmtTime, t } from "../i18n";
+import { DICTIONARY, fmtNum, fmtTime, type MsgKey, t } from "../i18n";
 import {
   Badge,
   CopyButton,
@@ -12,6 +12,7 @@ import {
   type FieldErrors,
   Loading,
   Modal,
+  TableWrap,
   failed,
   notify,
   numOrNull,
@@ -25,11 +26,22 @@ function useModelNames() {
   });
 }
 
+/** Scope code → label ("调用模型 (inference)"); unknown scopes as sent. */
+export function scopeLabel(scope: string): string {
+  const key = `scope.${scope}`;
+  return DICTIONARY[key] ? t(key as MsgKey) : scope;
+}
+
 export function KeysPage(props: PageProps) {
-  const list = useLoad(() => get<{ keys: ClientKey[] }>("/keys"));
+  // `{ keys }` today; `{ data }` if the list moves to the other list endpoints' shape (U16).
+  const list = useLoad(async () => {
+    const r = await get<{ keys?: ClientKey[]; data?: ClientKey[] }>("/keys");
+    return { keys: r.keys ?? r.data ?? [] };
+  });
   const [creating, setCreating] = useState(false);
   const [editing, setEditing] = useState<ClientKey | null>(null);
-  const [plaintext, setPlaintext] = useState<string | null>(null);
+  /** A secret to show once: from create, or from rotate (with the key's name). */
+  const [plaintext, setPlaintext] = useState<{ key: string; title: string } | null>(null);
 
   return (
     <div class="stack">
@@ -47,113 +59,135 @@ export function KeysPage(props: PageProps) {
       {list.loading && !list.data ? (
         <Loading />
       ) : (
-        <table class="card">
-          <thead>
-            <tr>
-              <th>{t("name")}</th>
-              <th>{t("k.scopes")}</th>
-              <th>{t("k.allowedModels")}</th>
-              <th>{t("k.limits")}</th>
-              <th>{t("k.used")}</th>
-              <th>{t("k.expires")}</th>
-              <th>{t("actions")}</th>
-            </tr>
-          </thead>
-          <tbody>
-            {(list.data?.keys ?? []).map((k) => {
-              const revoked = k.revokedAt !== null && k.revokedAt !== undefined;
-              const pct = k.quotaTokens ? Math.min(100, (k.usedTokens / k.quotaTokens) * 100) : 0;
-              return (
-                <tr key={k.id} class={revoked ? "dim" : ""}>
-                  <td>
-                    <strong>{k.name}</strong>
-                    <div class="muted small">
-                      <code>{(k as { keyDisplay?: string }).keyDisplay ?? k.id}</code>
-                    </div>
-                    {revoked ? <Badge kind="muted">{t("k.revoked")}</Badge> : null}
-                    {k.quotaExhausted ? <Badge kind="bad">{t("k.exhausted")}</Badge> : null}
-                  </td>
-                  <td>{k.scopes.join(", ")}</td>
-                  <td class="small">
-                    {k.allowedModels === null ? (
-                      t("k.allModels")
-                    ) : k.allowedModels.length === 0 ? (
-                      <Badge kind="bad">{t("k.noModels")}</Badge>
-                    ) : (
-                      k.allowedModels.join(", ")
-                    )}
-                  </td>
-                  <td class="small">
-                    {t("k.quota")}: {k.quotaTokens === null ? t("unlimited") : fmtNum(k.quotaTokens)}
-                    <br />
-                    RPM {k.rpm ?? "—"} · TPM {k.tpm === null ? "—" : fmtNum(k.tpm)}
-                  </td>
-                  <td>
-                    {fmtNum(k.usedTokens)}
-                    {k.quotaTokens !== null ? (
-                      <>
-                        <div class="meter">
-                          <span style={{ width: `${pct}%` }} class={pct >= 100 ? "full" : ""} />
-                        </div>
-                        <span class="muted small">
-                          {t("k.remaining")} {fmtNum(k.remainingTokens)}
-                        </span>
-                      </>
-                    ) : null}
-                  </td>
-                  <td class="small">{k.expiresAt ? fmtTime(k.expiresAt) : "—"}</td>
-                  <td class="nowrap">
-                    {props.canWrite && !revoked ? (
-                      <>
-                        <button type="button" onClick={() => setEditing(k)}>
-                          {t("edit")}
-                        </button>{" "}
-                        <button
-                          type="button"
-                          onClick={async () => {
-                            if (!confirm(t("k.confirmReset", { name: k.name }))) return;
-                            try {
-                              await api(`/keys/${k.id}/reset-usage`, { method: "POST", revision: k.revision });
-                              notify(t("saved"));
-                              list.reload();
-                            } catch (err) {
-                              failed(err);
-                            }
-                          }}
-                        >
-                          {t("k.resetUsage")}
-                        </button>{" "}
-                        <button
-                          type="button"
-                          class="danger"
-                          onClick={async () => {
-                            if (!confirm(t("k.confirmRevoke", { name: k.name }))) return;
-                            try {
-                              await api(`/keys/${k.id}/revoke`, { method: "POST" });
-                              notify(t("saved"));
-                              list.reload();
-                            } catch (err) {
-                              failed(err);
-                            }
-                          }}
-                        >
-                          {t("k.revoke")}
-                        </button>
-                      </>
-                    ) : null}
-                  </td>
-                </tr>
-              );
-            })}
-          </tbody>
-        </table>
+        <TableWrap>
+          <table class="card">
+            <thead>
+              <tr>
+                <th>{t("name")}</th>
+                <th>{t("k.scopes")}</th>
+                <th>{t("k.allowedModels")}</th>
+                <th>{t("k.limits")}</th>
+                <th>{t("k.used")}</th>
+                <th>{t("k.expires")}</th>
+                <th>{t("actions")}</th>
+              </tr>
+            </thead>
+            <tbody>
+              {(list.data?.keys ?? []).map((k) => {
+                const revoked = k.revokedAt !== null && k.revokedAt !== undefined;
+                const pct = k.quotaTokens ? Math.min(100, (k.usedTokens / k.quotaTokens) * 100) : 0;
+                return (
+                  <tr key={k.id} class={revoked ? "dim" : ""}>
+                    <td>
+                      <strong>{k.name}</strong>
+                      <div class="muted small">
+                        <code>{(k as { keyDisplay?: string }).keyDisplay ?? k.id}</code>
+                      </div>
+                      {revoked ? <Badge kind="muted">{t("k.revoked")}</Badge> : null}
+                      {k.quotaExhausted ? <Badge kind="bad">{t("k.exhausted")}</Badge> : null}
+                    </td>
+                    <td class="small">{k.scopes.map(scopeLabel).join(t("listSep"))}</td>
+                    <td class="small">
+                      {k.allowedModels === null ? (
+                        t("k.allModels")
+                      ) : k.allowedModels.length === 0 ? (
+                        <Badge kind="bad">{t("k.noModels")}</Badge>
+                      ) : (
+                        k.allowedModels.join(", ")
+                      )}
+                    </td>
+                    <td class="small">
+                      {t("k.quota")}: {k.quotaTokens === null ? t("unlimited") : fmtNum(k.quotaTokens)}
+                      <br />
+                      RPM {k.rpm ?? "—"} · TPM {k.tpm === null ? "—" : fmtNum(k.tpm)}
+                    </td>
+                    <td>
+                      {fmtNum(k.usedTokens)}
+                      {k.quotaTokens !== null ? (
+                        <>
+                          <div class="meter">
+                            <span style={{ width: `${pct}%` }} class={pct >= 100 ? "full" : ""} />
+                          </div>
+                          <span class="muted small">
+                            {t("k.remaining")} {fmtNum(k.remainingTokens)}
+                          </span>
+                        </>
+                      ) : null}
+                    </td>
+                    <td class="small">{k.expiresAt ? fmtTime(k.expiresAt) : "—"}</td>
+                    <td class="nowrap">
+                      {props.canWrite && !revoked ? (
+                        <>
+                          <button type="button" onClick={() => setEditing(k)}>
+                            {t("edit")}
+                          </button>{" "}
+                          <button
+                            type="button"
+                            onClick={async () => {
+                              if (!confirm(t("k.confirmReset", { name: k.name }))) return;
+                              try {
+                                await api(`/keys/${k.id}/reset-usage`, { method: "POST", revision: k.revision });
+                                notify(t("saved"));
+                                list.reload();
+                              } catch (err) {
+                                failed(err);
+                              }
+                            }}
+                          >
+                            {t("k.resetUsage")}
+                          </button>{" "}
+                          <button
+                            type="button"
+                            onClick={async () => {
+                              if (!confirm(t("k.confirmRotate", { name: k.name }))) return;
+                              try {
+                                const r = await api<{ key: string; name?: string }>(`/keys/${k.id}/rotate`, {
+                                  method: "POST",
+                                });
+                                setPlaintext({
+                                  key: r.data.key,
+                                  title: t("k.rotated", { name: r.data.name ?? k.name }),
+                                });
+                                list.reload();
+                              } catch (err) {
+                                failed(err);
+                              }
+                            }}
+                          >
+                            {t("k.rotate")}
+                          </button>{" "}
+                          <button
+                            type="button"
+                            class="danger"
+                            onClick={async () => {
+                              if (!confirm(t("k.confirmRevoke", { name: k.name }))) return;
+                              try {
+                                await api(`/keys/${k.id}/revoke`, { method: "POST" });
+                                notify(t("saved"));
+                                list.reload();
+                              } catch (err) {
+                                failed(err);
+                              }
+                            }}
+                          >
+                            {t("k.revoke")}
+                          </button>
+                        </>
+                      ) : null}
+                    </td>
+                  </tr>
+                );
+              })}
+            </tbody>
+          </table>
+        </TableWrap>
       )}
       {creating ? (
         <KeyForm
           onClose={() => setCreating(false)}
           onCreated={(plain) => {
             setCreating(false);
-            setPlaintext(plain);
+            setPlaintext({ key: plain, title: t("k.create") });
             list.reload();
           }}
         />
@@ -168,10 +202,10 @@ export function KeysPage(props: PageProps) {
         />
       ) : null}
       {plaintext ? (
-        <Modal title={t("k.create")} onClose={() => setPlaintext(null)}>
+        <Modal title={plaintext.title} onClose={() => setPlaintext(null)}>
           <p>{t("k.plaintextOnce")}</p>
           <p class="secret">
-            <code>{plaintext}</code> <CopyButton text={plaintext} />
+            <code>{plaintext.key}</code> <CopyButton text={plaintext.key} />
           </p>
           <div class="actions">
             <button type="button" class="primary" onClick={() => setPlaintext(null)}>
@@ -208,9 +242,17 @@ export function KeyForm(props: { existing?: ClientKey; onClose: () => void; onCr
   const [errors, setErrors] = useState<FieldErrors>({});
   const [busy, setBusy] = useState(false);
   const Wrap = ex ? Drawer : Modal;
+  const dirty =
+    name !== (ex?.name ?? "") ||
+    restricted !== (ex !== undefined && ex.allowedModels !== null) ||
+    JSON.stringify(allowed) !== JSON.stringify(ex?.allowedModels ?? []) ||
+    quota !== (ex?.quotaTokens == null ? "" : String(ex.quotaTokens)) ||
+    rpm !== (ex?.rpm == null ? "" : String(ex.rpm)) ||
+    tpm !== (ex?.tpm == null ? "" : String(ex.tpm)) ||
+    expires !== toLocalInput(ex?.expiresAt ?? null);
 
   return (
-    <Wrap title={ex ? ex.name : t("k.create")} onClose={props.onClose}>
+    <Wrap title={ex ? ex.name : t("k.create")} onClose={props.onClose} dirty={dirty}>
       <form
         class="stack"
         onSubmit={async (e) => {
@@ -248,9 +290,11 @@ export function KeyForm(props: { existing?: ClientKey; onClose: () => void; onCr
         {!ex ? (
           <Field label={t("k.scopes")} error={errors["scopes"]}>
             <select value={scope} onChange={(e) => setScope((e.currentTarget as HTMLSelectElement).value)}>
-              <option value="inference">inference</option>
-              <option value="read_only">read_only</option>
-              <option value="admin">admin</option>
+              {["inference", "read_only", "admin"].map((sc) => (
+                <option key={sc} value={sc}>
+                  {scopeLabel(sc)} ({sc})
+                </option>
+              ))}
             </select>
           </Field>
         ) : null}

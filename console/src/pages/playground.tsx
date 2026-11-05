@@ -9,6 +9,19 @@ interface Msg {
   role: "user" | "assistant";
   content: string;
   meta?: string;
+  /** The reply was cut off by the Stop button. */
+  stopped?: boolean;
+}
+
+/**
+ * Whether a keydown in the composer sends: Enter alone sends; Shift+Enter is a
+ * new line; Ctrl/⌘+Enter also sends; never while an IME is composing (U11).
+ */
+export function isSendKey(e: Pick<KeyboardEvent, "key" | "shiftKey" | "isComposing" | "keyCode">): boolean {
+  if (e.key !== "Enter" || e.shiftKey) return false;
+  // keyCode 229: the IME's own Enter (Safari reports isComposing false for the committing keystroke).
+  if (e.isComposing || e.keyCode === 229) return false;
+  return true;
 }
 
 /** Text deltas of an OpenAI SSE chunk stream; returns leftover partial line. */
@@ -72,8 +85,11 @@ export function PlaygroundPage(props: PageProps) {
       ],
     };
     let text = "";
-    const update = (meta?: string) =>
-      setHistory([...msgs, { role: "assistant", content: text, ...(meta ? { meta } : {}) }]);
+    const update = (meta?: string, stopped?: boolean) =>
+      setHistory([
+        ...msgs,
+        { role: "assistant", content: text, ...(meta ? { meta } : {}), ...(stopped ? { stopped: true } : {}) },
+      ]);
     try {
       const res = await rawRequest("/playground/chat/completions", { method: "POST", body, signal: ctrl.signal });
       if (!res.ok) throw await errorFrom(res);
@@ -106,8 +122,11 @@ export function PlaygroundPage(props: PageProps) {
         );
       }
     } catch (err) {
-      if (!(err instanceof DOMException && err.name === "AbortError")) setError(err);
-      update();
+      const aborted = err instanceof DOMException && err.name === "AbortError";
+      if (!aborted) setError(err);
+      // A failed call with no text leaves no empty bubble; the error box says what happened.
+      if (!aborted && text === "") setHistory(msgs);
+      else update(undefined, aborted);
     } finally {
       setBusy(false);
       abort.current = null;
@@ -166,11 +185,13 @@ export function PlaygroundPage(props: PageProps) {
       </aside>
       <section class="card chat">
         <div class="messages">
+          {history.length === 0 ? <p class="muted msg-empty">{t("p.empty")}</p> : null}
           {history.map((m, i) => (
             // biome-ignore lint/suspicious/noArrayIndexKey: append-only list
             <div key={i} class={`msg ${m.role}`}>
               <div class="bubble">{m.content || (busy && i === history.length - 1 ? "…" : "")}</div>
               {m.meta ? <div class="muted small">{m.meta}</div> : null}
+              {m.stopped ? <div class="small stopped">{t("p.stopped")}</div> : null}
             </div>
           ))}
         </div>
@@ -188,10 +209,9 @@ export function PlaygroundPage(props: PageProps) {
             placeholder={t("p.message")}
             onInput={(e) => setInput((e.currentTarget as HTMLTextAreaElement).value)}
             onKeyDown={(e) => {
-              if (e.key === "Enter" && (e.ctrlKey || e.metaKey)) {
-                e.preventDefault();
-                void send();
-              }
+              if (!isSendKey(e)) return;
+              e.preventDefault();
+              if (!busy && props.canWrite) void send();
             }}
           />
           {busy ? (
@@ -204,6 +224,7 @@ export function PlaygroundPage(props: PageProps) {
             </button>
           )}
         </form>
+        <p class="muted small composer-hint">{t("p.enterHint")}</p>
       </section>
     </div>
   );

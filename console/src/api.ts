@@ -120,11 +120,31 @@ export async function get<T>(path: string, query?: ApiOptions["query"]): Promise
   return (await api<T>(path, { ...(query ? { query } : {}) })).data;
 }
 
+/**
+ * The current session, or null when signed out. Uses the public probe
+ * GET /admin/session/status (200 { authenticated: false } when signed out, so
+ * the login page logs no 401, B5); servers without it answer 404 and the
+ * console falls back to GET /admin/session.
+ */
+export async function probeSession(): Promise<SessionInfo | null> {
+  const res = await rawRequest("/session/status");
+  if (res.status === 404) {
+    const fallback = await rawRequest("/session");
+    return fallback.ok ? ((await fallback.json()) as SessionInfo) : null;
+  }
+  if (!res.ok) return null;
+  const j = (await res.json()) as SessionInfo & { authenticated?: boolean };
+  if (j.authenticated === false || !Array.isArray(j.scopes)) return null;
+  return j;
+}
+
 // ── Shapes used by the pages (subset of the Admin API views) ──
 
 export interface SessionInfo {
   via: "session" | "header";
   actor: string;
+  /** Name of the store key the session signed in with (newer servers). */
+  keyName?: string;
   scopes: string[];
   sessionId?: string;
   csrfToken?: string;

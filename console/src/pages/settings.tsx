@@ -3,7 +3,7 @@ import { useEffect, useState } from "preact/hooks";
 import { LangSwitch, type PageProps } from "../app";
 import { ApiError, api, get } from "../api";
 import { fmtTime, t } from "../i18n";
-import { ErrorBox, Field, type FieldErrors, Loading, failed, savedToast, useLoad } from "../ui";
+import { ErrorBox, Field, type FieldErrors, Loading, TableWrap, failed, savedToast, useLoad } from "../ui";
 
 interface Settings {
   strategy: unknown;
@@ -118,55 +118,61 @@ export function SettingsPage(props: PageProps) {
           <section class="card">
             <h2>{t("s.aliases")}</h2>
             {errors["aliases"] ? <p class="field-error">{errors["aliases"]}</p> : null}
-            <table>
-              <thead>
-                <tr>
-                  <th>{t("s.aliasFrom")}</th>
-                  <th>{t("s.aliasTo")}</th>
-                  <th />
-                </tr>
-              </thead>
-              <tbody>
-                {aliases.map(([from, to], i) => (
-                  // biome-ignore lint/suspicious/noArrayIndexKey: editable rows
-                  <tr key={i}>
-                    <td>
-                      <input
-                        value={from}
-                        disabled={ro}
-                        onInput={(e) =>
-                          setAliases(
-                            aliases.map((a, j) => (j === i ? [(e.currentTarget as HTMLInputElement).value, a[1]] : a)),
-                          )
-                        }
-                      />
-                    </td>
-                    <td>
-                      <input
-                        value={to}
-                        disabled={ro}
-                        onInput={(e) =>
-                          setAliases(
-                            aliases.map((a, j) => (j === i ? [a[0], (e.currentTarget as HTMLInputElement).value] : a)),
-                          )
-                        }
-                      />
-                    </td>
-                    <td>
-                      {!ro ? (
-                        <button
-                          type="button"
-                          class="ghost danger"
-                          onClick={() => setAliases(aliases.filter((_, j) => j !== i))}
-                        >
-                          ×
-                        </button>
-                      ) : null}
-                    </td>
+            <TableWrap>
+              <table>
+                <thead>
+                  <tr>
+                    <th>{t("s.aliasFrom")}</th>
+                    <th>{t("s.aliasTo")}</th>
+                    <th />
                   </tr>
-                ))}
-              </tbody>
-            </table>
+                </thead>
+                <tbody>
+                  {aliases.map(([from, to], i) => (
+                    // biome-ignore lint/suspicious/noArrayIndexKey: editable rows
+                    <tr key={i}>
+                      <td>
+                        <input
+                          value={from}
+                          disabled={ro}
+                          onInput={(e) =>
+                            setAliases(
+                              aliases.map((a, j) =>
+                                j === i ? [(e.currentTarget as HTMLInputElement).value, a[1]] : a,
+                              ),
+                            )
+                          }
+                        />
+                      </td>
+                      <td>
+                        <input
+                          value={to}
+                          disabled={ro}
+                          onInput={(e) =>
+                            setAliases(
+                              aliases.map((a, j) =>
+                                j === i ? [a[0], (e.currentTarget as HTMLInputElement).value] : a,
+                              ),
+                            )
+                          }
+                        />
+                      </td>
+                      <td>
+                        {!ro ? (
+                          <button
+                            type="button"
+                            class="ghost danger"
+                            onClick={() => setAliases(aliases.filter((_, j) => j !== i))}
+                          >
+                            ×
+                          </button>
+                        ) : null}
+                      </td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </TableWrap>
             {!ro ? (
               <div class="actions">
                 <button type="button" onClick={() => setAliases([...aliases, ["", ""]])}>
@@ -287,49 +293,51 @@ export function SettingsPage(props: PageProps) {
       <section class="card">
         <h2>{t("s.sessions")}</h2>
         <ErrorBox error={sessions.error} />
-        <table>
-          <thead>
-            <tr>
-              <th>{t("v.actor")}</th>
-              <th>IP</th>
-              <th>{t("s.lastSeen")}</th>
-              <th>{t("s.expires")}</th>
-              <th />
-            </tr>
-          </thead>
-          <tbody>
-            {(sessions.data?.data ?? []).map((x) => (
-              <tr key={x.id}>
-                <td>
-                  {x.actor} {x.current ? <span class="badge ok">{t("s.current")}</span> : null}
-                  <div class="muted small">{x.userAgent}</div>
-                </td>
-                <td>{x.ip}</td>
-                <td class="small">{fmtTime(x.lastSeenAt)}</td>
-                <td class="small">{fmtTime(x.expiresAt)}</td>
-                <td>
-                  {props.canWrite || x.current ? (
-                    <button
-                      type="button"
-                      class="danger"
-                      onClick={async () => {
-                        try {
-                          await api(`/sessions/${encodeURIComponent(x.id)}`, { method: "DELETE" });
-                          if (x.current) location.reload();
-                          else sessions.reload();
-                        } catch (err) {
-                          failed(err);
-                        }
-                      }}
-                    >
-                      {t("s.revokeSession")}
-                    </button>
-                  ) : null}
-                </td>
+        <TableWrap>
+          <table>
+            <thead>
+              <tr>
+                <th>{t("v.actor")}</th>
+                <th>IP</th>
+                <th>{t("s.lastSeen")}</th>
+                <th>{t("s.expires")}</th>
+                <th />
               </tr>
-            ))}
-          </tbody>
-        </table>
+            </thead>
+            <tbody>
+              {(sessions.data?.data ?? []).map((x) => (
+                <tr key={x.id}>
+                  <td>
+                    {x.actor} {x.current ? <span class="badge ok">{t("s.current")}</span> : null}
+                    <div class="muted small">{x.userAgent}</div>
+                  </td>
+                  <td>{x.ip}</td>
+                  <td class="small">{fmtTime(x.lastSeenAt)}</td>
+                  <td class="small">{fmtTime(x.expiresAt)}</td>
+                  <td>
+                    {props.canWrite || x.current ? (
+                      <button
+                        type="button"
+                        class="danger"
+                        onClick={async () => {
+                          try {
+                            await api(`/sessions/${encodeURIComponent(x.id)}`, { method: "DELETE" });
+                            if (x.current) location.reload();
+                            else sessions.reload();
+                          } catch (err) {
+                            failed(err);
+                          }
+                        }}
+                      >
+                        {t("s.revokeSession")}
+                      </button>
+                    ) : null}
+                  </td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </TableWrap>
       </section>
 
       <section class="card">

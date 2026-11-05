@@ -1,9 +1,104 @@
 /** 模型: published models table + edit drawer (metadata, bindings with drag-to-reorder priority). */
+import { Fragment } from "preact";
 import { useEffect, useState } from "preact/hooks";
 import type { PageProps } from "../app";
 import { type Channel, type Model, type ModelMeta, ApiError, api, get } from "../api";
-import { fmtNum, t } from "../i18n";
-import { Badge, Drawer, ErrorBox, Field, type FieldErrors, Loading, failed, savedToast, useLoad } from "../ui";
+import { DICTIONARY, fmtNum, type MsgKey, t } from "../i18n";
+import {
+  Badge,
+  Drawer,
+  ErrorBox,
+  Field,
+  type FieldErrors,
+  Loading,
+  TableWrap,
+  failed,
+  notify,
+  savedToast,
+  useLoad,
+} from "../ui";
+import { keyState } from "./channels";
+
+/** Enum value → "label" in the console's language, falling back to the value. */
+function enumLabel(prefix: string, v: string): string {
+  const key = `${prefix}.${v}`;
+  return DICTIONARY[key] ? t(key as MsgKey) : v;
+}
+
+/** Bindings as the router uses them (U6): loadbalance = one weighted set; fallback = priority groups in order. */
+export function bindingGroups(m: Pick<Model, "strategy" | "bindings">): {
+  balanced: boolean;
+  groups: Array<Array<{ label: string; weight: number; share: number; enabled: boolean }>>;
+} {
+  const balanced = m.strategy === "loadbalance";
+  const sorted = [...m.bindings].sort((a, b) => (a.priority ?? 0) - (b.priority ?? 0));
+  const buckets: Array<typeof sorted> = [];
+  if (balanced) buckets.push(sorted);
+  else
+    for (const b of sorted) {
+      const last = buckets[buckets.length - 1];
+      if (last && (last[0]?.priority ?? 0) === (b.priority ?? 0)) last.push(b);
+      else buckets.push([b]);
+    }
+  return {
+    balanced,
+    groups: buckets.map((g) => {
+      const total = g.reduce((n, b) => n + (b.enabled === false ? 0 : (b.weight ?? 1)), 0);
+      return g.map((b) => {
+        const w = b.weight ?? 1;
+        return {
+          label: `${b.channel ?? b.channelId ?? "?"}:${b.upstreamModel ?? ""}`,
+          weight: w,
+          share: total > 0 && b.enabled !== false ? Math.round((w / total) * 100) : 0,
+          enabled: b.enabled !== false,
+        };
+      });
+    }),
+  };
+}
+
+function BindingsSummary(props: { model: Model }) {
+  const { balanced, groups } = bindingGroups(props.model);
+  if (groups.length === 0 || groups[0]!.length === 0) return <span class="muted">{t("none")}</span>;
+  const chip = (b: (typeof groups)[number][number], showShare: boolean, key: string) => (
+    <span key={key} class={`chip${b.enabled ? "" : " dim"}`} title={`${t("ch.weight")} ${b.weight}`}>
+      {b.label}
+      {showShare ? <span class="muted"> {b.share}%</span> : null}
+    </span>
+  );
+  if (balanced) {
+    return (
+      <span class="lb-set" title={t("m.lbSet")}>
+        <span class="muted">⇄</span>
+        {groups[0]!.map((b, i) => chip(b, groups[0]!.length > 1, `${i}`))}
+      </span>
+    );
+  }
+  return (
+    <span class="lb-set">
+      {groups.map((g, gi) => (
+        // biome-ignore lint/suspicious/noArrayIndexKey: groups are positional
+        <Fragment key={gi}>
+          {gi > 0 ? <span class="chain-sep">→</span> : null}
+          {g.map((b, bi) => (
+            // biome-ignore lint/suspicious/noArrayIndexKey: members are positional
+            <Fragment key={bi}>
+              {bi > 0 ? <span class="chain-sep">+</span> : null}
+              {chip(b, g.length > 1, `${gi}-${bi}`)}
+            </Fragment>
+          ))}
+        </Fragment>
+      ))}
+    </span>
+  );
+}
+
+/** Every key of every channel the enabled bindings use is unusable (U7). */
+export function bindingKeysDown(m: Pick<Model, "bindings">, channels: readonly Channel[]): boolean {
+  const used = m.bindings.filter((b) => b.enabled !== false).map((b) => channels.find((c) => c.id === b.channelId));
+  if (used.length === 0 || used.some((c) => c === undefined)) return false;
+  return used.every((c) => c!.keys.length > 0 && c!.keys.every((k) => keyState(k) === "disabled"));
+}
 
 interface ModelsResponse {
   modelSource: "explicit" | "derived";
@@ -36,79 +131,84 @@ export function ModelsPage(props: PageProps) {
       {list.loading && !list.data ? (
         <Loading />
       ) : explicit ? (
-        <table class="card">
-          <thead>
-            <tr>
-              <th>{t("name")}</th>
-              <th>{t("status")}</th>
-              <th>{t("m.strategy")}</th>
-              <th>{t("m.bindings")}</th>
-              <th>{t("m.contextWindow")}</th>
-              <th>{t("m.maxOutput")}</th>
-              <th />
-            </tr>
-          </thead>
-          <tbody>
-            {(list.data?.data ?? []).map((m) => (
-              <tr key={m.id}>
-                <td>
-                  <strong>{m.name}</strong>
-                  {m.displayName ? <div class="muted small">{m.displayName}</div> : null}
-                </td>
-                <td>
-                  {!m.enabled ? (
-                    <Badge kind="muted">{t("disabled")}</Badge>
-                  ) : m.available ? (
-                    <Badge kind="ok">{t("m.available")}</Badge>
-                  ) : (
-                    <Badge kind="bad">{t("m.unavailable")}</Badge>
-                  )}
-                </td>
-                <td>
-                  {m.strategy ?? "fallback"} / {m.balance ?? "weighted"}
-                </td>
-                <td class="small">
-                  {[...m.bindings]
-                    .sort((a, b) => (a.priority ?? 0) - (b.priority ?? 0))
-                    .map((b) => `${b.channel}:${b.upstreamModel}`)
-                    .join(" → ")}
-                </td>
-                <td>{fmtNum(m.metadata.contextWindow)}</td>
-                <td>{fmtNum(m.metadata.maxOutputTokens)}</td>
-                <td>
-                  <button type="button" onClick={() => setEditing(m.id)}>
-                    {t("edit")}
-                  </button>
-                </td>
+        <TableWrap>
+          <table class="card">
+            <thead>
+              <tr>
+                <th>{t("name")}</th>
+                <th>{t("status")}</th>
+                <th>{t("m.strategy")}</th>
+                <th>{t("m.bindings")}</th>
+                <th>{t("m.contextWindow")}</th>
+                <th>{t("m.maxOutput")}</th>
+                <th />
               </tr>
-            ))}
-          </tbody>
-        </table>
+            </thead>
+            <tbody>
+              {(list.data?.data ?? []).map((m) => (
+                <tr key={m.id}>
+                  <td>
+                    <strong>{m.name}</strong>
+                    {m.displayName ? <div class="muted small">{m.displayName}</div> : null}
+                  </td>
+                  <td>
+                    {!m.enabled ? (
+                      <Badge kind="muted">{t("disabled")}</Badge>
+                    ) : m.available ? (
+                      <Badge kind="ok">{t("m.available")}</Badge>
+                    ) : (
+                      <Badge kind="bad">{t("m.unavailable")}</Badge>
+                    )}
+                    {m.enabled && m.available && bindingKeysDown(m, channels.data?.data ?? []) ? (
+                      <Badge kind="warn">{t("m.keysDown")}</Badge>
+                    ) : null}
+                  </td>
+                  <td class="small">
+                    {enumLabel("ms", m.strategy ?? "fallback")}
+                    {m.bindings.length > 1 ? <div class="muted">{enumLabel("mb", m.balance ?? "weighted")}</div> : null}
+                  </td>
+                  <td class="small">
+                    <BindingsSummary model={m} />
+                  </td>
+                  <td>{fmtNum(m.metadata.contextWindow)}</td>
+                  <td>{fmtNum(m.metadata.maxOutputTokens)}</td>
+                  <td>
+                    <button type="button" onClick={() => setEditing(m.id)}>
+                      {canWrite ? t("edit") : t("view")}
+                    </button>
+                  </td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </TableWrap>
       ) : (
-        <table class="card">
-          <thead>
-            <tr>
-              <th>{t("name")}</th>
-              <th>{t("status")}</th>
-              <th>{t("nav.channels")}</th>
-            </tr>
-          </thead>
-          <tbody>
-            {(list.data?.published ?? []).map((m) => (
-              <tr key={m.name}>
-                <td>{m.name}</td>
-                <td>
-                  {m.available ? (
-                    <Badge kind="ok">{t("m.available")}</Badge>
-                  ) : (
-                    <Badge kind="bad">{t("m.unavailable")}</Badge>
-                  )}
-                </td>
-                <td>{m.channels.join(", ")}</td>
+        <TableWrap>
+          <table class="card">
+            <thead>
+              <tr>
+                <th>{t("name")}</th>
+                <th>{t("status")}</th>
+                <th>{t("nav.channels")}</th>
               </tr>
-            ))}
-          </tbody>
-        </table>
+            </thead>
+            <tbody>
+              {(list.data?.published ?? []).map((m) => (
+                <tr key={m.name}>
+                  <td>{m.name}</td>
+                  <td>
+                    {m.available ? (
+                      <Badge kind="ok">{t("m.available")}</Badge>
+                    ) : (
+                      <Badge kind="bad">{t("m.unavailable")}</Badge>
+                    )}
+                  </td>
+                  <td>{m.channels.join(", ")}</td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </TableWrap>
       )}
       {editing ? (
         <ModelDrawer
@@ -217,6 +317,7 @@ export function ModelDrawer(props: { id: string; canWrite: boolean; channels: Ch
   }, [m]);
 
   const ro = !props.canWrite;
+  const lb = f.strategy === "loadbalance";
   const setMetaField = <K extends keyof ModelMeta>(k: K, v: ModelMeta[K] | undefined) =>
     setMeta((x) => {
       const n = { ...x };
@@ -226,6 +327,30 @@ export function ModelDrawer(props: { id: string; canWrite: boolean; channels: Ch
     });
   const reasoningMode =
     meta.reasoning === undefined ? "" : meta.reasoning === true ? "on" : meta.reasoning === false ? "off" : "efforts";
+
+  const initial = m
+    ? {
+        f: {
+          name: m.name,
+          displayName: m.displayName ?? "",
+          description: m.description ?? "",
+          enabled: m.enabled,
+          strategy: m.strategy ?? "fallback",
+          balance: m.balance ?? "weighted",
+        },
+        meta: m.metadata ?? {},
+        efforts: typeof m.metadata?.reasoning === "object" ? (m.metadata.reasoning.efforts ?? []).join(", ") : "",
+        bindings: JSON.stringify(rowsToBindings(bindingsToRows(m.bindings))),
+      }
+    : undefined;
+  const bindingsNow = JSON.stringify(rowsToBindings(rows));
+  const dirty = isNew
+    ? f.name !== "" || rows.length > 0
+    : initial !== undefined &&
+      (JSON.stringify(f) !== JSON.stringify(initial.f) ||
+        JSON.stringify(meta) !== JSON.stringify(initial.meta) ||
+        efforts !== initial.efforts ||
+        bindingsNow !== initial.bindings);
 
   const save = async () => {
     setBusy(true);
@@ -252,13 +377,28 @@ export function ModelDrawer(props: { id: string; canWrite: boolean; channels: Ch
       if (isNew) {
         const r = await api<Model>("/models", { method: "POST", body: { ...fields, bindings: rowsToBindings(rows) } });
         savedToast(r);
-      } else if (m) {
-        // One request: fields and bindings change together or not at all (review 2026-11-02 U5).
-        const r = await api<Model>(`/models/${m.id}`, {
-          method: "PATCH",
-          revision: m.revision,
-          body: { ...fields, bindings: rowsToBindings(rows) },
-        });
+      } else if (m && initial) {
+        // Only what changed (U9: the version summary then names just those fields), and in ONE request:
+        // fields and bindings change together or not at all (review 2026-11-02 U5).
+        const body: Record<string, unknown> = {};
+        const before = {
+          ...initial.f,
+          displayName: initial.f.displayName.trim() === "" ? null : initial.f.displayName,
+          description: initial.f.description.trim() === "" ? null : initial.f.description,
+        };
+        for (const [k, v] of Object.entries(fields)) {
+          if (k === "metadata") {
+            if (JSON.stringify(v) !== JSON.stringify(initial.meta)) body[k] = v;
+          } else if (JSON.stringify(v) !== JSON.stringify((before as Record<string, unknown>)[k])) body[k] = v;
+        }
+        if (bindingsNow !== initial.bindings) body["bindings"] = rowsToBindings(rows);
+        if (Object.keys(body).length === 0) {
+          notify(t("noChanges"));
+          setErrors({});
+          props.onClose();
+          return;
+        }
+        const r = await api<Model>(`/models/${m.id}`, { method: "PATCH", revision: m.revision, body });
         savedToast(r);
       }
       setErrors({});
@@ -272,7 +412,7 @@ export function ModelDrawer(props: { id: string; canWrite: boolean; channels: Ch
   };
 
   return (
-    <Drawer title={isNew ? t("m.add") : (m?.name ?? t("loading"))} onClose={props.onClose} wide>
+    <Drawer title={isNew ? t("m.add") : (m?.name ?? t("loading"))} onClose={props.onClose} wide dirty={!ro && dirty}>
       <ErrorBox error={loaded.error} />
       {!isNew && !m ? (
         <Loading />
@@ -322,8 +462,11 @@ export function ModelDrawer(props: { id: string; canWrite: boolean; channels: Ch
                 disabled={ro}
                 onChange={(e) => setF({ ...f, strategy: (e.currentTarget as HTMLSelectElement).value })}
               >
-                <option value="fallback">fallback</option>
-                <option value="loadbalance">loadbalance</option>
+                {["fallback", "loadbalance"].map((v) => (
+                  <option key={v} value={v}>
+                    {enumLabel("ms", v)} ({v})
+                  </option>
+                ))}
               </select>
             </Field>
             <Field label={t("m.balance")} error={errors["balance"]}>
@@ -332,150 +475,155 @@ export function ModelDrawer(props: { id: string; canWrite: boolean; channels: Ch
                 disabled={ro}
                 onChange={(e) => setF({ ...f, balance: (e.currentTarget as HTMLSelectElement).value })}
               >
-                <option value="weighted">weighted</option>
-                <option value="round_robin">round_robin</option>
-                <option value="least_inflight">least_inflight</option>
+                {["weighted", "round_robin", "least_inflight"].map((v) => (
+                  <option key={v} value={v}>
+                    {enumLabel("mb", v)} ({v})
+                  </option>
+                ))}
               </select>
             </Field>
           </div>
 
           <section>
             <h3>{t("m.bindings")}</h3>
-            <p class="muted small">{t("m.dragHint")}</p>
+            <p class="muted small">{lb ? t("m.lbHint") : t("m.dragHint")}</p>
             {errors["bindings"] ? <p class="field-error">{errors["bindings"]}</p> : null}
-            <table class="bindings">
-              <thead>
-                <tr>
-                  <th />
-                  <th>{t("m.priorityGroup")}</th>
-                  <th>{t("nav.channels")}</th>
-                  <th>{t("m.upstreamModel")}</th>
-                  <th>{t("ch.weight")}</th>
-                  <th>{t("enabled")}</th>
-                  <th />
-                </tr>
-              </thead>
-              <tbody>
-                {rows.map((r, i) => {
-                  const group = rowsToBindings(rows)[i]?.priority ?? 0;
-                  const upd = (patch: Partial<BindingRow>) =>
-                    setRows(rows.map((x) => (x.key === r.key ? { ...x, ...patch } : x)));
-                  return (
-                    <tr
-                      key={r.key}
-                      draggable={!ro}
-                      class={drag === i ? "dragging" : ""}
-                      onDragStart={(e) => {
-                        setDrag(i);
-                        e.dataTransfer?.setData("text/plain", String(i));
-                      }}
-                      onDragOver={(e) => e.preventDefault()}
-                      onDrop={(e) => {
-                        e.preventDefault();
-                        if (drag !== null) setRows(moveRow(rows, drag, i));
-                        setDrag(null);
-                      }}
-                      onDragEnd={() => setDrag(null)}
-                    >
-                      <td class="handle" title="drag">
-                        ⠿
-                      </td>
-                      <td class="nowrap">
-                        #{group}
-                        {i > 0 ? (
-                          <label class="check small">
-                            <input
-                              type="checkbox"
-                              checked={r.sameAsPrev}
-                              disabled={ro}
-                              onChange={(e) => upd({ sameAsPrev: (e.currentTarget as HTMLInputElement).checked })}
-                            />{" "}
-                            =↑
-                          </label>
-                        ) : null}
-                      </td>
-                      <td>
-                        <select
-                          value={r.channelId}
-                          disabled={ro}
-                          onChange={(e) => upd({ channelId: (e.currentTarget as HTMLSelectElement).value })}
-                        >
-                          <option value="">—</option>
-                          {props.channels.map((c) => (
-                            <option key={c.id} value={c.id}>
-                              {c.name}
-                            </option>
-                          ))}
-                        </select>
-                      </td>
-                      <td>
-                        <input
-                          value={r.upstreamModel}
-                          disabled={ro}
-                          list={`models-${r.channelId}`}
-                          onInput={(e) => upd({ upstreamModel: (e.currentTarget as HTMLInputElement).value })}
-                        />
-                        <datalist id={`models-${r.channelId}`}>
-                          {(props.channels.find((c) => c.id === r.channelId)?.models ?? []).map((x) => (
-                            <option key={x} value={x} />
-                          ))}
-                        </datalist>
-                      </td>
-                      <td>
-                        <input
-                          class="narrow"
-                          type="number"
-                          min="0"
-                          value={String(r.weight)}
-                          disabled={ro}
-                          onInput={(e) => upd({ weight: Number((e.currentTarget as HTMLInputElement).value) })}
-                        />
-                      </td>
-                      <td>
-                        <input
-                          type="checkbox"
-                          checked={r.enabled}
-                          disabled={ro}
-                          onChange={(e) => upd({ enabled: (e.currentTarget as HTMLInputElement).checked })}
-                        />
-                      </td>
-                      <td class="nowrap">
-                        {!ro ? (
-                          <>
-                            <button
-                              type="button"
-                              class="ghost"
-                              disabled={i === 0}
-                              onClick={() => setRows(moveRow(rows, i, i - 1))}
-                              aria-label="up"
-                            >
-                              ↑
-                            </button>
-                            <button
-                              type="button"
-                              class="ghost"
-                              disabled={i === rows.length - 1}
-                              onClick={() => setRows(moveRow(rows, i, i + 1))}
-                              aria-label="down"
-                            >
-                              ↓
-                            </button>
-                            <button
-                              type="button"
-                              class="ghost danger"
-                              onClick={() => setRows(rows.filter((x) => x.key !== r.key))}
-                              aria-label={t("delete")}
-                            >
-                              ×
-                            </button>
-                          </>
-                        ) : null}
-                      </td>
-                    </tr>
-                  );
-                })}
-              </tbody>
-            </table>
+            {rows.length === 0 && !ro ? <p class="note small">{t("m.noBindings")}</p> : null}
+            <TableWrap>
+              <table class="bindings">
+                <thead>
+                  <tr>
+                    <th />
+                    <th>{lb ? t("m.share") : t("m.priorityGroup")}</th>
+                    <th>{t("nav.channels")}</th>
+                    <th>{t("m.upstreamModel")}</th>
+                    <th>{t("ch.weight")}</th>
+                    <th>{t("enabled")}</th>
+                    <th />
+                  </tr>
+                </thead>
+                <tbody>
+                  {rows.map((r, i) => {
+                    const group = rowsToBindings(rows)[i]?.priority ?? 0;
+                    const upd = (patch: Partial<BindingRow>) =>
+                      setRows(rows.map((x) => (x.key === r.key ? { ...x, ...patch } : x)));
+                    return (
+                      <tr
+                        key={r.key}
+                        draggable={!ro}
+                        class={drag === i ? "dragging" : ""}
+                        onDragStart={(e) => {
+                          setDrag(i);
+                          e.dataTransfer?.setData("text/plain", String(i));
+                        }}
+                        onDragOver={(e) => e.preventDefault()}
+                        onDrop={(e) => {
+                          e.preventDefault();
+                          if (drag !== null) setRows(moveRow(rows, drag, i));
+                          setDrag(null);
+                        }}
+                        onDragEnd={() => setDrag(null)}
+                      >
+                        <td class="handle" title={t("m.drag")}>
+                          ⠿
+                        </td>
+                        <td class="nowrap">
+                          {lb ? `${lbShare(rows, i)}%` : `#${group}`}
+                          {i > 0 && !lb ? (
+                            <label class="check small" title={t("m.sameGroup")}>
+                              <input
+                                type="checkbox"
+                                checked={r.sameAsPrev}
+                                disabled={ro}
+                                onChange={(e) => upd({ sameAsPrev: (e.currentTarget as HTMLInputElement).checked })}
+                              />{" "}
+                              =↑
+                            </label>
+                          ) : null}
+                        </td>
+                        <td>
+                          <select
+                            value={r.channelId}
+                            disabled={ro}
+                            onChange={(e) => upd({ channelId: (e.currentTarget as HTMLSelectElement).value })}
+                          >
+                            <option value="">—</option>
+                            {props.channels.map((c) => (
+                              <option key={c.id} value={c.id}>
+                                {c.name}
+                              </option>
+                            ))}
+                          </select>
+                        </td>
+                        <td>
+                          <input
+                            value={r.upstreamModel}
+                            disabled={ro}
+                            list={`models-${r.channelId}`}
+                            onInput={(e) => upd({ upstreamModel: (e.currentTarget as HTMLInputElement).value })}
+                          />
+                          <datalist id={`models-${r.channelId}`}>
+                            {(props.channels.find((c) => c.id === r.channelId)?.models ?? []).map((x) => (
+                              <option key={x} value={x} />
+                            ))}
+                          </datalist>
+                        </td>
+                        <td>
+                          <input
+                            class="narrow"
+                            type="number"
+                            min="0"
+                            value={String(r.weight)}
+                            disabled={ro}
+                            onInput={(e) => upd({ weight: Number((e.currentTarget as HTMLInputElement).value) })}
+                          />
+                        </td>
+                        <td>
+                          <input
+                            type="checkbox"
+                            checked={r.enabled}
+                            disabled={ro}
+                            onChange={(e) => upd({ enabled: (e.currentTarget as HTMLInputElement).checked })}
+                          />
+                        </td>
+                        <td class="nowrap">
+                          {!ro ? (
+                            <>
+                              <button
+                                type="button"
+                                class="ghost"
+                                disabled={i === 0}
+                                onClick={() => setRows(moveRow(rows, i, i - 1))}
+                                aria-label={t("m.up")}
+                              >
+                                ↑
+                              </button>
+                              <button
+                                type="button"
+                                class="ghost"
+                                disabled={i === rows.length - 1}
+                                onClick={() => setRows(moveRow(rows, i, i + 1))}
+                                aria-label={t("m.down")}
+                              >
+                                ↓
+                              </button>
+                              <button
+                                type="button"
+                                class="ghost danger"
+                                onClick={() => setRows(rows.filter((x) => x.key !== r.key))}
+                                aria-label={t("delete")}
+                              >
+                                ×
+                              </button>
+                            </>
+                          ) : null}
+                        </td>
+                      </tr>
+                    );
+                  })}
+                </tbody>
+              </table>
+            </TableWrap>
             {!ro ? (
               <button
                 type="button"
@@ -672,6 +820,13 @@ export function ModelDrawer(props: { id: string; canWrite: boolean; channels: Ch
       )}
     </Drawer>
   );
+}
+
+/** Row i's share of traffic in a load-balanced model (enabled rows, by weight). */
+function lbShare(rows: readonly BindingRow[], i: number): number {
+  const total = rows.reduce((n, r) => n + (r.enabled ? Math.max(0, r.weight) : 0), 0);
+  const r = rows[i];
+  return r && r.enabled && total > 0 ? Math.round((Math.max(0, r.weight) / total) * 100) : 0;
 }
 
 function numOrUndef(v: string): number | undefined {
