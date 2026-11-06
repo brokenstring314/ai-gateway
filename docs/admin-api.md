@@ -408,11 +408,30 @@ Key view (added in 0.3.0 P5):
   `Retry-After`: the quota never refills by itself). An admitted request always runs to the end — streams are never
   cut for quota — and its tokens are added when it ends. Raise the quota or reset the usage to re-open it.
 - **In-flight reservations.** An admitted request of a key with a quota or a TPM **reserves** its estimated prompt
-  plus its output cap (the larger of `max_completion_tokens` / `max_tokens`, else the model's `maxOutputTokens`, else
-  `limits.maxOutputTokens`; × `n`; embeddings: the input only) until it settles. A new request is admitted only while
-  used + reserved < quota; otherwise **`429 quota_in_flight`** with `Retry-After: 1` (type `rate_limit_error`): the
-  requests in flight may use the rest, retry when they have finished. Concurrent requests can therefore no longer all
-  pass the check before any is counted — the overshoot is bounded by about one request. The reservation is released
+  plus its output ceiling (× `n`; embeddings: the input only) until it settles (final red team 2026-11-06 FQ-1 /
+  FQ-2):
+  - the prompt estimate counts text, tool calls, message extras, a `json_schema` and a `prediction`, and non-text
+    parts at conservative rates — 1,600 tokens per image, audio / files by their base64 size (at least 2,000 /
+    4,000), 8,000 per file referenced by id, 32,000 per video (`NON_TEXT_PART_TOKENS` in `src/core/usage.ts`). The
+    same estimate is charged when the upstream reports no usage;
+  - the output ceiling is the largest of `max_tokens` / `max_completion_tokens` and the reasoning budget fields
+    (`reasoning.max_tokens`, `thinking.budget_tokens`, `thinking.max_tokens`, `chat_template_kwargs.thinking_budget`
+    / `max_thinking_tokens`, and what the model's reasoning map turns `reasoning_effort` into). A budget above the
+    model's limit is `400 max_tokens_exceeded` naming it, like `max_tokens`. With none of them set: the model's
+    `maxOutputTokens`, else `limits.maxOutputTokens`;
+  - `n` is at most 128 (`400 invalid_n`);
+  - a reservation larger than the quota left (quota − used) is **`400 request_exceeds_quota`**, larger than the
+    key's TPM **`400 request_exceeds_tpm`** (`param` names the field to lower; the value is never clamped) — one
+    admitted request can no longer overshoot without bound;
+  - a request is admitted only while used + reserved + its own reservation ≤ quota; otherwise **`429
+    quota_in_flight`** with `Retry-After: 1` (type `rate_limit_error`): the requests in flight may use the rest, retry
+    when they have finished. As long as the upstream bills within the reservations, a key never passes its quota;
+  - a request **without** `max_tokens` / `max_completion_tokens` gets the default ceiling fitted into the quota left
+    and the TPM (minus its prompt, divided by `n`), and that value is **sent upstream as `max_tokens`**
+    (`max_completion_tokens` for an `openai` channel on api.openai.com, whose reasoning models refuse `max_tokens`),
+    never more than the context window minus the estimated prompt. Keys without a quota / TPM get the model's
+    `maxOutputTokens` the same way when the model publishes one; otherwise nothing is added. A value the client sent
+    is never changed. The reservation is released
   exactly once when the request settles (success, error, client cancel, failover, rejection) and the actual tokens are
   counted instead. Safety net: a reservation that is never settled expires after the request-lifetime bound —
   max(`requestTimeout`, `server.streamMaxDurationSeconds`) + 60 s, or max(**1 h**, `requestTimeout` + 60 s) when
@@ -422,7 +441,8 @@ Key view (added in 0.3.0 P5):
   quota** gets `403 quota_not_metered` there (keys without a quota are unaffected).
 - **RPM / TPM:** fixed one-minute windows per key. RPM counts admitted requests; TPM refuses new requests once
   the tokens of requests completed in the window reach it, and also while those tokens plus the reservations of
-  requests in flight reach it (`Retry-After: 1`). Both answer `429 rate_limit_exceeded` with `Retry-After`. A key with its own `rpm` is exempt from the rate-limit plugin's per-minute limit (its daily limit
+  requests in flight reach it (`Retry-After: 1`). One request may reserve at most the TPM, so a window holds at most
+  about twice the TPM. Both answer `429 rate_limit_exceeded` with `Retry-After`. A key with its own `rpm` is exempt from the rate-limit plugin's per-minute limit (its daily limit
   still applies); a key without one is limited by the plugin. A key without its own `tpm` uses the plugin's
   `maxTokensPerMinute` when set. Config-file keys (`auth.keys`) have no own limits.
 - **Order:** published model and `allowedModels` (403/404) → quota (403 `quota_exhausted`, 429 `quota_in_flight`)
@@ -453,7 +473,10 @@ Key view (added in 0.3.0 P5):
 | Status | `code` | When |
 | ------ | ------ | ---- |
 | 403 | `quota_exhausted` | the key's used tokens reached its quota |
-| 429 + `Retry-After: 1` | `quota_in_flight` | used + tokens reserved by the key's requests in flight reach the quota |
+| 429 + `Retry-After: 1` | `quota_in_flight` | used + tokens reserved by the key's requests in flight + this request's reservation pass the quota |
+| 400 | `request_exceeds_quota` | this one request's reservation (prompt + output ceiling × `n`) is larger than the quota left |
+| 400 | `request_exceeds_tpm` | this one request's reservation is larger than the key's whole TPM |
+| 400 | `invalid_n` | `n` above 128 |
 | 403 | `quota_not_metered` | a key with a quota on image generation / pass-through routes |
 | 429 + `Retry-After` | `rate_limit_exceeded` | the key's RPM / TPM (in-flight reservations count toward TPM) |
 | 400 | `max_tokens_exceeded` | `max_tokens` / `max_completion_tokens` above the model's `maxOutputTokens`, else `limits.maxOutputTokens` |

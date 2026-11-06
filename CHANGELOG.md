@@ -36,6 +36,33 @@ Fixes from the final red team of 2026-11-06 (admin surface and upstream handling
   `maxUpstreamResponseBytes` is `502 upstream_response_too_large` and a non-streaming body that grows past it is cut.
   Pass-through error bodies are now read up to `maxUpstreamErrorBodyBytes` (was a fixed 1 MiB).
 
+From the same red team (quota / rate-limit abuse, FQ-1 … FQ-3):
+
+- **Images, audio, files and reasoning budgets are reserved (FQ-1, high).** A key's in-flight reservation counted
+  only text and `max_tokens`, so non-text parts and reasoning budgets reserved 0: a key with a 1,000-token quota got
+  ~143 concurrent requests admitted and the upstream billed 2,860,429 tokens (20 images each) or 4,000,500 tokens
+  (`reasoning.max_tokens: 32000`). The prompt estimate now counts images (1,600 tokens each), audio and files (by
+  base64 size, with conservative minimums), video, unknown parts, message extras, a `json_schema` and a `prediction`
+  (one table: `NON_TEXT_PART_TOKENS`, `src/core/usage.ts`); the output ceiling is the largest of `max_tokens` /
+  `max_completion_tokens` and the reasoning budget fields (`reasoning.max_tokens`, `thinking.budget_tokens`,
+  `thinking.max_tokens`, `chat_template_kwargs.thinking_budget` / `max_thinking_tokens`, including what a model's
+  reasoning map turns `reasoning_effort` into). The same estimate is charged when an upstream reports no usage (was
+  77 tokens for 220,033 billed).
+- **One request is held to the quota left and the TPM (FQ-2, medium).** A single admitted request was never compared
+  with the remaining quota / the TPM, `n` was forwarded unbounded and a missing `max_tokens` let the upstream use its
+  own default: one request on a quota-1,000 key billed 32,768,001 tokens, and a `tpm: 1000` key ran one such request
+  per minute. Now `n` > 128 → `400 invalid_n`; a reservation larger than the quota left → `400
+  request_exceeds_quota`, larger than the TPM → `400 request_exceeds_tpm` (never clamped); a request is admitted only
+  while used + reserved + its own reservation ≤ quota (429 `quota_in_flight` otherwise); a request without
+  `max_tokens` gets the default ceiling fitted into the quota left / TPM and sent upstream explicitly.
+- **Content-moderation 403s no longer open the circuit (FQ-3, medium).** An upstream 403 for the request's content
+  (OpenRouter "your input was flagged", OpenAI safety system, DeepSeek "Content Exists Risk", DashScope
+  DataInspectionFailed, …) counted as a breaker failure and failed over, so three flagged prompts from a limited key
+  opened the channel for every tenant at no cost. It is now the caller's error: `400 content_filtered` with the
+  upstream's message (sanitized: control characters, URLs and token-like strings removed, ≤ 300 characters, plus
+  OpenRouter's moderation reasons — never the flagged input), no failover, no breaker failure, no key disable.
+  Credential / account / region 403s still count.
+
 ### Changed
 
 - New config keys (startup settings): `console.maxSessionsPerCredential`, `console.maxLoginsPerMinute`,
@@ -64,6 +91,23 @@ Fixes from the final red team of 2026-11-06 (admin surface and upstream handling
   - the key store uses `synchronous=NORMAL` (WAL); the server's connection has a 1 s busy timeout for admin writes,
     and background writes give up after 25 ms when the database is locked and retry on the next tick instead of
     blocking the event loop.
+- An image sent to a text-only model is `400 unsupported_input_modality`, not `context_length_exceeded` (the input
+  type is checked before the context window now that images count in the estimate).
+- A request over a model's output limit that is also too large for the key's quota gets the model's
+  `400 max_tokens_exceeded` (the more basic problem), not `request_exceeds_quota`.
+
+### Breaking
+
+- New 400s: `request_exceeds_quota`, `request_exceeds_tpm`, `invalid_n`, `content_filtered` (the last replaces
+  `502 upstream_auth_failed` for moderation refusals). Near the end of a quota, a request that does not fit is a 400
+  until the client lowers `max_tokens` / `n` (or the prompt alone no longer fits).
+- Quota admission is exact: used + reserved + this request ≤ quota (was used + reserved < quota, which let one more
+  request in). Multimodal and reasoning requests reserve much more than before, so fewer of them run at once on a
+  limited key.
+- **`max_tokens` is now sent upstream when the client omits it**, for keys with a quota or TPM (the fitted
+  reservation) and for any key on a model that publishes `maxOutputTokens` (that value, at most the context window
+  minus the prompt); `max_completion_tokens` on api.openai.com. If an upstream rejects the value, set the model's
+  `maxOutputTokens` to the upstream's real limit.
 
 ## [0.3.0] - 2026-11-05
 

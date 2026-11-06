@@ -96,6 +96,14 @@ Do these before (or right after) the first 0.3.0 start:
   without `max_tokens`, is refused with `429 quota_in_flight` / `rate_limit_exceeded` as soon as one request is in
   flight. **Action:** give models a realistic `metadata.maxOutputTokens`, lower `limits.maxOutputTokens`, or have
   clients send `max_tokens`; retry on 429.
+- **Since the release after 0.3.0** (final red team 2026-11-06 FQ-1 / FQ-2): images, audio and files count in the
+  reservation (≈ 1,600 tokens per image) and so do reasoning budgets (`reasoning.max_tokens`,
+  `thinking.budget_tokens` …); one request larger than the quota left → **`400 request_exceeds_quota`**, larger than
+  the TPM → **`400 request_exceeds_tpm`**; `n` > 128 → `400 invalid_n`; a request is admitted only while used +
+  reserved + its own reservation ≤ quota. A request without `max_tokens` gets the default fitted into the quota left /
+  TPM and sent upstream as `max_tokens` (also for unlimited keys when the model has `maxOutputTokens`). **Action:**
+  clients near the end of a quota send a smaller `max_tokens`; if an upstream refuses the explicit `max_tokens`, set
+  the model's `maxOutputTokens` to the upstream's real limit.
 - Missing / implausible upstream `usage` is estimated (CJK-aware), never counted as 0. A call cut off after reaching
   the upstream (client gone, `requestTimeout`) counts its estimated prompt plus 10 output tokens/s (non-stream).
 - Keys **with a quota** get `403 quota_not_metered` on image generation and pass-through routes.
@@ -143,6 +151,10 @@ Do these before (or right after) the first 0.3.0 start:
   should not open a channel for everyone). `circuitBreaker.countTimeouts: true` restores the old behaviour per
   channel (config file or Admin API channel settings; no console toggle yet). Upstream `429` / `402` are not
   breaker failures either; gateway-internal errors never touch the breaker.
+- **Since the release after 0.3.0** (FQ-3): an upstream `403` / `451` refusing the request's *content* (OpenRouter
+  "input was flagged", OpenAI safety system, DeepSeek "Content Exists Risk" …) → `400 content_filtered`, no failover,
+  not a breaker failure (was `502 upstream_auth_failed` and three flagged prompts opened the channel for everyone).
+  Credential / account / region 403s are unchanged.
 - Upstream `429` cools the key down softly (at most `keyCooldownSeconds`, default 30 s); `401` disables a key at
   once; `402` disables it only after 3 account-level 402s within an hour.
 - New `server.streamIdleTimeoutSeconds` (default 120): a streaming client that stops reading that long is cut off.

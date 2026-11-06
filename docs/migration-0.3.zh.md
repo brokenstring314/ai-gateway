@@ -34,6 +34,15 @@ English: [migration-0.3.md](migration-0.3.md)（更完整，含每条破坏性�
   `maxOutputTokens`、请求也不带 `max_tokens` 时会很快遇到 429：给模型设合理的 `maxOutputTokens`、调低
   `limits.maxOutputTokens`，或让客户端带上 `max_tokens`。有额度的 key 调用图片生成和透传路由 →
   `403 quota_not_metered`。
+- **0.3.0 之后的版本**（最终红队 2026-11-06 FQ-1 / FQ-2）：图片、音频、文件计入预留（每张图约 1,600 token），
+  推理预算（`reasoning.max_tokens`、`thinking.budget_tokens` 等）也计入；单个请求超过剩余额度 →
+  **`400 request_exceeds_quota`**，超过 TPM → **`400 request_exceeds_tpm`**；`n` > 128 → `400 invalid_n`；只有
+  已用 + 已预留 + 本请求预留 ≤ 额度时才放行。不带 `max_tokens` 的请求，默认上限会收进剩余额度 / TPM，并作为
+  `max_tokens` 显式发给上游（模型声明了 `maxOutputTokens` 时，不限额的 key 也一样）。**要做的**：额度快用完时让
+  客户端带较小的 `max_tokens`；上游拒绝显式 `max_tokens` 时，把模型的 `maxOutputTokens` 设成上游的真实上限。
+- **0.3.0 之后的版本**（FQ-3）：上游因请求*内容*返回 `403` / `451`（OpenRouter “input was flagged”、OpenAI 安全
+  系统、DeepSeek “Content Exists Risk” 等）→ `400 content_filtered`，不切换渠道、不计入熔断（原来是
+  `502 upstream_auth_failed`，三个被拦的提示词就能让整个渠道熔断）。凭证 / 账户 / 地区类 403 不变。
 - **`max_tokens` 规则**：`max_tokens` 与 `max_completion_tokens` 值不同 → `400 conflicting_max_tokens`；超过模型
   `maxOutputTokens`（否则 `limits.maxOutputTokens`）→ `400 max_tokens_exceeded`，一律拒绝、不压低。
 - **透传代理**：仍默认关闭；新增限制：重复的顶层 JSON 键 → `400 duplicate_json_key`，输出上限同样受模型限制，

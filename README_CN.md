@@ -711,7 +711,7 @@ ai-gateway keys revoke <id> -c config.yaml
 
 **额度语义。** key 的已用 token 达到额度后，新请求在开始前即被拒绝：**403 `quota_exhausted`**（type `insufficient_quota`；用 403 而不是 429，因为等待没有用——额度不会自动恢复）。已经放行的请求**一定完整结束**，流不会因为额度被中途切断；其 token 在结束时计入，所以最后一个请求（以及当时已在进行中的请求）可能让 key 超出额度。调高额度（`PATCH`）或 `POST /admin/keys/:id/reset-usage` 后可继续使用。图片生成和透传路由无法按 token 计量，因此设了额度的 key 在这些路由上返回 **403 `quota_not_metered`**。RPM / TPM 超限返回 **429 `rate_limit_exceeded`** 并带 `Retry-After`。
 
-**在途预留。** 为了不让并发请求在任何一个被计入之前全部通过额度检查，带额度或 TPM 的 key，每个被放行的请求在结束前会预留“估算的 prompt + 输出上限”（`max_tokens` / `max_completion_tokens` 中较大的一个，否则模型的 `maxOutputTokens`，否则 `limits.maxOutputTokens`）。只有 已用 + 已预留 < 额度 时才放行新请求，否则返回 **429 `quota_in_flight`** 并带 `Retry-After: 1`（剩余额度可能被在途请求用掉）；预留同样计入 TPM。超出额度的部分因此最多约一个请求。请求结束时（成功、出错、取消、故障转移）预留恰好释放一次，并改为计入真实 token；万一某个预留始终没有释放（程序缺陷），它会在 max(`requestTimeout`, `server.streamMaxDurationSeconds`) + 60 秒后过期，流式时长不设上限时为 max(1 小时, `requestTimeout` + 60 秒)。上游不返回或返回不可信的 `usage`（非流式响应也一样）时，按估算（考虑中日韩字符）计入，而不是记 0。已经发到上游后被中断的请求（客户端断开、`requestTimeout`）计入估算的 prompt，非流式还加上运行的每秒 10 个输出 token（不超过输出上限）；MCP 循环最终失败时，已完成的各轮照样计入。
+**在途预留。** 为了不让并发请求在任何一个被计入之前全部通过额度检查，带额度或 TPM 的 key，每个被放行的请求在结束前会预留“估算的 prompt + 输出上限”。prompt 估算把图片、音频、文件、视频按保守值计入（每张图约 1,600 token，见 `src/core/usage.ts` 的 `NON_TEXT_PART_TOKENS`）；输出上限取 `max_tokens` / `max_completion_tokens` 与推理预算字段（`reasoning.max_tokens`、`thinking.budget_tokens`、`chat_template_kwargs.thinking_budget` 等）中最大的一个，都没有时取模型的 `maxOutputTokens`，否则 `limits.maxOutputTokens`，再乘以 `n`（最多 128，超过返回 **400 `invalid_n`**）。单个请求的预留超过 key 剩余额度时返回 **400 `request_exceeds_quota`**，超过整个 TPM 时返回 **400 `request_exceeds_tpm`**：请调低 `max_tokens` / 推理预算 / `n`，网关不会替你压低。只有 已用 + 已预留 + 本请求预留 ≤ 额度 时才放行新请求，否则返回 **429 `quota_in_flight`** 并带 `Retry-After: 1`（剩余额度可能被在途请求用掉）；预留同样计入 TPM。客户端没带 `max_tokens` 时，默认上限会收进剩余额度 / TPM 之内，并**以 `max_tokens` 显式发给上游**（api.openai.com 用 `max_completion_tokens`），上游因此不会生成超过预留的量；不限额的 key 在模型声明了 `maxOutputTokens` 时也会这样发送。请求结束时（成功、出错、取消、故障转移）预留恰好释放一次，并改为计入真实 token；万一某个预留始终没有释放（程序缺陷），它会在 max(`requestTimeout`, `server.streamMaxDurationSeconds`) + 60 秒后过期，流式时长不设上限时为 max(1 小时, `requestTimeout` + 60 秒)。上游不返回或返回不可信的 `usage`（非流式响应也一样）时，按估算（考虑中日韩字符）计入，而不是记 0。已经发到上游后被中断的请求（客户端断开、`requestTimeout`）计入估算的 prompt，非流式还加上运行的每秒 10 个输出 token（不超过输出上限）；MCP 循环最终失败时，已完成的各轮照样计入。
 
 **性能。** 请求鉴权、额度、RPM、TPM 只用内存状态：请求路径上不读也不写数据库。密钥库的密钥保存在内存快照里（按 SHA-256 哈希索引，不含明文）：通过 Admin API / 控制台修改密钥后立即重载；其他进程（`ai-gateway keys ...`、`sqlite3` 命令行）做的修改在约一个 `KEY_STORE_SYNC_INTERVAL_MS`（默认 1 秒）内生效——也就是说用 CLI 吊销的密钥，运行中的服务约 1 秒内开始拒绝，而不是下一个请求就拒绝。过期时间每个请求都按当前时间检查。已用 token、每个密钥的 `usageCount` / `lastUsedAt` 以及请求日志行都大约每秒（以及关闭时）批量写入，启动时恢复；在线改配置（重载）不会清零任何计数。进程崩溃（不是 SIGTERM）最多丢失约 1 秒的计量和日志行。其他进程持有密钥库写锁时只会推迟这些后台写入（稍后重试），不会卡住请求或 `/livez`。
 
@@ -813,11 +813,14 @@ script-src 'self'; style-src 'self'; connect-src 'self'; frame-ancestors 'none'`
 | `rate-limit` 插件拒绝 | 429 + `Retry-After` | `plugin_rejected` |
 | key 的 token 额度用完（在检查模型之前判断，所以请求未知模型也是这个） | 403 | `quota_exhausted` |
 | key 的在途请求已预留了剩余额度 | 429 + `Retry-After: 1` | `quota_in_flight` |
+| 单个请求可能用掉的 token（prompt + 输出上限 × `n`）超过 key 剩余额度 / 整个 TPM | 400 | `request_exceeds_quota` / `request_exceeds_tpm` |
+| `n` 超过 128 | 400 | `invalid_n` |
 | `max_tokens` 超过模型的 `maxOutputTokens` / `limits.maxOutputTokens`（65536）；透传代理按 `max_output_tokens` / `max_completion_tokens` / `max_tokens` 中最大的算 | 400 | `max_tokens_exceeded` |
 | 有额度的 key 调用图片 / 透传路由 | 403 | `quota_not_metered` |
 | key 自己的 RPM / TPM（或插件的 TPM）超限 | 429 + `Retry-After` | `rate_limit_exceeded` |
 | 上游 4xx（400、404、413、422 等） | 原状态码 | 上游 `code`；上游 `message`/`type`/`param` 原样保留 |
 | 上游 429（没有其他 key / 渠道可用） | 429，透传上游 `Retry-After` | 上游 `code`（默认 `rate_limit_exceeded`） |
+| 上游因请求内容（审核、内容政策）返回 403 / 451 | 400 | `content_filtered`（上游消息经过清洗；不切换渠道、不计入熔断） |
 | 上游 401/403（切换后仍失败） | 502 | `upstream_auth_failed` |
 | 上游 5xx | 502 | 上游 `code`（默认 `upstream_error`） |
 | 网络错误 / 连接重置 / 200 但 body 不是 JSON | 502 | `upstream_unavailable` / `upstream_invalid_response` |
