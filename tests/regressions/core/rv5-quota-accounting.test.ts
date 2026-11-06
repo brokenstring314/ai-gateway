@@ -118,7 +118,7 @@ describe("F2 / D4 aborted or timed-out non-streaming calls are metered", () => {
     });
     restore = f.restore;
     const { gw, logs } = makeGateway({ strategy: { mode: "single" }, targets: [target("a")] });
-    const client = meteredClient("f2", 1000);
+    const client = meteredClient("f2", 1_000_000); // room for max_tokens 10000 (FQ-2)
     const big = [{ role: "user" as const, content: "p".repeat(400) }]; // ≈ 104 prompt tokens
     for (let i = 0; i < 5; i++) {
       const ac = new AbortController();
@@ -256,7 +256,7 @@ describe("F2 / D4 aborted or timed-out non-streaming calls are metered", () => {
     restore = f.restore;
     const { gw, logs } = makeGateway({ strategy: { mode: "single" }, targets: [target("a")] });
     const ac = new AbortController();
-    const it = gw.routeStream({ metadata: {}, client: meteredClient("s", 1000), signal: ac.signal } as never, {
+    const it = gw.routeStream({ metadata: {}, client: meteredClient("s", 1_000_000), signal: ac.signal } as never, {
       model: "m",
       messages: [{ role: "user", content: "p".repeat(400) }],
       maxTokens: 5000,

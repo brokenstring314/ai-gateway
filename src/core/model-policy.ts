@@ -72,6 +72,56 @@ export function outputCapOf(
   return { value: b, param: "max_completion_tokens" };
 }
 
+/**
+ * Reasoning / thinking budget fields a client can send (forwarded upstream
+ * through the allow-listed extras, providers/wire-extras.ts), by wire path.
+ * Upstreams spend up to that many hidden reasoning tokens, often on top of
+ * max_tokens (final red team 2026-11-06 FQ-1), so the limit check and the key
+ * meter's reservation hold the request to the largest of them as well.
+ */
+export const REASONING_BUDGET_FIELDS: readonly (readonly [string, string])[] = [
+  ["reasoning", "max_tokens"], // OpenRouter
+  ["thinking", "budget_tokens"], // Anthropic-style (DeepSeek / Qwen / GLM compatible endpoints …)
+  ["thinking", "max_tokens"],
+  ["chat_template_kwargs", "thinking_budget"], // vLLM / SGLang chat templates
+  ["chat_template_kwargs", "max_thinking_tokens"],
+];
+
+/** A token count the upstream may coerce: a finite number, or a numeric string. */
+function tokenCount(v: unknown): number | undefined {
+  const n = typeof v === "number" ? v : typeof v === "string" && v.trim() !== "" ? Number(v) : Number.NaN;
+  return Number.isFinite(n) && n > 0 ? Math.ceil(n) : undefined;
+}
+
+/** The largest reasoning budget in `extra` (and the `param` naming it), or undefined. */
+export function reasoningBudgetOf(
+  extra: Readonly<Record<string, unknown>> | undefined,
+): { readonly value: number; readonly param: string } | undefined {
+  if (!extra) return undefined;
+  let best: { value: number; param: string } | undefined;
+  for (const [outer, inner] of REASONING_BUDGET_FIELDS) {
+    const o = extra[outer];
+    if (o === null || typeof o !== "object" || Array.isArray(o)) continue;
+    const v = tokenCount((o as Record<string, unknown>)[inner]);
+    if (v !== undefined && (best === undefined || v > best.value)) best = { value: v, param: `${outer}.${inner}` };
+  }
+  return best;
+}
+
+/**
+ * The request's whole requested output ceiling (FQ-1): the largest of
+ * max_tokens / max_completion_tokens (outputCapOf) and any reasoning budget
+ * field. Undefined when the client set none of them.
+ */
+export function requestedOutputCapOf(
+  req: Pick<ChatCompletionRequest, "maxTokens" | "maxCompletionTokens" | "extra">,
+): { readonly value: number; readonly param: string } | undefined {
+  const cap = outputCapOf(req);
+  const budget = reasoningBudgetOf(req.extra);
+  if (budget !== undefined && (cap === undefined || budget.value > cap.value)) return budget;
+  return cap;
+}
+
 export function checkLimits(
   req: ChatCompletionRequest,
   meta: ModelMetadata | undefined,
@@ -93,7 +143,9 @@ export function checkLimits(
       "max_completion_tokens",
     );
   }
-  const cap = outputCapOf(req);
+  // max_tokens / max_completion_tokens and the reasoning budget fields (FQ-1):
+  // a budget over the limit is refused like an over-limit max_tokens.
+  const cap = requestedOutputCapOf(req);
   const requested = cap?.value;
   const param = cap?.param ?? "max_tokens";
   const own = meta?.maxOutputTokens;
@@ -153,11 +205,9 @@ export function enforceChatPolicy(
       messages: out.messages.map((msg) => (msg.role === "developer" ? { ...msg, role: "system" } : msg)),
     };
   }
-  checkLimits(out, meta, model, globalMaxOutputTokens);
-  if (!meta) return out;
-
-  // Input types.
-  if (meta.inputModalities !== undefined) {
+  // Input types first: an image sent to a text-only model is that, not a
+  // context overflow (images count ~1,600 tokens each in the estimate, FQ-1).
+  if (meta?.inputModalities !== undefined) {
     const allowed = new Set<Modality>(meta.inputModalities);
     for (const msg of out.messages) {
       if (!Array.isArray(msg.content)) continue;
@@ -169,6 +219,8 @@ export function enforceChatPolicy(
       }
     }
   }
+  checkLimits(out, meta, model, globalMaxOutputTokens);
+  if (!meta) return out;
 
   // Tools.
   const hasTools = (out.tools?.length ?? 0) > 0;

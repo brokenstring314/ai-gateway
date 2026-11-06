@@ -3,7 +3,13 @@
  * (refactor plan §1.2 core/usage.ts).
  */
 
-import type { ChatCompletionRequest, ChatCompletionResponse, StreamChunk, Usage } from "../providers/types.js";
+import type {
+  ChatCompletionRequest,
+  ChatCompletionResponse,
+  ContentPart,
+  StreamChunk,
+  Usage,
+} from "../providers/types.js";
 
 /** Sum two usages (MCP rounds). Token details are not summed: they are kept from the last round only. */
 export function addUsage(a: Usage | undefined, b: Usage | undefined): Usage | undefined {
@@ -52,18 +58,114 @@ export function messageText(content: ChatCompletionRequest["messages"][number]["
 }
 
 /**
- * Estimated prompt tokens of a request: message text and tool-call
- * arguments, the declared tools' JSON, plus 4 tokens of framing per message.
+ * Conservative token counts for the non-text content parts of a request
+ * (final red team 2026-11-06 FQ-1). Upstreams bill images, audio and files
+ * as hundreds to tens of thousands of input tokens; counting them as 0 let a
+ * key with a small quota reserve almost nothing per request and so get
+ * hundreds of concurrent requests admitted. The figures are deliberately on
+ * the high side of what the major OpenAI-compatible upstreams charge; tune
+ * them here (one table, used by the key meter's reservation, the context
+ * window check and the usage estimate when an upstream reports no usage).
  */
-export function estimatePromptTokens(
-  req: Pick<ChatCompletionRequest, "messages"> & Partial<Pick<ChatCompletionRequest, "tools">>,
-): number {
+export const NON_TEXT_PART_TOKENS = {
+  /**
+   * Per image_url part, whatever its `detail`: a large high-detail image is
+   * ~1,100–1,600 tokens on OpenAI / Anthropic-style upstreams, and not every
+   * upstream honours detail "low".
+   */
+  image: 1_600,
+  /** Per input_audio part, at least (a short clip). */
+  audioMin: 2_000,
+  /** Decoded audio bytes per token above audioMin (≈ low-bitrate speech at ~32 tokens / s). */
+  audioBytesPerToken: 128,
+  /** Per file / input_file part with inline data, at least. */
+  fileMin: 4_000,
+  /** Decoded file bytes per token above fileMin (PDF pages are billed as text plus a page image). */
+  fileBytesPerToken: 32,
+  /** A file part referenced by id or URL (its size is unknown to the gateway). */
+  fileRef: 8_000,
+  /** Per video_url / input_video part (length unknown: ~2 minutes at Gemini-style rates). */
+  video: 32_000,
+} as const;
+
+/** Bytes a base64 (or data: URL) payload decodes to. */
+function base64Bytes(data: unknown): number {
+  if (typeof data !== "string" || data.length === 0) return 0;
+  const comma = data.startsWith("data:") ? data.indexOf(",") : -1;
+  return Math.floor(((data.length - (comma + 1)) * 3) / 4);
+}
+
+function partObject(part: ContentPart, key: string): Record<string, unknown> | undefined {
+  const v = part.raw?.[key];
+  return v !== null && typeof v === "object" && !Array.isArray(v) ? (v as Record<string, unknown>) : undefined;
+}
+
+/**
+ * Estimated input tokens of one non-text content part (FQ-1): images,
+ * audio, files and video at the conservative NON_TEXT_PART_TOKENS rates;
+ * any other part type the gateway forwards verbatim (refusal …) by the size
+ * of its JSON. Text parts are counted by the caller.
+ */
+export function estimateNonTextPartTokens(part: ContentPart): number {
+  const t = NON_TEXT_PART_TOKENS;
+  switch (part.type) {
+    case "text":
+      return 0;
+    case "image_url":
+    case "input_image":
+      return t.image;
+    case "input_audio": {
+      const bytes = base64Bytes(partObject(part, "input_audio")?.["data"]);
+      return Math.max(t.audioMin, Math.ceil(bytes / t.audioBytesPerToken));
+    }
+    case "file":
+    case "input_file": {
+      const f = partObject(part, "file") ?? part.raw ?? {};
+      const bytes = base64Bytes(f["file_data"]);
+      if (bytes === 0) return t.fileRef;
+      return Math.max(t.fileMin, Math.ceil(bytes / t.fileBytesPerToken));
+    }
+    case "video_url":
+    case "input_video":
+      return t.video;
+    default:
+      return part.raw ? estimateTextTokens(JSON.stringify(part.raw)) : 0;
+  }
+}
+
+/** Estimated tokens of a message's content: its text plus its non-text parts (FQ-1). */
+export function estimateContentTokens(content: ChatCompletionRequest["messages"][number]["content"]): number {
+  if (!Array.isArray(content)) return estimateTextTokens(messageText(content));
+  let tokens = estimateTextTokens(messageText(content));
+  for (const p of content) {
+    if (p && typeof p === "object") tokens += estimateNonTextPartTokens(p);
+  }
+  return tokens;
+}
+
+/** The request fields estimatePromptTokens reads. */
+export type PromptEstimateInput = Pick<ChatCompletionRequest, "messages"> &
+  Partial<Pick<ChatCompletionRequest, "tools" | "responseFormat" | "extra">>;
+
+/**
+ * Estimated prompt tokens of a request: message text, non-text parts
+ * (images, audio, files, video — FQ-1), tool-call arguments and the
+ * message's forwarded extras (reasoning_content …), the declared tools'
+ * JSON, a json_schema response format and a `prediction`, plus 4 tokens of
+ * framing per message.
+ */
+export function estimatePromptTokens(req: PromptEstimateInput): number {
   let tokens = 0;
   for (const m of req.messages ?? []) {
-    tokens += 4 + estimateTextTokens(messageText(m.content));
+    tokens += 4 + estimateContentTokens(m.content);
     for (const tc of m.toolCalls ?? []) tokens += estimateTextTokens(tc.function?.arguments ?? "");
+    if (m.extra && Object.keys(m.extra).length > 0) tokens += estimateTextTokens(JSON.stringify(m.extra));
   }
   if (req.tools && req.tools.length > 0) tokens += estimateTextTokens(JSON.stringify(req.tools));
+  const schema = req.responseFormat?.jsonSchema;
+  if (schema !== undefined) tokens += estimateTextTokens(JSON.stringify(schema));
+  const prediction = req.extra?.["prediction"];
+  if (prediction !== undefined) tokens += estimateTextTokens(JSON.stringify(prediction));
   return tokens;
 }
 
@@ -161,10 +263,7 @@ export function accumulateChunk(acc: StreamAccumulator, chunk: StreamChunk): voi
  * for one — stream_options.include_usage — wherever the provider supports
  * it): estimated with estimateTextTokens so a token quota is not undercounted.
  */
-export function estimateStreamUsage(
-  req: Pick<ChatCompletionRequest, "messages"> & Partial<Pick<ChatCompletionRequest, "tools">>,
-  acc: StreamAccumulator,
-): Usage {
+export function estimateStreamUsage(req: PromptEstimateInput, acc: StreamAccumulator): Usage {
   const promptTokens = estimatePromptTokens(req);
   const completionTokens =
     estimateTextTokens(acc.content) +
@@ -203,7 +302,7 @@ export function estimateResponseCompletionTokens(res: Pick<ChatCompletionRespons
 
 /** Estimated usage of a non-streaming chat request and its response (upstream reported none). */
 export function estimateChatUsage(
-  req: Pick<ChatCompletionRequest, "messages"> & Partial<Pick<ChatCompletionRequest, "tools">>,
+  req: PromptEstimateInput,
   res: Pick<ChatCompletionResponse, "choices"> | undefined,
 ): Usage {
   const promptTokens = estimatePromptTokens(req);

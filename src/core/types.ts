@@ -157,4 +157,10 @@ export interface RequestRun<Req, Res, Chunk = never> {
   finalized: boolean;
   /** Tokens held in the key meter while the request runs (released exactly once in finalize). */
   reservation?: unknown;
+  /**
+   * Per-choice output ceiling the key meter reserved for (FQ-2), set when the
+   * key has a quota or TPM. A request without max_tokens is sent upstream
+   * with this value, so the upstream cannot generate more than was reserved.
+   */
+  reservedOutputCap?: number;
 }

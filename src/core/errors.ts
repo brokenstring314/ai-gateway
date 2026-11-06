@@ -21,7 +21,7 @@ import { ReadableStreamError, type StreamErrorCode } from "../providers/sse-pars
 import { CircuitOpenError } from "../routing/circuit-breaker.js";
 import { ConcurrencyLimitError } from "../routing/concurrency-limiter.js";
 import { NoUsableKeyError } from "../routing/key-pool.js";
-import { isTimeoutAbort, isTimeoutError } from "./outcome.js";
+import { contentFilteredMessage, isContentFilteredError, isTimeoutAbort, isTimeoutError } from "./outcome.js";
 
 export type ErrorKind =
   | "invalid_request" // 400  gateway-side validation
@@ -29,7 +29,7 @@ export type ErrorKind =
   | "plugin_rejected" // 403, or the plugin's own status (rate-limit → 429)
   | "key_limit" // 403 quota_exhausted / quota_not_metered, 429 key RPM / TPM (0.3.0 key limits)
   | "model_not_found" // 404  no target serves this model / capability
-  | "upstream_client" // upstream 4xx passed through (400/404/409/413/422 …)
+  | "upstream_client" // upstream 4xx passed through (400/404/409/413/422 …); 403 content moderation → 400 content_filtered
   | "upstream_auth" // upstream 401/403 after failover → 502
   | "upstream_rate" // upstream 429 → 429 with Retry-After
   | "upstream_server" // upstream 5xx → 502
@@ -129,6 +129,34 @@ export function quotaInFlight(message: string): GatewayError {
     type: "rate_limit_error",
     code: "quota_in_flight",
     retryAfter: "1",
+  });
+}
+
+/**
+ * 400 request_exceeds_quota (final red team 2026-11-06 FQ-2): this one
+ * request may use more tokens (estimated prompt + its output ceiling) than
+ * the key has left, so it is refused before it starts instead of letting a
+ * single admitted request overshoot the quota without bound. The client must
+ * lower max_tokens / a reasoning budget / n; the value is never clamped.
+ */
+export function requestExceedsQuota(message: string, param = "max_tokens"): GatewayError {
+  return new GatewayError("key_limit", {
+    status: 400,
+    message,
+    type: "invalid_request_error",
+    code: "request_exceeds_quota",
+    param,
+  });
+}
+
+/** 400 request_exceeds_tpm (FQ-2): this one request may use more tokens than the key's whole TPM; it never fits. */
+export function requestExceedsTpm(message: string, param = "max_tokens"): GatewayError {
+  return new GatewayError("key_limit", {
+    status: 400,
+    message,
+    type: "invalid_request_error",
+    code: "request_exceeds_tpm",
+    param,
   });
 }
 
@@ -354,6 +382,19 @@ function fromProviderError(p: ProviderError): GatewayError {
   }
 
   // origin "upstream": an HTTP error response (or an SSE error event) from the target.
+  // A 403 for the request's CONTENT (moderation, content policy) is the
+  // caller's problem, not the target's credential (final red team 2026-11-06
+  // FQ-3): 400 content_filtered with the upstream's message, sanitized.
+  if (isContentFilteredError(p)) {
+    return new GatewayError("upstream_client", {
+      status: 400,
+      message: contentFilteredMessage(p),
+      type: "invalid_request_error",
+      code: "content_filtered",
+      target,
+      cause: p,
+    });
+  }
   if (status === 401 || status === 403) {
     return new GatewayError("upstream_auth", {
       status: 502,

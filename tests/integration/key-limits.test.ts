@@ -133,14 +133,19 @@ describe("token quota", () => {
 
   it("a stream the client abandons after the first chunk is still counted (no quota bypass)", async () => {
     const h = await adminHarness(file());
-    const k = await createKey(h, { quotaTokens: 1 });
+    // 6 = the smallest quota "hi" fits (≈5 prompt tokens + 1 output token, FQ-2).
+    const k = await createKey(h, { quotaTokens: 6 });
     const r = await chat(h, k.key, { stream: true });
+    expect(r.status).toBe(200);
     const reader = r.body!.getReader();
     await reader.read();
     await reader.cancel();
     for (let i = 0; i < 50 && ((await getKey(h, k.id)).usedTokens ?? 0) === 0; i++) await Bun.sleep(10);
     expect((await getKey(h, k.id)).usedTokens).toBeGreaterThan(0);
-    expect((await chat(h, k.key)).status).toBe(403);
+    // What is left no longer fits a request (or nothing is left).
+    const next = await chat(h, k.key);
+    expect([400, 403]).toContain(next.status);
+    expect(["request_exceeds_quota", "quota_exhausted"]).toContain(((await next.json()) as any).error.code);
   });
 
   it("image generation cannot be metered in tokens: keys with a quota get 403 quota_not_metered", async () => {
@@ -166,7 +171,8 @@ describe("token quota", () => {
 
   it("raising the quota (PATCH) or reset-usage re-opens an exhausted key", async () => {
     const h = await adminHarness(file());
-    const k = await createKey(h, { quotaTokens: 5 });
+    // 8 fits one "hi" (≈5 prompt + max_tokens 3, FQ-2); the upstream then bills 10.
+    const k = await createKey(h, { quotaTokens: 8 });
     up.enqueue(HOST, jsonWithUsage(10));
     expect((await chat(h, k.key)).status).toBe(200);
     expect((await chat(h, k.key)).status).toBe(403);
@@ -235,7 +241,7 @@ describe("counters survive a config reload", () => {
     const h = await adminHarness(
       file({ plugins: [{ name: "rate-limit", stage: "before_request", config: { tpm: 15 } }] }),
     );
-    const q = await createKey(h, { quotaTokens: 5 });
+    const q = await createKey(h, { quotaTokens: 8 });
     const r = await createKey(h, { rpm: 1 });
     const t = await createKey(h, {});
     for (let i = 0; i < 4; i++) up.enqueue(HOST, jsonWithUsage(10));

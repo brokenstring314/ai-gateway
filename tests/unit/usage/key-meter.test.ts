@@ -175,23 +175,24 @@ describe("KeyMeter persistence", () => {
 });
 
 describe("KeyMeter: in-flight reservations (RB3)", () => {
-  it("admits while used + reserved < quota, then 429 quota_in_flight; settle releases exactly once", () => {
+  it("admits while used + reserved + this reservation ≤ quota, then 429 quota_in_flight; settle releases exactly once (FQ-1)", () => {
     const m = new KeyMeter();
     const k = key("r1", { quotaTokens: 1000 });
     const a = m.admit(k, { reserve: () => 400 });
     const b = m.admit(k, { reserve: () => 400 });
-    m.admit(k, { reserve: () => 400 }); // 800 < 1000: admitted (overshoot bounded by one request)
-    expect(m.reserved("r1")).toBe(1200);
+    // 800 + 400 > 1000: refused — admitted reservations never add up past the quota.
     const e = refused(() => m.admit(k, { reserve: () => 400 }));
     expect(e.status).toBe(429);
     expect(e.code).toBe("quota_in_flight");
     expect(e.retryAfter).toBe("1");
+    m.admit(k, { reserve: () => 200 }); // exactly fits: 1000
+    expect(m.reserved("r1")).toBe(1000);
     m.settle(k, a, 300);
     m.settle(k, a, 300); // no-op
-    expect(m.reserved("r1")).toBe(800);
+    expect(m.reserved("r1")).toBe(600);
     expect(m.used("r1")).toBe(300);
     m.settle(k, b, 0);
-    expect(m.reserved("r1")).toBe(400);
+    expect(m.reserved("r1")).toBe(200);
   });
 
   it("a key without quota or TPM holds no reservation; reset keeps in-flight reservations", () => {

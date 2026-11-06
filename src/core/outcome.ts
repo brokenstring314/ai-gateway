@@ -69,6 +69,129 @@ export function isLocalError(err: unknown): boolean {
   return LOCAL_ERROR_TYPES.some((T) => err instanceof T);
 }
 
+// ── Content moderation (final red team 2026-11-06 FQ-3) ──
+
+/** Statuses an upstream refuses a request's CONTENT with (OpenRouter moderation: 403; legal blocks: 451). */
+const CONTENT_FILTER_STATUSES: ReadonlySet<number> = new Set([403, 451]);
+
+/**
+ * Markers of a refusal for the request's content in an upstream error body:
+ * OpenRouter "your input was flagged" / "requires moderation", OpenAI
+ * content / safety policy, Azure content_filter, DeepSeek "Content Exists
+ * Risk", DashScope DataInspectionFailed, and their Chinese equivalents.
+ */
+const CONTENT_MARKERS =
+  /flagged|moderation|content[\s_-]?(?:policy|filter|management|risk|safety)|content exists risk|safety[\s_-]?(?:system|policy|filter)|usage polic|inappropriate|data[\s_-]?inspection|sensitive[\s_-]?(?:content|word)|敏感|违规|不当内容|内容安全|内容审核|审核未通过/i;
+
+/**
+ * Markers of a credential / account / permission problem: these 403s stay
+ * target failures (breaker, failover) even if the text also mentions a
+ * policy, e.g. "your account was flagged".
+ */
+const CREDENTIAL_MARKERS =
+  /api[\s_-]?key|invalid[\s_-]?(?:key|token)|unauthori[sz]ed|authenticat|permission[\s_-]?denied|not (?:allowed|authorized|permitted) to (?:access|use)|unsupported[\s_-]?(?:country|region)|region|country|account|organi[sz]ation|billing|credit|balance|quota|subscription|whitelist|ip address|forbidden ip/i;
+
+interface UpstreamFailure {
+  readonly statusCode: number;
+  readonly origin?: unknown;
+  readonly detail?: unknown;
+  readonly upstream?: Readonly<Record<string, unknown>>;
+}
+
+/** The upstream HTTP failure inside `err` (unwrapping retry / fallback wrappers), or undefined. */
+function upstreamFailureOf(err: unknown): UpstreamFailure | undefined {
+  let cur: unknown = err;
+  for (let depth = 0; depth < 8 && cur !== null && typeof cur === "object"; depth++) {
+    if ("statusCode" in cur) {
+      const f = cur as UpstreamFailure;
+      if (typeof f.statusCode !== "number") return undefined;
+      // A ProviderError says where it came from; only an upstream response can be a moderation refusal.
+      if ("origin" in cur && f.origin !== "upstream") return undefined;
+      return f;
+    }
+    const name = (cur as { name?: unknown }).name;
+    if ((name === "RetryExhaustedError" || name === "FallbackExhaustedError") && "cause" in cur) {
+      cur = (cur as { cause: unknown }).cause;
+      continue;
+    }
+    return undefined;
+  }
+  return undefined;
+}
+
+function textOf(v: unknown): string {
+  return typeof v === "string" ? v : typeof v === "number" ? String(v) : "";
+}
+
+/** OpenRouter's moderation metadata: { reasons: [...], flagged_input: "..." }. */
+function moderationReasons(upstream: Readonly<Record<string, unknown>> | undefined): string[] {
+  const meta = upstream?.["metadata"];
+  if (meta === null || typeof meta !== "object" || Array.isArray(meta)) return [];
+  const reasons = (meta as Record<string, unknown>)["reasons"];
+  return Array.isArray(reasons) ? reasons.filter((r): r is string => typeof r === "string") : [];
+}
+
+function hasFlaggedInput(upstream: Readonly<Record<string, unknown>> | undefined): boolean {
+  const meta = upstream?.["metadata"];
+  return meta !== null && typeof meta === "object" && !Array.isArray(meta) && "flagged_input" in meta;
+}
+
+/**
+ * Whether an upstream 403 / 451 refused the request for its CONTENT
+ * (moderation, content / safety policy) rather than for the operator's
+ * credential (FQ-3). Such a refusal is the caller's: it must not count toward
+ * the circuit breaker, must not fail over (every channel would see the same
+ * content) and must not disable the channel key — otherwise one tenant can
+ * open the circuit for everyone with three flagged prompts. Detected from the
+ * error body (message, code, type, OpenRouter metadata.reasons /
+ * flagged_input); a body that also names a credential, account or region
+ * problem stays a target failure.
+ */
+export function isContentFilteredError(err: unknown): boolean {
+  const f = upstreamFailureOf(err);
+  if (!f || !CONTENT_FILTER_STATUSES.has(f.statusCode)) return false;
+  const up = f.upstream;
+  const text = [textOf(up?.["message"]), textOf(up?.["code"]), textOf(up?.["type"]), textOf(f.detail)].join(" \n ");
+  if (CREDENTIAL_MARKERS.test(text)) return false;
+  return CONTENT_MARKERS.test(text) || moderationReasons(up).length > 0 || hasFlaggedInput(up);
+}
+
+/** `s` with C0 / DEL / C1 control characters replaced by spaces. */
+function withoutControlChars(s: string): string {
+  let out = "";
+  for (const ch of s) {
+    const c = ch.charCodeAt(0);
+    out += c < 0x20 || (c >= 0x7f && c <= 0x9f) ? " " : ch;
+  }
+  return out;
+}
+
+/** Longest upstream moderation message passed on to the client. */
+const CONTENT_FILTER_MESSAGE_MAX = 300;
+
+/**
+ * The client-facing message of a content_filtered error: the upstream's own
+ * message, sanitized — control characters removed, URLs and token-like
+ * strings masked, at most CONTENT_FILTER_MESSAGE_MAX characters — plus
+ * OpenRouter's moderation reasons. Never the flagged input itself.
+ */
+export function contentFilteredMessage(err: unknown): string {
+  const f = upstreamFailureOf(err);
+  const raw = textOf(f?.upstream?.["message"]) || textOf(f?.detail);
+  let msg = withoutControlChars(raw)
+    .replace(/\bhttps?:\/\/\S+/gi, "[url]")
+    .replace(/\b(?=[A-Za-z0-9_-]*\d)(?=[A-Za-z0-9_-]*[A-Za-z])[A-Za-z0-9_-]{24,}\b/g, "[redacted]")
+    .replace(/\s+/g, " ")
+    .trim();
+  if (msg.length > CONTENT_FILTER_MESSAGE_MAX) msg = `${msg.slice(0, CONTENT_FILTER_MESSAGE_MAX - 1)}…`;
+  const reasons = moderationReasons(f?.upstream)
+    .map((r) => r.replace(/[^\w .,/-]/g, "").slice(0, 40))
+    .filter((r) => r !== "")
+    .slice(0, 8);
+  const head = "The upstream refused this request's content (content moderation)";
+  return `${head}${msg ? `: ${msg}` : "."}${reasons.length > 0 ? ` Reasons: ${reasons.join(", ")}.` : ""}`;
+}
+
 /**
  * Upstream statuses caused by the TARGET rather than the caller's request:
  * 401/403 = the operator's credential for that target is revoked, expired or
@@ -91,6 +214,8 @@ const TARGET_CAUSED_4XX: ReadonlySet<number> = new Set([401, 403, 404]);
  */
 export function isBreakerFailure(err: unknown): boolean {
   if (isLocalError(err)) return false;
+  // A content-moderation refusal is the caller's (FQ-3), whatever its status.
+  if (isContentFilteredError(err)) return false;
   if (err !== null && typeof err === "object" && "statusCode" in err) {
     const status = (err as { statusCode: unknown }).statusCode;
     if (typeof status !== "number" || status === 0) return true;
@@ -111,7 +236,8 @@ export function isBreakerFailure(err: unknown): boolean {
  *  - client abort / gateway request timeout: no (the request is over);
  *  - circuit open / local concurrency limit (no status): yes, skip the target;
  *  - transport errors, 5xx, 408, 429: yes;
- *  - 401 / 403 / 404 (target-caused, see TARGET_CAUSED_4XX): yes;
+ *  - 401 / 403 / 404 (target-caused, see TARGET_CAUSED_4XX): yes, except a
+ *    403 / 451 content-moderation refusal (isContentFilteredError): no;
  *  - 402: yes (another channel bills another account; review 2026-11-02 C7),
  *    but it is never a breaker failure (isBreakerFailure) and, when no
  *    candidate is left, the client gets the 402;
@@ -123,6 +249,8 @@ export function isBreakerFailure(err: unknown): boolean {
 export function isFailoverEligible(err: unknown): boolean {
   if (isAbortError(err) || isTimeoutError(err)) return false;
   if (isLocalError(err)) return false;
+  // Every channel would refuse the same content (FQ-3).
+  if (isContentFilteredError(err)) return false;
   const status = errorStatus(err);
   if (status === undefined || status === 0) return true;
   if (status >= 500) return true;
@@ -172,6 +300,7 @@ export interface AttemptClassification {
  *  - client abort: success if output had started, else release;
  *  - caller-caused 4xx, upstream 404 and 429: release (see isBreakerFailure);
  *  - a local engine error (RangeError, TypeError …, see isLocalError): release;
+ *  - a content-moderation 403 / 451 (isContentFilteredError): release;
  *  - anything else (network, 5xx, 408, 401/403, broken stream): failure.
  * Failover eligibility is decided separately by isFailoverEligible().
  */

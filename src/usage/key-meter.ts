@@ -12,15 +12,23 @@
  *  - a request is refused before it starts when the key has already used
  *    its quota (used ≥ quota): 403 quota_exhausted;
  *  - in-flight reservations (review 2026-11-02 RB3): an admitted request
- *    holds a reservation (its estimated prompt + its output cap) until it
- *    settles, and a new request is admitted only while used + reserved <
- *    quota; otherwise 429 quota_in_flight (Retry-After 1 s) — the in-flight
- *    requests may use the rest. Concurrent requests can therefore no longer
- *    all pass the check before any of them is counted: the overshoot is
- *    bounded by roughly one request instead of N. The same reservation
- *    counts toward TPM (minute tokens + reserved < TPM). A reservation is
- *    released exactly once when the request settles (success, error, client
- *    cancel, failover): Pipeline.finalize;
+ *    holds a reservation (its estimated prompt — images, audio and files at
+ *    conservative rates — plus its output ceiling, reasoning budgets
+ *    included, times n) until it settles;
+ *  - one request larger than the key has left (final red team 2026-11-06
+ *    FQ-2): a reservation above quota − used is refused with 400
+ *    request_exceeds_quota (lower max_tokens / the reasoning budget / n;
+ *    never clamped), and above the key's TPM with 400 request_exceeds_tpm —
+ *    a single admitted request can no longer overshoot without bound;
+ *  - a new request is admitted only while used + reserved + its own
+ *    reservation ≤ quota; otherwise 429 quota_in_flight (Retry-After 1 s) —
+ *    the in-flight requests may use the rest. Together with the rule above,
+ *    the tokens the admitted requests can spend never exceed the quota as
+ *    long as the reservations hold (the estimate is conservative; the
+ *    upstream's reported usage is what is counted). The same reservations
+ *    count toward TPM (see below);
+ *    A reservation is released exactly once when the request settles
+ *    (success, error, client cancel, failover): Pipeline.finalize;
  *  - safety net for reservation leaks (RB3 follow-up): a reservation that is
  *    never settled (a code path that skips finalize) expires on its own after
  *    a TTL bound to the request lifetime — the longest a request can run
@@ -31,21 +39,31 @@
  *    an expired reservation still counts its tokens and releases nothing twice;
  *  - a request that was admitted always finishes — a stream is never cut
  *    for quota. Its tokens (estimated when the upstream sends no usage) are
- *    counted when it completes, so the last request(s), and requests that
- *    were already in flight, may take the key past its quota;
+ *    counted when it completes; when the upstream bills more than the
+ *    reservation (an estimate), the key can still end up past its quota;
  *  - the quota does not refill by itself: an operator raises it or resets
  *    the usage (POST /admin/keys/:id/reset-usage).
  *
  * RPM / TPM are fixed one-minute windows per key (the window starts at the
  * key's first request in it, like the rate-limit plugin). RPM counts
  * admitted requests; TPM counts tokens of requests that completed in the
- * window and refuses new requests once the window holds ≥ TPM tokens.
+ * window and refuses new requests once the window holds ≥ TPM tokens (or,
+ * with requests in flight, window tokens + reservations ≥ TPM). One request
+ * may reserve at most the TPM (400 request_exceeds_tpm, FQ-2), so a window
+ * can hold at most about twice the TPM.
  * A key without its own RPM falls back to the rate-limit plugin (which
  * skips keys that have one); a key without its own TPM uses the plugin's
  * maxTokensPerMinute, if set.
  */
 
-import { keyRateLimited, quotaExhausted, quotaInFlight, quotaNotMetered } from "../core/errors.js";
+import {
+  keyRateLimited,
+  quotaExhausted,
+  quotaInFlight,
+  quotaNotMetered,
+  requestExceedsQuota,
+  requestExceedsTpm,
+} from "../core/errors.js";
 
 const MINUTE_MS = 60_000;
 
@@ -97,6 +115,23 @@ export interface Reservation {
   released: boolean;
 }
 
+/** The most one request of a key may reserve (AdmitOptions.reserve). */
+export interface ReservationRoom {
+  /** Tokens left in the key's quota (quota − used), when it has one. */
+  readonly quotaLeft?: number;
+  /** The key's TPM (its own or the global one), when it has one. */
+  readonly tpm?: number;
+}
+
+/** What a request reserves, and which request field to name when it is too large. */
+export interface ReservationPlan {
+  readonly tokens: number;
+  /** The request field that sets the reservation (max_tokens, reasoning.max_tokens, n …), for the 400. */
+  readonly param?: string;
+  /** Explains the reservation in the 400's message ("about 120 input tokens + max_tokens 4096"). */
+  readonly describe?: string;
+}
+
 export interface AdmitOptions {
   /** TPM for keys without their own (the rate-limit plugin's maxTokensPerMinute). */
   readonly globalTpm?: number;
@@ -104,9 +139,13 @@ export interface AdmitOptions {
   readonly unmetered?: boolean;
   /**
    * Tokens to reserve for this request while it runs (estimated prompt +
-   * output cap). Only called for a key with a quota or a TPM.
+   * output cap). Only called for a key with a quota or a TPM, with the most
+   * this request may reserve (`room`): the quota the key has left and its
+   * TPM. A request that sets no output limit gets one that fits (FQ-2); a
+   * limit the client set is never lowered — a reservation above `room` is
+   * refused (400 request_exceeds_quota / request_exceeds_tpm).
    */
-  readonly reserve?: () => number;
+  readonly reserve?: (room: ReservationRoom) => ReservationPlan | number;
   /**
    * How long an unsettled reservation may hold tokens before the leak sweep
    * releases it (ms; default DEFAULT_RESERVATION_TTL_MS). Pipeline passes the
@@ -136,8 +175,10 @@ export class KeyMeter {
   /**
    * Admit a request or throw: 403 quota_exhausted (quota used up), 403
    * quota_not_metered (unmetered route with a quota), 429 quota_in_flight
-   * (in-flight reservations hold the rest of the quota), 429
-   * rate_limit_exceeded with Retry-After (RPM / TPM). An admitted request
+   * (in-flight reservations hold the rest of the quota), 400
+   * request_exceeds_quota / request_exceeds_tpm (this request alone is
+   * larger than the quota left / the TPM, FQ-2), 429 rate_limit_exceeded
+   * with Retry-After (RPM / TPM). An admitted request
    * counts toward RPM and, for a key with a quota or TPM, holds a
    * reservation that the caller must settle() exactly once.
    */
@@ -165,33 +206,70 @@ export class KeyMeter {
             "The quota does not refill by itself: ask the gateway owner to raise it or reset the usage.",
         );
       }
-      if (c.reserved > 0 && c.used + c.reserved >= quota) {
+    }
+    roll(c, now);
+    const rpm = limits?.rpm ?? null;
+    const hasTpm = tpm !== undefined && tpm !== null;
+    // This request's own reservation (FQ-1 / FQ-2), before any check that uses it.
+    let want = 0;
+    let param = "max_tokens";
+    let describe = "";
+    if (quota !== null || hasTpm) {
+      const room: ReservationRoom = {
+        ...(quota !== null ? { quotaLeft: quota - c.used } : {}),
+        ...(hasTpm ? { tpm } : {}),
+      };
+      const plan = opts.reserve?.(room) ?? 0;
+      const raw = typeof plan === "number" ? plan : plan.tokens;
+      want = Number.isFinite(raw) && raw > 0 ? Math.ceil(raw) : 0;
+      if (typeof plan === "object") {
+        param = plan.param ?? param;
+        describe = plan.describe ?? "";
+      }
+    }
+    const needs = describe ? ` (${describe})` : "";
+    if (quota !== null) {
+      const left = quota - c.used;
+      if (want > left) {
+        throw requestExceedsQuota(
+          `This request may use up to ${want} tokens${needs}, more than this API key has left ` +
+            `(${left} of ${quota} tokens). Lower ${param}${param === "n" ? "" : " (or n)"} or shorten the input; ` +
+            "it is never lowered for you.",
+          param,
+        );
+      }
+      if (c.reserved > 0 && c.used + c.reserved + want > quota) {
         throw quotaInFlight(
           `This API key's requests in flight may use the rest of its token quota (${c.used} of ${quota} tokens used, ` +
-            `up to ${c.reserved} more reserved). Retry when they have finished.`,
+            `up to ${c.reserved} more reserved, this request needs up to ${want}). Retry when they have finished.`,
         );
       }
     }
-    roll(c, now);
     const retryAfter = (c.minuteStart + MINUTE_MS - now) / 1000;
-    const rpm = limits?.rpm ?? null;
     if (rpm !== null && c.minuteRequests >= rpm) {
       throw keyRateLimited(`Rate limit exceeded for this API key: ${rpm} requests per minute`, retryAfter);
     }
-    const hasTpm = tpm !== undefined && tpm !== null;
-    if (hasTpm && c.minuteTokens >= tpm) {
-      throw keyRateLimited(`Rate limit exceeded for this API key: ${tpm} tokens per minute`, retryAfter);
-    }
-    if (hasTpm && c.reserved > 0 && c.minuteTokens + c.reserved >= tpm) {
-      throw keyRateLimited(
-        `Rate limit exceeded for this API key: ${tpm} tokens per minute (including requests in flight)`,
-        1,
-      );
+    if (hasTpm) {
+      if (want > tpm) {
+        throw requestExceedsTpm(
+          `This request may use up to ${want} tokens${needs}, more than this API key's limit of ${tpm} tokens ` +
+            `per minute, so it can never be admitted. Lower ${param}${param === "n" ? "" : " (or n)"} or shorten the input.`,
+          param,
+        );
+      }
+      if (c.minuteTokens >= tpm) {
+        throw keyRateLimited(`Rate limit exceeded for this API key: ${tpm} tokens per minute`, retryAfter);
+      }
+      if (c.reserved > 0 && c.minuteTokens + c.reserved >= tpm) {
+        throw keyRateLimited(
+          `Rate limit exceeded for this API key: ${tpm} tokens per minute (including requests in flight)`,
+          1,
+        );
+      }
     }
     c.minuteRequests++;
     if (quota === null && !hasTpm) return undefined;
-    const want = opts.reserve?.() ?? 0;
-    const tokens = Number.isFinite(want) && want > 0 ? Math.ceil(want) : 0;
+    const tokens = want;
     const ttl = opts.reservationTtlMs;
     const ttlMs = ttl !== undefined && Number.isFinite(ttl) && ttl > 0 ? ttl : DEFAULT_RESERVATION_TTL_MS;
     const r: Reservation = { id, tokens, settled: false, expiresAt: now + ttlMs, released: tokens === 0 };

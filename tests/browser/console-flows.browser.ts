@@ -201,7 +201,7 @@ test("keys: create → plaintext once → call /v1 → usage shown → quota exh
   const form = page.getByRole("dialog", { name: "创建密钥" });
   await form.locator("label.field", { hasText: "名称" }).locator("input").fill("app-1");
   await form.locator("label.check", { hasText: "fake-chat" }).locator("input").check();
-  await form.locator("label.field", { hasText: "token 额度" }).locator("input").fill("100");
+  await form.locator("label.field", { hasText: "token 额度" }).locator("input").fill("99");
   await form.getByRole("button", { name: "创建" }).click();
   const shown = page.locator(".modal p.secret code");
   await expect(shown).toBeVisible();
@@ -220,10 +220,10 @@ test("keys: create → plaintext once → call /v1 → usage shown → quota exh
     await page.getByRole("button", { name: "刷新" }).click();
     await expect(row).toContainText("33", { timeout: 1000 });
   }).toPass({ timeout: 10_000 });
-  await expect(row).toContainText("剩余 67");
+  await expect(row).toContainText("剩余 66");
 
-  // 33 + 33 + 33 = 99 < 100 → the 4th request is admitted (and finishes); then 403 quota_exhausted.
-  for (let i = 0; i < 3; i++) expect((await chat(gw, clientKey, "fake-chat")).status).toBe(200);
+  // Without max_tokens each request is fitted into what is left (FQ-2): 33 + 33 + 33 = 99 → then 403 quota_exhausted.
+  for (let i = 0; i < 2; i++) expect((await chat(gw, clientKey, "fake-chat")).status).toBe(200);
   const over = await chat(gw, clientKey, "fake-chat");
   expect(over.status).toBe(403);
   const err = ((await over.json()) as { error: { code: string; type: string } }).error;

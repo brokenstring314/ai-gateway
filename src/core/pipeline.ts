@@ -17,7 +17,7 @@
  * finalize(): a stream run calls finalize(run, outcome) once when it ends.
  */
 
-import type { TargetConfig } from "../config/types.js";
+import type { ModelMetadata, TargetConfig } from "../config/types.js";
 import { getMetrics } from "../metrics/metrics.js";
 import { getTracer } from "../observability/otel-tracer.js";
 import { getRequestLogger, type RequestLogEntry } from "../observability/request-log.js";
@@ -30,16 +30,23 @@ import { CircuitOpenError } from "../routing/circuit-breaker.js";
 import { ConcurrencyLimitError } from "../routing/concurrency-limiter.js";
 import type { IStrategy } from "../routing/types.js";
 import { type ModelCatalog, type ModelRoute, modelAllowed } from "../routing/model-catalog.js";
-import { invalidRequest, modelNotAllowed, modelNotFound, modelUnavailable, toGatewayError } from "./errors.js";
-import { checkLimits, enforceChatPolicy, outputCapOf } from "./model-policy.js";
+import {
+  GatewayError,
+  invalidRequest,
+  modelNotAllowed,
+  modelNotFound,
+  modelUnavailable,
+  toGatewayError,
+} from "./errors.js";
+import { checkLimits, enforceChatPolicy, outputCapOf, reasoningBudgetOf } from "./model-policy.js";
 import { checkPassthroughOutputLimit, type PassthroughRequest } from "./surfaces/passthrough.js";
-import { boundLogEntry, loggableModelName, modelNameProblem } from "./request-limits.js";
+import { boundLogEntry, loggableModelName, MAX_N, modelNameProblem, nProblem } from "./request-limits.js";
 import { strategyRunOptions, type TargetExecutor } from "./executor.js";
 import type { McpLoop } from "./mcp-loop.js";
 import { runChatStream, type ChatShapedSurface } from "./chat-stream.js";
 import type { FinalizeOutcome, RequestRun, Result, Surface } from "./types.js";
 import { addUsage, estimatePromptTokens, resolveUsage } from "./usage.js";
-import type { KeyMeter, Reservation } from "../usage/key-meter.js";
+import type { KeyMeter, Reservation, ReservationPlan, ReservationRoom } from "../usage/key-meter.js";
 import { DEFAULT_MAX_OUTPUT_TOKENS } from "../config/types.js";
 import { KEY_RPM_METADATA } from "../plugins/builtins/rate-limit.js";
 
@@ -195,13 +202,171 @@ export class Pipeline {
 
   /** A request's output cap times n: requested, else the model's / gateway's limit (RB3 / RB6). */
   private outputCap<Req, Res, Chunk>(surface: Surface<Req, Res, Chunk>, req: Req): number {
+    const o = this.outputLimits(surface, req);
+    const perChoice = Math.max(o.explicit?.value ?? o.fallback, o.budget?.value ?? 0);
+    return perChoice * o.n;
+  }
+
+  /**
+   * What bounds a request's output (RB3 / RB6 / FQ-1): the larger of
+   * max_tokens / max_completion_tokens (F1: both are forwarded), the largest
+   * reasoning budget field (thinking.budget_tokens, reasoning.max_tokens …,
+   * including what the model's reasoning map turns reasoning_effort into),
+   * the default when the client set no limit (the model's published
+   * maxOutputTokens, else limits.maxOutputTokens) and n (≤ MAX_N).
+   */
+  private outputLimits<Req, Res, Chunk>(
+    surface: Surface<Req, Res, Chunk>,
+    req: Req,
+  ): {
+    readonly explicit: { readonly value: number; readonly param: string } | undefined;
+    readonly budget: { readonly value: number; readonly param: string } | undefined;
+    readonly fallback: number;
+    readonly n: number;
+    readonly meta: ModelMetadata | undefined;
+  } {
     const view = surface.toPluginView(req);
     const meta = this.deps.catalog.lookup(surface.model(req))?.metadata;
-    // The larger of max_tokens / max_completion_tokens (F1): both are forwarded.
-    const cap =
-      outputCapOf(view)?.value ?? meta?.maxOutputTokens ?? this.deps.maxOutputTokens ?? DEFAULT_MAX_OUTPUT_TOKENS;
-    const n = typeof view.n === "number" && Number.isFinite(view.n) && view.n > 1 ? Math.min(view.n, 128) : 1;
-    return cap * n;
+    const fallback = meta?.maxOutputTokens ?? this.deps.maxOutputTokens ?? DEFAULT_MAX_OUTPUT_TOKENS;
+    const n =
+      typeof view.n === "number" && Number.isFinite(view.n) && view.n > 1 ? Math.min(Math.floor(view.n), MAX_N) : 1;
+    return {
+      explicit: outputCapOf(view),
+      budget: reasoningBudgetOf(extraAfterReasoningMap(view, meta)),
+      fallback,
+      n,
+      meta,
+    };
+  }
+
+  /**
+   * Tokens a request reserves in the key meter while it runs (RB3, FQ-1 /
+   * FQ-2): the estimated prompt (non-text parts at conservative rates) plus
+   * its output ceiling times n. The ceiling is the client's max_tokens /
+   * max_completion_tokens or reasoning budget, whichever is larger — never
+   * lowered: a reservation larger than `room` is refused by the key meter.
+   * When the client set no output limit, the default (the model's
+   * maxOutputTokens, else limits.maxOutputTokens) is fitted into `room` (the
+   * quota left, the TPM) and that value is later sent upstream as max_tokens
+   * (begin → withReservedOutputCap). Embeddings reserve the input only.
+   */
+  reservationPlan<Req, Res, Chunk>(
+    surface: Surface<Req, Res, Chunk>,
+    req: Req,
+    room: ReservationRoom = {},
+  ): ReservationPlan & { readonly perChoice: number } {
+    const prompt = estimatePromptTokens(surface.toPluginView(req));
+    if (surface.name === "embeddings") {
+      return { tokens: prompt, perChoice: 0, param: "input", describe: `about ${prompt} input tokens` };
+    }
+    const o = this.outputLimits(surface, req);
+    let perChoice: number;
+    let param: string;
+    let what: string;
+    if (o.explicit !== undefined) {
+      // Above the model's / gateway's limit the request is refused by the
+      // model policy (or a plugin lowers it first), so it never needs more.
+      perChoice = Math.min(o.explicit.value, o.fallback);
+      param = o.explicit.param;
+      what = `${param} ${perChoice}`;
+    } else {
+      perChoice = o.fallback;
+      param = "max_tokens";
+      what = `the default output limit ${perChoice} (max_tokens not set)`;
+      const bounds = [room.quotaLeft, room.tpm].filter((b): b is number => b !== undefined && Number.isFinite(b));
+      if (bounds.length > 0) {
+        const fit = Math.floor((Math.min(...bounds) - prompt) / o.n);
+        if (fit < perChoice) {
+          perChoice = Math.max(1, fit);
+          param = o.n > 1 ? "n" : "messages";
+          what = `at least ${perChoice} output token${perChoice === 1 ? "" : "s"}`;
+        }
+      }
+    }
+    if (o.budget !== undefined && Math.min(o.budget.value, o.fallback) > perChoice) {
+      perChoice = Math.min(o.budget.value, o.fallback);
+      param = o.budget.param;
+      what = `${param} ${perChoice}`;
+    }
+    const describe = `about ${prompt} input tokens + ${what}${o.n > 1 ? ` × n ${o.n}` : ""}`;
+    return { tokens: prompt + perChoice * o.n, perChoice, param, describe };
+  }
+
+  /**
+   * For a request the key meter refused as larger than the quota left / the
+   * TPM (FQ-2): the model policy's output-limit error (max_tokens_exceeded,
+   * conflicting_max_tokens, context_length_exceeded) when the request also
+   * breaks one, else undefined.
+   */
+  private limitErrorInstead<Req, Res, Chunk>(surface: Surface<Req, Res, Chunk>, req: Req, err: unknown): unknown {
+    const code = err instanceof GatewayError ? err.code : null;
+    if (code !== "request_exceeds_quota" && code !== "request_exceeds_tpm") return undefined;
+    if (surface.name !== "chat" && surface.name !== "completions") return undefined;
+    const model = surface.model(req);
+    try {
+      checkLimits(
+        surface.toPluginView(req),
+        this.deps.catalog.lookup(model)?.metadata,
+        model,
+        this.deps.maxOutputTokens,
+      );
+    } catch (limit) {
+      return limit;
+    }
+    return undefined;
+  }
+
+  /** Total tokens a request reserves with no quota / TPM room to fit into (tests, diagnostics). */
+  reservationFor<Req, Res, Chunk>(surface: Surface<Req, Res, Chunk>, req: Req): number {
+    return this.reservationPlan(surface, req).tokens;
+  }
+
+  /**
+   * A chat / completions request without max_tokens / max_completion_tokens
+   * is sent upstream with an explicit max_tokens (FQ-2), so the upstream's
+   * own default (often "the rest of the context") cannot exceed what the
+   * gateway reserved and checked:
+   *  - the key has a quota or TPM: the per-choice ceiling the key meter
+   *    reserved (run.reservedOutputCap);
+   *  - otherwise, when the model publishes maxOutputTokens: that value.
+   * Never more than the context window minus the estimated prompt. A value
+   * the client set is never touched. Official OpenAI targets get it as
+   * max_completion_tokens instead (forTarget): OpenAI's reasoning models
+   * refuse max_tokens.
+   */
+  withReservedOutputCap<Req, Res, Chunk>(
+    surface: Surface<Req, Res, Chunk>,
+    req: Req,
+    run: RequestRun<Req, Res, Chunk>,
+  ): Req {
+    if (surface.name !== "chat" && surface.name !== "completions") return req;
+    const chat = req as unknown as ChatCompletionRequest;
+    const set = outputCapOf(chat);
+    const reserved = run.reservedOutputCap;
+    if (set !== undefined) {
+      // A client's value is never above what was reserved (the reservation is
+      // its value, and an over-limit value was refused above); a larger one can
+      // only be a before-request plugin's default: held to the reservation.
+      if (reserved === undefined || set.value <= reserved) return req;
+      return {
+        ...chat,
+        ...(chat.maxTokens !== undefined ? { maxTokens: reserved } : {}),
+        ...(chat.maxCompletionTokens !== undefined ? { maxCompletionTokens: reserved } : {}),
+      } as unknown as Req;
+    }
+    const meta = this.deps.catalog.lookup(surface.model(req))?.metadata;
+    let cap = reserved ?? meta?.maxOutputTokens;
+    if (cap === undefined || !Number.isFinite(cap) || cap < 1) return req;
+    if (meta?.contextWindow !== undefined) {
+      const room = meta.contextWindow - estimatePromptTokens(chat);
+      if (room >= 1 && room < cap) cap = room;
+    }
+    const out: ChatCompletionRequest & { [INJECTED_OUTPUT_CAP]?: true } = {
+      ...chat,
+      maxTokens: Math.floor(cap),
+      [INJECTED_OUTPUT_CAP]: true,
+    };
+    return out as unknown as Req;
   }
 
   /** Streaming chat-shaped request (chat, completions) through the pipeline: core/chat-stream.ts. */
@@ -260,18 +425,29 @@ export class Pipeline {
       // always runs to the end; it holds a reservation (estimated prompt +
       // output cap, RB3) that finalize releases when its tokens are counted.
       const unmetered = surface.name === "passthrough" || surface.name === "images";
+      // n above MAX_N (FQ-2) is refused before anything is reserved.
+      const tooManyChoices = badModelName ? undefined : nProblem(surface.toPluginView(resolved).n);
+      if (tooManyChoices) throw tooManyChoices;
       run.reservation = this.deps.keyMeter?.admit(ctx?.client, {
         ...(this.deps.globalTpm !== undefined ? { globalTpm: this.deps.globalTpm } : {}),
         ...(this.deps.reservationTtlMs !== undefined ? { reservationTtlMs: this.deps.reservationTtlMs } : {}),
         // Routes whose usage is not in tokens: a key with a token quota cannot be metered there.
         unmetered,
-        reserve: () => (unmetered ? 0 : this.reservationFor(surface, resolved)),
+        reserve: (room) => {
+          if (unmetered) return 0;
+          const plan = this.reservationPlan(surface, resolved, room);
+          if (plan.perChoice > 0) run.reservedOutputCap = plan.perChoice;
+          return plan;
+        },
       });
       // Model checks after the key meter (D3): a request naming an unknown,
       // forbidden or malformed model still counts toward the key's RPM.
       if (badModelName) throw badModelName;
       this.checkModelAccess(surface, requestedModel, ctx);
-    } catch (err) {
+    } catch (caught) {
+      // A request too large for the key that is also over the model's output
+      // limit gets the model's 400 (max_tokens_exceeded …): the more basic problem.
+      const err = this.limitErrorInstead(surface, resolved, caught) ?? caught;
       await this.finalize(run, { kind: "error", error: err });
       throw err;
     }
@@ -306,6 +482,7 @@ export class Pipeline {
     try {
       run.request = surface.applyPluginView(resolved, pluginCtx.request);
       run.request = this.applyModelPolicy(surface, run.request);
+      run.request = this.withReservedOutputCap(surface, run.request, run);
     } catch (err) {
       const plugin =
         (err instanceof PluginRejectionError ? err.plugin : undefined) ?? pluginCtx._modifiedBy?.join(",") ?? "unknown";
@@ -316,18 +493,6 @@ export class Pipeline {
       throw err;
     }
     return { kind: "proceed", run };
-  }
-
-  /**
-   * Tokens a request reserves in the key meter while it runs (RB3): the
-   * estimated prompt plus its output cap — the larger of
-   * max_completion_tokens / max_tokens, else the model's published maxOutputTokens, else
-   * limits.maxOutputTokens — times n. Embeddings reserve the input only.
-   */
-  reservationFor<Req, Res, Chunk>(surface: Surface<Req, Res, Chunk>, req: Req): number {
-    const prompt = estimatePromptTokens(surface.toPluginView(req));
-    if (surface.name === "embeddings") return prompt;
-    return prompt + this.outputCap(surface, req);
   }
 
   /**
@@ -396,7 +561,14 @@ export class Pipeline {
 
   /** The request as sent to one target: its upstream model name and binding params. */
   forTarget<Req, Res, Chunk>(surface: Surface<Req, Res, Chunk>, req: Req, route: ModelRoute, target: string): Req {
-    const renamed = surface.withModel(req, route.upstreamModel(target));
+    let renamed = surface.withModel(req, route.upstreamModel(target));
+    // The gateway's own max_tokens (withReservedOutputCap) goes to official
+    // OpenAI as max_completion_tokens: its reasoning models refuse max_tokens.
+    const injected = renamed as unknown as ChatCompletionRequest & { [INJECTED_OUTPUT_CAP]?: true };
+    if (injected[INJECTED_OUTPUT_CAP] === true && isOfficialOpenAI(this.deps.targetConfig(target))) {
+      const { maxTokens, ...rest } = injected;
+      renamed = { ...rest, maxCompletionTokens: maxTokens } as unknown as Req;
+    }
     const params = route.params(target);
     if (!params || surface.name !== "chat") return renamed;
     const chat = renamed as unknown as ChatCompletionRequest;
@@ -721,4 +893,35 @@ function targetOf(err: unknown): string | undefined {
 
 function messageOf(err: unknown): string {
   return err instanceof Error ? err.message : String(err);
+}
+
+/** Marks a request whose max_tokens the gateway set itself (withReservedOutputCap), not the client. */
+const INJECTED_OUTPUT_CAP: unique symbol = Symbol("gateway.injectedOutputCap");
+
+/** A target that is the official OpenAI API (provider openai, default or api.openai.com base URL). */
+function isOfficialOpenAI(cfg: TargetConfig | undefined): boolean {
+  if (!cfg || cfg.provider !== "openai") return false;
+  if (cfg.baseURL === undefined || cfg.baseURL === "") return true;
+  try {
+    return new URL(cfg.baseURL).hostname.toLowerCase() === "api.openai.com";
+  } catch {
+    return false;
+  }
+}
+
+/**
+ * The request's extras as the upstream will see them after the model's
+ * reasoning map (model-policy enforceChatPolicy) turned reasoning_effort into
+ * provider parameters, so a mapped thinking budget is reserved as well.
+ */
+function extraAfterReasoningMap(
+  view: Pick<ChatCompletionRequest, "extra">,
+  meta: ModelMetadata | undefined,
+): Readonly<Record<string, unknown>> | undefined {
+  const extra = view.extra;
+  const effort = extra?.["reasoning_effort"];
+  const reasoning = meta?.reasoning;
+  if (effort === undefined || reasoning === null || typeof reasoning !== "object") return extra;
+  const mapped = reasoning.map?.[String(effort)];
+  return mapped && typeof mapped === "object" ? { ...extra, ...(mapped as Record<string, unknown>) } : extra;
 }

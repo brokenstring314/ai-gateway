@@ -32,8 +32,9 @@ describe("RB1 non-stream response without usage", () => {
     const { gw, logs } = makeGateway({ strategy: { mode: "single" }, targets: [target("a")] });
     const ctx = { metadata: {}, client: meteredClient("rb1", 1000) };
     const codes: number[] = [];
+    // max_tokens 990: prompt + max_tokens must fit the quota left (FQ-2).
     for (let i = 0; i < 30; i++)
-      codes.push(await status(gw.route(ctx as never, { model: "m", messages: msg, maxTokens: 1000 })));
+      codes.push(await status(gw.route(ctx as never, { model: "m", messages: msg, maxTokens: 990 })));
     // Before the fix: 30 × 200 and used 0. Now the first request is counted
     // (≈ 5 prompt + 1000 completion) and every later one is refused.
     expect(codes.filter((c) => c === 200)).toHaveLength(1);
@@ -47,7 +48,7 @@ describe("RB1 non-stream response without usage", () => {
     restore = f.restore;
     const { gw } = makeGateway({ strategy: { mode: "single" }, targets: [target("a")] });
     const ctx = { metadata: {}, client: meteredClient("rb1b", 1000) };
-    for (let i = 0; i < 30; i++) await gw.route(ctx as never, { model: "m", messages: msg, maxTokens: 1000 });
+    for (let i = 0; i < 30; i++) await gw.route(ctx as never, { model: "m", messages: msg, maxTokens: 10 });
     expect(gw.keyMeter().used("rb1b")).toBe(30 * (5 + 1));
   });
 

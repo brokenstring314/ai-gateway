@@ -116,3 +116,17 @@ export function boundLogEntry(entry: RequestLogEntry): RequestLogEntry {
     ...(error !== undefined ? { error } : {}),
   };
 }
+
+/**
+ * Most choices (`n`) one chat / completions request may ask for (final red
+ * team 2026-11-06 FQ-2): the OpenAI API's own ceiling. `n` used to be
+ * forwarded unbounded (an upstream that accepts n = 1000 generated 1000
+ * answers for one admitted request); above it is a 400 invalid_n.
+ */
+export const MAX_N = 128;
+
+/** The 400 for an `n` above MAX_N, else undefined. */
+export function nProblem(n: unknown): GatewayError | undefined {
+  if (typeof n !== "number" || n <= MAX_N) return undefined;
+  return invalidRequest(`n is ${n}; this gateway allows at most ${MAX_N} choices per request.`, "invalid_n", "n");
+}

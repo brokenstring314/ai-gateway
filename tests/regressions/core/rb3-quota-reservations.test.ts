@@ -50,30 +50,39 @@ describe("RB3 quota reservations", () => {
       Array.from({ length: 40 }, () => outcome(gw.route(ctx as never, { model: "m", messages: msg, maxTokens: 300 }))),
     );
     const ok = results.filter((r) => r === "200").length;
-    // Reservation 5 + 300 = 305 each: 0, 305, 610, 915 < 1000 → 4 admitted.
-    expect(ok).toBe(4);
-    expect(results.filter((r) => r === "429 quota_in_flight")).toHaveLength(36);
-    expect(f.calls).toHaveLength(4);
+    // Reservation 5 + 300 = 305 each, admitted while all reservations fit the
+    // quota (final red team 2026-11-06 FQ-1): 305, 610, 915 ≤ 1000 → 3 admitted.
+    expect(ok).toBe(3);
+    expect(results.filter((r) => r === "429 quota_in_flight")).toHaveLength(37);
+    expect(f.calls).toHaveLength(3);
     const used = gw.keyMeter().used("rb3")!;
-    expect(used).toBe(4 * 309);
-    expect(used - 1000).toBeLessThan(309); // before: 11,320 over
+    expect(used).toBe(3 * 309);
+    expect(used).toBeLessThanOrEqual(1000); // before RB3: 11,320 over; before FQ-1: one request over
     expect(gw.keyMeter().reserved("rb3")).toBe(0);
-    // Quota now used up: 403, not 429.
+    // 73 tokens left: a 305-token request no longer fits (FQ-2) — 400, never clamped.
     expect(await outcome(gw.route(ctx as never, { model: "m", messages: msg, maxTokens: 300 }))).toBe(
+      "400 request_exceeds_quota",
+    );
+    // A request that fits the rest is still served; afterwards the quota is used up: 403.
+    expect(await outcome(gw.route(ctx as never, { model: "m", messages: msg, maxTokens: 60 }))).toBe("200");
+    expect(await outcome(gw.route(ctx as never, { model: "m", messages: msg, maxTokens: 1 }))).toBe(
       "403 quota_exhausted",
     );
   });
 
-  it("a request without max_tokens reserves the global output cap (one in flight at a time)", async () => {
-    slowUpstream(80);
+  it("a request without max_tokens reserves the global output cap (one in flight at a time) and sends it upstream", async () => {
+    const f = slowUpstream(80);
     const { gw } = makeGateway({ strategy: { mode: "single" }, targets: [target("a")] });
     const ctx = { metadata: {}, client: meteredClient("rb3b", 100_000) };
     const results = await Promise.all(
       Array.from({ length: 5 }, () => outcome(gw.route(ctx as never, { model: "m", messages: msg }))),
     );
-    // 65536 + prompt reserved by the first; 0 + 65541 < 100000 admits a second.
-    expect(results.filter((r) => r === "200")).toHaveLength(2);
+    // 65536 + prompt reserved by the first; 65541 + 65541 > 100000: the others wait.
+    expect(results.filter((r) => r === "200")).toHaveLength(1);
+    expect(results.filter((r) => r === "429 quota_in_flight")).toHaveLength(4);
     expect(gw.keyMeter().reserved("rb3b")).toBe(0);
+    // FQ-2: the reserved ceiling went upstream, so the upstream cannot exceed it.
+    expect(f.calls[0]!.body.max_tokens).toBe(65_536);
   });
 
   it("an upstream error, a failover and a client cancel all release the reservation", async () => {
