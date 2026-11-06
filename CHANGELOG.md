@@ -2,6 +2,14 @@
 
 ## Unreleased
 
+## [0.3.1] - 2026-11-06
+
+Security and robustness release from the final red team of 2026-11-06 (admin surface, upstream handling, quota /
+rate-limit abuse, request-path I/O). Upgrading from 0.3.0: read
+**[Upgrading from 0.3.0 to 0.3.1](https://github.com/brokenstring314/ai-gateway/blob/v0.3.1/docs/migration-0.3.md#upgrading-from-030-to-031)**
+([中文](https://github.com/brokenstring314/ai-gateway/blob/v0.3.1/docs/migration-0.3.zh.md#从-030-升级到-031)) — no
+config change is required, but clients may see new `403` / `400` codes and `max_tokens` is now sent upstream.
+
 ### Security
 
 Fixes from the final red team of 2026-11-06 (admin surface and upstream handling; all reproduced, all medium):
@@ -63,13 +71,6 @@ From the same red team (quota / rate-limit abuse, FQ-1 … FQ-3):
   OpenRouter's moderation reasons — never the flagged input), no failover, no breaker failure, no key disable.
   Credential / account / region 403s still count.
 
-### Changed
-
-- New config keys (startup settings): `console.maxSessionsPerCredential`, `console.maxLoginsPerMinute`,
-  `audit.maxRows`, `audit.retentionDays`, `maxUpstreamResponseBytes`, `maxUpstreamErrorBodyBytes`. New error codes:
-  `session_limit`, `login_rate_limited` (console sign-in), `upstream_response_too_large` (`/v1`). Cross-site `GET`s to
-  `/admin/*` are now `403 csrf_rejected` (were only refused on writes).
-
 ### Fixed
 
 - **No database I/O on the request path (final red team FC-1).** Every authenticated request used to read the key
@@ -98,6 +99,13 @@ From the same red team (quota / rate-limit abuse, FQ-1 … FQ-3):
 
 ### Breaking
 
+- Cross-site requests to `/admin/*` are refused with `403 csrf_rejected` for every method, `GET` included (were only
+  refused on writes), and `/admin/*` never answers CORS, whatever `cors.origins` says. Same-origin console use, curl
+  and the CLI are unaffected; a browser app on another origin reading `/admin` must move behind the same origin (an
+  `Origin` listed exactly in `cors.origins` is still accepted).
+- A key revoked or created with the `ai-gateway keys` CLI (or any other process) takes effect in a running server
+  within about one second (`KEY_STORE_SYNC_INTERVAL_MS`, default 1000 ms), no longer on the very next request.
+  Admin API / console changes still apply at once.
 - New 400s: `request_exceeds_quota`, `request_exceeds_tpm`, `invalid_n`, `content_filtered` (the last replaces
   `502 upstream_auth_failed` for moderation refusals). Near the end of a quota, a request that does not fit is a 400
   until the client lowers `max_tokens` / `n` (or the prompt alone no longer fits).
@@ -108,6 +116,16 @@ From the same red team (quota / rate-limit abuse, FQ-1 … FQ-3):
   reservation) and for any key on a model that publishes `maxOutputTokens` (that value, at most the context window
   minus the prompt); `max_completion_tokens` on api.openai.com. If an upstream rejects the value, set the model's
   `maxOutputTokens` to the upstream's real limit.
+- Pass-through error bodies (`/v1/responses`, `/v1/moderations`, `/v1/audio/*`) are read up to
+  `maxUpstreamErrorBodyBytes` (default 64 KiB; was a fixed 1 MiB); a larger error body becomes the upstream status
+  with a generic message.
+
+### Changed
+
+- New config keys (startup settings): `console.maxSessionsPerCredential`, `console.maxLoginsPerMinute`,
+  `audit.maxRows`, `audit.retentionDays`, `maxUpstreamResponseBytes`, `maxUpstreamErrorBodyBytes`. New error codes:
+  `session_limit`, `login_rate_limited` (console sign-in), `upstream_response_too_large` (`/v1`); see Breaking for
+  the new `/v1` 400s.
 
 ## [0.3.0] - 2026-11-05
 

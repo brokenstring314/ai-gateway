@@ -2,6 +2,8 @@
 
 English: [migration-0.3.md](migration-0.3.md)（更完整，含每条破坏性变更与对应操作的对照表）
 
+**已经在用 0.3.0？** 见文末 [从 0.3.0 升级到 0.3.1](#从-030-升级到-031)。
+
 0.3.0 起，渠道、上游 key、发布模型和路由保存在 SQLite 配置库里，可在控制台 / Admin API 中在线修改、无需重启；
 分发给别人的 key 有 token 额度和 RPM / TPM。完整变更见 [CHANGELOG.md](../CHANGELOG.md#030---2026-11-05)。
 
@@ -59,6 +61,47 @@ English: [migration-0.3.md](migration-0.3.md)（更完整，含每条破坏性�
   本地/局域网服务（Ollama、vLLM）暂时只能写在配置文件里。
 - **列表格式**：0.2 的接口保持原样（`/admin/keys` → `{ keys, total }`，`/admin/logs` → `{ entries, total }`），
   0.3.0 新资源列表为 `{ object: "list", data }`，见 [admin-api.md](admin-api.md#list-responses)。
+
+## 从 0.3.0 升级到 0.3.1
+
+0.3.1 可直接替换升级：数据目录、配置文件不变，没有迁移步骤，也没有新的必填设置。替换二进制 / 镜像并重启后，
+留意以下行为变化（详见 [CHANGELOG.md](../CHANGELOG.md#031---2026-11-06)）：
+
+1. **跨站请求 `/admin/*` 一律 `403 csrf_rejected`，包括 `GET`**（0.3.0 只拒绝写操作），`/admin/*` 也不再返回任何
+   CORS 头。带 `Sec-Fetch-Site: cross-site`、或 `Origin` 既不是网关自身也不在 `cors.origins` 中精确列出（`*` 不算）
+   的请求，在检查凭据之前就被拒绝。curl、脚本、CLI（不带 `Origin`）以及同源打开的控制台不受影响。请直接输入地址或
+   用书签打开控制台；从其他网站（wiki、聊天工具）点链接打开 `/admin/dashboard` 会得到 `403`。其他源上的浏览器应用
+   若要调用 `/admin`，需改为从网关同源提供。
+2. **用 `ai-gateway keys` CLI 吊销或新建的 key，约 1 秒内在运行中的服务上生效**（`KEY_STORE_SYNC_INTERVAL_MS`，
+   默认 `1000`），不再是“下一个请求立即生效”。通过 Admin API / 控制台吊销、轮换、修改仍立即生效——需要立刻生效时用它们。
+3. **客户端没传 `max_tokens` 时，网关会显式向上游发送 `max_tokens`**：有 token 额度或 TPM 的 key，发送按剩余额度 /
+   TPM 收窄后的默认输出上限；模型声明了 `maxOutputTokens` 时（任何 key），发送该值（不超过上下文窗口减去提示词）。
+   对 api.openai.com 使用 `max_completion_tokens`。**请把每个模型的 `maxOutputTokens` 设为上游真实的输出上限**，
+   否则上游若拒绝过大的 `max_tokens`，0.3.0 能成功的请求会失败。
+4. **新配置项**（启动设置，均可选，括号内为默认值，只有想改默认值时才需要写）：
+   `console.maxSessionsPerCredential`（5，每个 key / `adminSecret` 的控制台会话数，新登录结束该凭据最旧的会话）、
+   `console.maxLoginsPerMinute`（20，每个客户端 IP 每分钟成功登录次数，超出 `429 login_rate_limited`）、
+   `audit.maxRows`（50000，审计日志保留行数）、`audit.retentionDays`（90，审计日志保留天数）、
+   `maxUpstreamResponseBytes`（32 MiB，非流式上游响应解压后上限，超出 `502 upstream_response_too_large`）、
+   `maxUpstreamErrorBodyBytes`（64 KiB，上游错误体读取上限）。
+   新环境变量：`KEY_STORE_SYNC_INTERVAL_MS`（默认 1000，50–10000）、`REQUEST_LOG_FLUSH_INTERVAL_MS`（默认 1000）；
+   新指标 `ai_gateway_request_log_dropped_total`。
+5. **透传路由的上游错误体上限为 64 KiB**（`maxUpstreamErrorBodyBytes`，原先固定 1 MiB），适用于 `/v1/responses`、
+   `/v1/moderations`、`/v1/audio/*`；更大的错误体返回上游状态码加通用提示。透传成功响应不再带上游的
+   `Content-Encoding`、`Set-Cookie` 和 CORS 头。
+6. **新错误码**——客户端和脚本需要处理：
+   - `400 request_exceeds_quota`：单个请求的预留超过 key 剩余额度，请调小 `max_tokens` / `n`
+   - `400 request_exceeds_tpm`：单个请求的预留超过 key 的 TPM，请调小 `max_tokens` / `n`
+   - `400 invalid_n`：`n` 超过 128
+   - `400 content_filtered`：上游因内容审核拒绝（取代此类情况下的 `502 upstream_auth_failed`）
+   - `502 upstream_response_too_large`：上游响应超过 `maxUpstreamResponseBytes`
+   - `503 session_limit`：控制台登录时会话表已被其他凭据占满（`Retry-After: 60`）
+   - `429 login_rate_limited`：同一 IP 成功登录过于频繁
+
+   另外：额度准入改为精确判断（已用 + 预留 + 本请求 ≤ 额度），图片 / 音频 / 文件和推理预算也计入预留，
+   有额度的 key 上能同时运行的多模态 / 推理请求会变少（更早出现 `429 quota_in_flight`）。
+
+回退到 0.3.0 只需换回旧二进制：0.3.1 没有数据库结构变化；但 0.3.0 的严格校验不认识上面的新配置项，回退前请先删掉它们。
 
 ## 回退到 0.2.x
 

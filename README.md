@@ -17,12 +17,12 @@ Route requests across 20+ LLM providers through a single unified endpoint, with 
 **Docker image** (linux/amd64, linux/arm64) from GitHub Container Registry:
 
 ```bash
-docker pull ghcr.io/brokenstring314/ai-gateway:0.3.0   # or :0.3, :latest
+docker pull ghcr.io/brokenstring314/ai-gateway:0.3.1   # or :0.3, :latest
 docker run -d --name ai-gateway -p 3000:3000 \
   -v "$PWD/config.yaml:/config/config.yaml:ro" \
   -v ai-gateway-data:/data \
   -e OPENAI_API_KEY \
-  ghcr.io/brokenstring314/ai-gateway:0.3.0
+  ghcr.io/brokenstring314/ai-gateway:0.3.1
 ```
 
 See [Docker](#docker) below for what the image expects (production mode, auth on).
@@ -34,7 +34,7 @@ platform from [Releases](https://github.com/brokenstring314/ai-gateway/releases)
 NOTICE, README.md and `config.example.yaml`.
 
 ```bash
-V=0.3.0 P=linux-x64
+V=0.3.1 P=linux-x64
 curl -LO https://github.com/brokenstring314/ai-gateway/releases/download/v$V/ai-gateway-$V-$P.tar.gz
 curl -LO https://github.com/brokenstring314/ai-gateway/releases/download/v$V/SHA256SUMS
 sha256sum --ignore-missing -c SHA256SUMS

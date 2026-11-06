@@ -2,6 +2,8 @@
 
 中文版：[migration-0.3.zh.md](migration-0.3.zh.md)
 
+**Already on 0.3.0?** See [Upgrading from 0.3.0 to 0.3.1](#upgrading-from-030-to-031) at the end.
+
 0.3.0 turns the gateway into a live-configured service: channels, upstream keys, published models and routing live
 in a SQLite config store, are changed through the Admin API or the new console without a restart, and client keys
 get token quotas and RPM / TPM. Several 0.2.x behaviours change on the way. This guide lists what to do; the full
@@ -216,6 +218,62 @@ Do these before (or right after) the first 0.3.0 start:
 | Literal `apiKey` needs `GATEWAY_SECRET_KEY` | Set it (or use `"${VAR}"` references) |
 | `otlpProtocol: grpc`, `targets[].priority` / `budget`, strict built-in plugin configs, one duration parser | Remove the keys the error names; use `<int><unit>` durations |
 | 0.2 console and `/admin/static/*` removed | Use `/admin/dashboard` (cookie sign-in) |
+
+## Upgrading from 0.3.0 to 0.3.1
+
+0.3.1 is a drop-in upgrade: same data directory, same config file, no migration step and no new required setting.
+Replace the binary / image, restart, and check these behaviour changes (details in
+[CHANGELOG.md](../CHANGELOG.md#031---2026-11-06)):
+
+1. **Cross-site requests to `/admin/*` get `403 csrf_rejected`, `GET` included** (0.3.0 refused only writes), and
+   `/admin/*` never answers CORS. A request carrying `Sec-Fetch-Site: cross-site`, or an `Origin` that is neither the
+   gateway itself nor listed exactly in `cors.origins` (`*` does not count), is refused before any credential is
+   checked. curl, scripts and the CLI (no `Origin`) and the console on its own origin are unaffected. Open the
+   console by its URL or a bookmark; a link to `/admin/dashboard` on another site (a wiki, a chat) now opens a
+   `403` page. A browser app on another origin calling `/admin` must be served from the gateway's origin.
+2. **A key revoked or created with the `ai-gateway keys` CLI takes effect within about one second** in a running
+   server (`KEY_STORE_SYNC_INTERVAL_MS`, default `1000`), not on the very next request. Revoke / rotate / patch
+   through the Admin API or the console still apply at once — use them when it must be immediate.
+3. **`max_tokens` is sent upstream explicitly when the client omits it**: for keys with a token quota or TPM, the
+   default output ceiling fitted into the quota left / the TPM; for any key on a model that publishes
+   `maxOutputTokens`, that value (at most the context window minus the prompt). `max_completion_tokens` is used for
+   api.openai.com. **Set each model's `maxOutputTokens` to the upstream's real output limit** — an upstream that
+   rejects a too-large `max_tokens` would otherwise fail requests that worked in 0.3.0.
+4. **New config keys** (startup settings, all optional, defaults shown — set them only to change the default):
+
+   | Key | Default | Meaning |
+   | --- | --- | --- |
+   | `console.maxSessionsPerCredential` | `5` | Console sessions per key / `adminSecret`; a new sign-in ends that credential's oldest |
+   | `console.maxLoginsPerMinute` | `20` | Successful console sign-ins per client IP per minute (`429 login_rate_limited`) |
+   | `audit.maxRows` | `50000` | Audit-log rows kept (oldest pruned in the background) |
+   | `audit.retentionDays` | `90` | Audit-log rows older than this are pruned |
+   | `maxUpstreamResponseBytes` | `33554432` (32 MiB) | Largest non-streaming upstream body, decompressed (`502 upstream_response_too_large`) |
+   | `maxUpstreamErrorBodyBytes` | `65536` (64 KiB) | Largest upstream error body read |
+
+   New environment variables: `KEY_STORE_SYNC_INTERVAL_MS` (default `1000`, 50–10000) and
+   `REQUEST_LOG_FLUSH_INTERVAL_MS` (default `1000`); new metric `ai_gateway_request_log_dropped_total`.
+5. **Pass-through error bodies are capped at 64 KiB** (`maxUpstreamErrorBodyBytes`; was a fixed 1 MiB) on
+   `/v1/responses`, `/v1/moderations` and `/v1/audio/*`. A larger upstream error body is returned as the upstream
+   status with a generic message. Successful pass-through responses no longer carry the upstream's
+   `Content-Encoding`, `Set-Cookie` or CORS headers.
+6. **New error codes** — handle them in clients and scripts:
+
+   | Code | Status | When |
+   | --- | --- | --- |
+   | `request_exceeds_quota` | 400 | This one request reserves more than the key's quota left; lower `max_tokens` / `n` |
+   | `request_exceeds_tpm` | 400 | This one request reserves more than the key's TPM; lower `max_tokens` / `n` |
+   | `invalid_n` | 400 | `n` above 128 |
+   | `content_filtered` | 400 | The upstream refused the content (moderation); replaces `502 upstream_auth_failed` for these |
+   | `upstream_response_too_large` | 502 | The upstream body exceeded `maxUpstreamResponseBytes` |
+   | `session_limit` | 503 | Console sign-in: the session table is full of other credentials' sessions (`Retry-After: 60`) |
+   | `login_rate_limited` | 429 | Console sign-in: too many successful sign-ins from this IP |
+
+   Also: quota admission is now exact (used + reserved + this request ≤ quota), and image / audio / file parts and
+   reasoning budgets are reserved, so fewer multimodal or reasoning requests run at once on a limited key
+   (`429 quota_in_flight` sooner).
+
+Rolling back to 0.3.0: 0.3.1 changes no database schema, so the old binary reads the same data directory. Remove the
+new config keys above from the file first — 0.3.0's strict validation rejects keys it does not know.
 
 ## Rolling back to 0.2.x
 
