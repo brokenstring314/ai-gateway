@@ -227,12 +227,13 @@ This applies unchanged to 0.3.2 (a re-release of 0.3.1 with a release-workflow f
 Replace the binary / image, restart, and check these behaviour changes (details in
 [CHANGELOG.md](../CHANGELOG.md#031---2026-11-06)):
 
-1. **Cross-site requests to `/admin/*` get `403 csrf_rejected`, `GET` included** (0.3.0 refused only writes), and
+1. **Cross-site requests to the Admin API get `403 csrf_rejected`, `GET` included** (0.3.0 refused only writes), and
    `/admin/*` never answers CORS. A request carrying `Sec-Fetch-Site: cross-site`, or an `Origin` that is neither the
    gateway itself nor listed exactly in `cors.origins` (`*` does not count), is refused before any credential is
-   checked. curl, scripts and the CLI (no `Origin`) and the console on its own origin are unaffected. Open the
-   console by its URL or a bookmark; a link to `/admin/dashboard` on another site (a wiki, a chat) now opens a
-   `403` page. A browser app on another origin calling `/admin` must be served from the gateway's origin.
+   checked. curl, scripts and the CLI (no `Origin`) and the console on its own origin are unaffected; the console
+   page itself (`/admin/dashboard`, its assets, the favicon) still opens from a link on another site, since only the
+   API calls behind it are checked and those are same-origin. A browser app on another origin calling the Admin API
+   must be served from the gateway's origin.
 2. **A key revoked or created with the `ai-gateway keys` CLI takes effect within about one second** in a running
    server (`KEY_STORE_SYNC_INTERVAL_MS`, default `1000`), not on the very next request. Revoke / rotate / patch
    through the Admin API or the console still apply at once — use them when it must be immediate.

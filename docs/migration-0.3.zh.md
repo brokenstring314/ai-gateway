@@ -69,11 +69,11 @@ English: [migration-0.3.md](migration-0.3.md)（更完整，含每条破坏性�
 0.3.1 可直接替换升级：数据目录、配置文件不变，没有迁移步骤，也没有新的必填设置。替换二进制 / 镜像并重启后，
 留意以下行为变化（详见 [CHANGELOG.md](../CHANGELOG.md#031---2026-11-06)）：
 
-1. **跨站请求 `/admin/*` 一律 `403 csrf_rejected`，包括 `GET`**（0.3.0 只拒绝写操作），`/admin/*` 也不再返回任何
+1. **跨站请求 Admin API 一律 `403 csrf_rejected`，包括 `GET`**（0.3.0 只拒绝写操作），`/admin/*` 也不再返回任何
    CORS 头。带 `Sec-Fetch-Site: cross-site`、或 `Origin` 既不是网关自身也不在 `cors.origins` 中精确列出（`*` 不算）
-   的请求，在检查凭据之前就被拒绝。curl、脚本、CLI（不带 `Origin`）以及同源打开的控制台不受影响。请直接输入地址或
-   用书签打开控制台；从其他网站（wiki、聊天工具）点链接打开 `/admin/dashboard` 会得到 `403`。其他源上的浏览器应用
-   若要调用 `/admin`，需改为从网关同源提供。
+   的请求，在检查凭据之前就被拒绝。curl、脚本、CLI（不带 `Origin`）以及同源打开的控制台不受影响；控制台页面本身
+   （`/admin/dashboard`、静态资源、favicon）从其他网站点链接仍可打开，只检查它背后的 API 调用（均为同源）。
+   其他源上的浏览器应用若要调用 Admin API，需改为从网关同源提供。
 2. **用 `ai-gateway keys` CLI 吊销或新建的 key，约 1 秒内在运行中的服务上生效**（`KEY_STORE_SYNC_INTERVAL_MS`，
    默认 `1000`），不再是“下一个请求立即生效”。通过 Admin API / 控制台吊销、轮换、修改仍立即生效——需要立刻生效时用它们。
 3. **客户端没传 `max_tokens` 时，网关会显式向上游发送 `max_tokens`**：有 token 额度或 TPM 的 key，发送按剩余额度 /

@@ -117,9 +117,9 @@ From the same red team (quota / rate-limit abuse, FQ-1 … FQ-3):
 
 ### Breaking
 
-- Cross-site requests to `/admin/*` are refused with `403 csrf_rejected` for every method, `GET` included (were only
-  refused on writes), and `/admin/*` never answers CORS, whatever `cors.origins` says. Same-origin console use, curl
-  and the CLI are unaffected; a browser app on another origin reading `/admin` must move behind the same origin (an
+- Cross-site requests to the Admin API (`/admin/*` except the console page `/admin/dashboard`, its assets and the
+  favicon) are refused with `403 csrf_rejected` for every method, `GET` included (were only refused on writes), and
+  `/admin/*` never answers CORS, whatever `cors.origins` says. Same-origin console use, curl and the CLI are unaffected; a browser app on another origin reading `/admin` must move behind the same origin (an
   `Origin` listed exactly in `cors.origins` is still accepted).
 - A key revoked or created with the `ai-gateway keys` CLI (or any other process) takes effect in a running server
   within about one second (`KEY_STORE_SYNC_INTERVAL_MS`, default 1000 ms), no longer on the very next request.
