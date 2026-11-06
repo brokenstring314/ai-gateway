@@ -340,6 +340,8 @@ describe("RequestLogStore", () => {
   it("Re-open store → migrations idempotent", () => {
     // Write some data
     store.write(makeEntry({ traceId: "persisted" }));
+    // Batched writes (FC-1): the queue lives in the store instance, so write it out first.
+    store.flush();
 
     // Create a new store on the same DB (simulates restart on file DB)
     const store2 = new RequestLogStore(db);

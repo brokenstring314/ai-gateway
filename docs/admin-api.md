@@ -441,7 +441,9 @@ Key view (added in 0.3.0 P5):
   buffers took, plus up to 1 Mi characters of answer text kept for after-request plugins and the usage estimate
   (longer answers are counted, not kept). A client that keeps reading is never cut, however long the answer.
 - **Hot path:** all of this — reservations and their expiry included — reads in-memory counters only (no database
-  access, no timer). Used tokens are persisted
+  access, no timer). Authentication too: store keys come from an in-memory snapshot, reloaded at once after an
+  Admin API change and within about `KEY_STORE_SYNC_INTERVAL_MS` (default 1 s) after a CLI change; `usageCount` /
+  `lastUsedAt` are counted in memory and written with the same background sync (and on shutdown). Used tokens are persisted
   asynchronously about once a second (`USAGE_FLUSH_INTERVAL_MS`) and on shutdown, restored at startup, and never
   reset by a config change or rollback. A crash loses at most the last interval of counted tokens. Counters are
   per process (replicas do not share them).

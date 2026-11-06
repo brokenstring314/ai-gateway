@@ -356,6 +356,9 @@ AI_GATEWAY_CORS_ORIGINS=https://a.example,https://b.example   # 数组：逗号�
 | `RATE_LIMIT_RPS` | 未设置（限流关闭） | `/v1/*` 按客户端 IP 的每秒请求数，优先于 `server.perIpRateLimit.rps`；`0` 表示关闭。 |
 | `RATE_LIMIT_BURST` | 2 × rps | 每个 IP 的桶容量，优先于 `server.perIpRateLimit.burst`。 |
 | `TRUSTED_PROXIES` | *（无）* | 逗号分隔的 IP/CIDR，只有来自这些地址的 `X-Forwarded-For` / `X-Real-IP` 才被信任（按 IP 限流、控制台登录锁定）。默认不信任任何地址——自 0.3.0 起**不再默认信任回环地址**：同机反向代理请设为 `127.0.0.1,::1`，负载均衡后面请设为 LB 的地址段（链路上每一层代理都要列出）。`X-Forwarded-For` 从右往左读，跳过受信代理。在代理后面却未设置时，所有请求共享代理的 IP（会打印一次警告）。 |
+| `KEY_STORE_SYNC_INTERVAL_MS` | `1000` | 服务检查其他进程（`ai-gateway keys ...`）对密钥库所做修改、并写入密钥 `usageCount` / `lastUsedAt` 的间隔（50–10000 毫秒）。CLI 吊销约在这段时间内生效；通过 Admin API / 控制台的修改立即生效。 |
+| `REQUEST_LOG_FLUSH_INTERVAL_MS` | `1000` | 排队中的请求日志行写入 `request-logs.sqlite` 的间隔（单个事务；每次读取 `/admin/logs` 前和关闭时也会写入）。队列最多 10 000 行，超出的行被丢弃并计入 `ai_gateway_request_log_dropped_total`。 |
+| `USAGE_FLUSH_INTERVAL_MS` | `1000` | 用量汇总和密钥已用 token 的写入间隔（关闭时也会写入）。 |
 | `SHUTDOWN_GRACE_MS` | `10000` | 收到 SIGTERM/SIGINT 后等待在途请求完成的时间（毫秒）。关闭顺序：`/readyz` 立即返回 503，已有连接上的新请求返回 503 `shutting_down`；监听器停止接受新连接；等待在途请求完成，包括仍在写出的 SSE / 流式响应体（响应带 `Connection: close`）；最后关闭监听器和存储。 |
 | `OTEL_EXPORTER_OTLP_ENDPOINT` | 未设置 | 未配置 `observability.tracing.otlpEndpoint` 时使用的 OTLP HTTP 端点。 |
 | `OTEL_TRACES_SAMPLER` | 未设置 | `always_on`、`always_off` 或 `traceidratio`（使用 `sampleRatio`）；其他值被忽略。 |
@@ -682,7 +685,7 @@ curl -X POST \
 
 #### 恢复管理员权限
 
-如果已经没有可用的管理员凭据（admin 密钥全部吊销或过期、也没有 `adminSecret`），在网关所在主机上用 CLI 创建新的 admin 密钥。它打开与 `serve` 相同的密钥库（`<数据目录>/api-keys.sqlite`；数据目录 = `--data-dir`、`GATEWAY_DATA_DIR` 或 `./.data`），服务运行中也可以安全执行（WAL 模式 + busy timeout），服务在下一个请求即可接受新密钥：
+如果已经没有可用的管理员凭据（admin 密钥全部吊销或过期、也没有 `adminSecret`），在网关所在主机上用 CLI 创建新的 admin 密钥。它打开与 `serve` 相同的密钥库（`<数据目录>/api-keys.sqlite`；数据目录 = `--data-dir`、`GATEWAY_DATA_DIR` 或 `./.data`），服务运行中也可以安全执行（WAL 模式 + busy timeout），运行中的服务约 1 秒内（`KEY_STORE_SYNC_INTERVAL_MS`）识别新密钥或吊销：
 
 ```bash
 GATEWAY_DATA_DIR=/var/lib/ai-gateway ai-gateway keys create --admin --name ops-recovery -c config.yaml
@@ -710,7 +713,7 @@ ai-gateway keys revoke <id> -c config.yaml
 
 **在途预留。** 为了不让并发请求在任何一个被计入之前全部通过额度检查，带额度或 TPM 的 key，每个被放行的请求在结束前会预留“估算的 prompt + 输出上限”（`max_tokens` / `max_completion_tokens` 中较大的一个，否则模型的 `maxOutputTokens`，否则 `limits.maxOutputTokens`）。只有 已用 + 已预留 < 额度 时才放行新请求，否则返回 **429 `quota_in_flight`** 并带 `Retry-After: 1`（剩余额度可能被在途请求用掉）；预留同样计入 TPM。超出额度的部分因此最多约一个请求。请求结束时（成功、出错、取消、故障转移）预留恰好释放一次，并改为计入真实 token；万一某个预留始终没有释放（程序缺陷），它会在 max(`requestTimeout`, `server.streamMaxDurationSeconds`) + 60 秒后过期，流式时长不设上限时为 max(1 小时, `requestTimeout` + 60 秒)。上游不返回或返回不可信的 `usage`（非流式响应也一样）时，按估算（考虑中日韩字符）计入，而不是记 0。已经发到上游后被中断的请求（客户端断开、`requestTimeout`）计入估算的 prompt，非流式还加上运行的每秒 10 个输出 token（不超过输出上限）；MCP 循环最终失败时，已完成的各轮照样计入。
 
-**性能。** 额度、RPM、TPM 只检查内存计数器：请求路径上不读也不写数据库。已用 token 大约每秒（以及关闭时）异步写回密钥库，启动时恢复；在线改配置（重载）不会清零任何计数。进程崩溃最多丢失约 1 秒的计量。
+**性能。** 请求鉴权、额度、RPM、TPM 只用内存状态：请求路径上不读也不写数据库。密钥库的密钥保存在内存快照里（按 SHA-256 哈希索引，不含明文）：通过 Admin API / 控制台修改密钥后立即重载；其他进程（`ai-gateway keys ...`、`sqlite3` 命令行）做的修改在约一个 `KEY_STORE_SYNC_INTERVAL_MS`（默认 1 秒）内生效——也就是说用 CLI 吊销的密钥，运行中的服务约 1 秒内开始拒绝，而不是下一个请求就拒绝。过期时间每个请求都按当前时间检查。已用 token、每个密钥的 `usageCount` / `lastUsedAt` 以及请求日志行都大约每秒（以及关闭时）批量写入，启动时恢复；在线改配置（重载）不会清零任何计数。进程崩溃（不是 SIGTERM）最多丢失约 1 秒的计量和日志行。其他进程持有密钥库写锁时只会推迟这些后台写入（稍后重试），不会卡住请求或 `/livez`。
 
 **用量统计。** 每个结束的请求（包括被拒绝的，计为错误）都会累加到 `<数据目录>/usage.sqlite` 的按小时汇总表（批量写入、WAL）：请求数、错误数、输入 / 输出 / 缓存命中 / 推理 token、延迟，按 key × 模型 × 渠道。`GET /admin/usage?groupBy=key|model|channel&from=YYYY-MM-DD&to=YYYY-MM-DD[&tz=Asia/Shanghai][&daily=true]`（`read_only` 即可）按需汇总；日期是 `tz` 时区（默认 UTC）里的自然日，存储按整点 UTC 小时分桶，因此半小时偏移的时区精确到小时；单次最多 366 天，默认最近 7 天。每个 key 的响应里还带 `usedTokens`、`remainingTokens`、`quotaExhausted`、`usageResetAt`。详见 [docs/admin-api.md](docs/admin-api.md#key-limits-and-usage)。
 

@@ -12,7 +12,13 @@ import { loadConfigFromPath } from "../config/loader.js";
 import { resolveRuntimeConfig } from "../config/runtime-source.js";
 import type { ConfigStore } from "../persistence/config-store.js";
 import type { GatewayConfig } from "../config/types.js";
-import { KeyStore, keyStorePath, openKeyStoreDatabase, resolveDataDir } from "../persistence/key-store.js";
+import {
+  KeyStore,
+  keyStorePath,
+  openKeyStoreDatabase,
+  resolveDataDir,
+  SERVER_KEY_STORE_BUSY_TIMEOUT_MS,
+} from "../persistence/key-store.js";
 import { RequestLogStore, openRequestLogDatabase } from "../persistence/request-log-store.js";
 import { KeyMeter } from "../usage/key-meter.js";
 import { UsageRecorder } from "../usage/recorder.js";
@@ -26,6 +32,7 @@ import {
 import { PublicHostGuard, type HostResolver } from "../security/url-guard.js";
 import { ShutdownManager } from "./shutdown.js";
 import { getRequestLogger, initRequestLogger } from "../observability/request-log.js";
+import { getMetrics } from "../metrics/metrics.js";
 import { initOtel } from "../observability/otel.js";
 import { initOtelTracer } from "../observability/otel-tracer.js";
 import { parseShutdownGrace } from "../observability/otel-policy.js";
@@ -83,8 +90,9 @@ export async function bootstrap(configPath: string, overrides: ServeOverrides = 
   runtime.store?.startAuditRetention(fileConfig.audit ?? {});
   const config: GatewayConfig = runtime.config;
 
-  // WAL + busy timeout: `ai-gateway keys ...` may write while the server runs.
-  const keyDb = openKeyStoreDatabase(keyStorePath(dataDir));
+  // WAL + short busy timeout: `ai-gateway keys ...` may write while the server
+  // runs; requests never touch this database (in-memory key snapshot, FC-1).
+  const keyDb = openKeyStoreDatabase(keyStorePath(dataDir), { busyTimeoutMs: SERVER_KEY_STORE_BUSY_TIMEOUT_MS });
   const logDb = openRequestLogDatabase(join(dataDir, "request-logs.sqlite"));
   const usageDb = openUsageDatabase(usageStorePath(dataDir));
 
@@ -93,8 +101,11 @@ export async function bootstrap(configPath: string, overrides: ServeOverrides = 
   let usageStore: UsageStore;
   try {
     [keyStore, logStore, usageStore] = await Promise.all([
-      KeyStore.create(keyDb),
-      RequestLogStore.create(logDb),
+      KeyStore.create(keyDb, { busyTimeoutMs: SERVER_KEY_STORE_BUSY_TIMEOUT_MS }),
+      RequestLogStore.create(logDb, {
+        flushIntervalMs: parseEnvNumber(process.env["REQUEST_LOG_FLUSH_INTERVAL_MS"]) ?? 1000,
+        onDrop: (n) => getMetrics().recordRequestLogDropped(n),
+      }),
       UsageStore.create(usageDb),
     ]);
   } catch (err) {
@@ -145,6 +156,8 @@ export async function bootstrap(configPath: string, overrides: ServeOverrides = 
   // process's life (reloads included), persisted asynchronously by the recorder.
   const keyMeter = new KeyMeter();
   keyMeter.restore(keyStore.usedTokensByKey());
+  // Key snapshot in memory + background sync of CLI changes and usage counters (FC-1).
+  keyStore.warm();
   const gateway = new Gateway(config, {
     keyMeter,
     ...(overrides.hostResolver ? { publicHostGuard: new PublicHostGuard(overrides.hostResolver) } : {}),

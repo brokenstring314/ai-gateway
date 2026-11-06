@@ -23,7 +23,7 @@ export interface UsageRecorderOptions {
   readonly store: UsageStore;
   /** Live used-token counters to persist (and the key store to write them to). */
   readonly meter?: KeyMeter;
-  readonly keyStore?: Pick<KeyStore, "saveUsedTokens">;
+  readonly keyStore?: Pick<KeyStore, "saveUsedTokens"> & Partial<Pick<KeyStore, "flushUsageCounters">>;
   /** Flush interval in ms (default 1000). 0: no timer (tests flush by hand). */
   readonly intervalMs?: number;
 }
@@ -95,6 +95,8 @@ export class UsageRecorder {
     }
     const meter = this.opts.meter;
     const keyStore = this.opts.keyStore;
+    // Per-key usage_count / last_used_at, counted in memory by KeyStore.validateKey (FC-1).
+    keyStore?.flushUsageCounters?.();
     if (meter && keyStore) {
       const used = meter.drainDirty();
       if (used.length > 0) {

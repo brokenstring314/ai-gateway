@@ -220,9 +220,30 @@ function buildWhereClause(query: {
 // RequestLogStore
 // ---------------------------------------------------------------------------
 
+function toInsertArgs(entry: RequestLogEntry): InsertArgs {
+  const createdAt = entry.createdAt.getTime() === 0 ? new Date() : entry.createdAt;
+  return [
+    entry.traceId,
+    entry.stage,
+    entry.model,
+    entry.provider,
+    entry.promptTokens,
+    entry.completionTokens,
+    entry.totalTokens,
+    entry.errorMessage,
+    createdAt.toISOString(),
+    entry.keyId !== undefined && entry.keyId !== "" ? entry.keyId : null,
+    Math.round(entry.cacheHitTokens ?? 0),
+    Math.round(entry.reasoningTokens ?? 0),
+    entry.durationMs !== undefined ? Math.round(entry.durationMs) : null,
+    entry.status ?? null,
+    entry.upstreamModel !== undefined && entry.upstreamModel !== "" ? entry.upstreamModel : null,
+  ];
+}
+
 /**
  * Open the request-log database for the server: WAL (readers never block the
- * per-request insert; one fsync per commit at most), synchronous=NORMAL (a
+ * batched inserts), synchronous=NORMAL (a
  * crash can lose the last few log rows, never corrupt the file) and a busy
  * timeout, so another writer (`DELETE /admin/logs` elsewhere, a backup) makes
  * an insert wait instead of failing with "database is locked".
@@ -240,58 +261,164 @@ export function openRequestLogDatabase(path: string): Database {
   return db;
 }
 
+/** Default bound of the in-memory write queue (rows); beyond it new rows are dropped and counted. */
+export const DEFAULT_REQUEST_LOG_MAX_QUEUE = 10_000;
+/** Flush early once this many rows are queued. */
+const FLUSH_BATCH = 500;
+/** Busy timeout of a timer flush: never stall the event loop; a busy database is retried next tick. */
+const FLUSH_BUSY_TIMEOUT_MS = 25;
+
+export interface RequestLogStoreOptions {
+  /**
+   * Batch flush interval in ms (default 1000). 0: no timer; rows are still
+   * written by flush(), before every read (list / stats / delete) and on close().
+   */
+  flushIntervalMs?: number;
+  /** Bound of the write queue (default 10 000 rows). */
+  maxQueue?: number;
+  /** Called with the number of rows dropped (queue full, or written after close). */
+  onDrop?: (count: number) => void;
+}
+
+const INSERT_SQL = `INSERT INTO request_logs(trace_id, stage, model, provider, prompt_tokens, completion_tokens, total_tokens, error_message, created_at, key_id, cache_hit_tokens, reasoning_tokens, duration_ms, status, upstream_model)
+         VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`;
+
+type InsertArgs = [
+  string,
+  string,
+  string,
+  string,
+  number,
+  number,
+  number,
+  string,
+  string,
+  string | null,
+  number,
+  number,
+  number | null,
+  number | null,
+  string | null,
+];
+
+/**
+ * Request log persistence. Writes are batched (FC-1): write() only queues the
+ * row in memory; a timer (default every second), any read, and close() write
+ * the queue in one transaction. The queue is bounded; rows beyond the bound
+ * are dropped and counted (ai_gateway_request_log_dropped_total). A busy
+ * database keeps the rows queued for the next flush.
+ */
 export class RequestLogStore {
   private db: Database;
   private readonly migrationPromise: Promise<void>;
+  private queue: InsertArgs[] = [];
+  private readonly maxQueue: number;
+  private readonly onDrop: ((count: number) => void) | undefined;
+  private timer: ReturnType<typeof setInterval> | undefined;
+  private closed = false;
+  private droppedTotal = 0;
 
-  constructor(db: Database) {
+  constructor(db: Database, opts: RequestLogStoreOptions = {}) {
     this.db = db;
+    this.maxQueue = Math.max(1, Math.floor(opts.maxQueue ?? DEFAULT_REQUEST_LOG_MAX_QUEUE));
+    this.onDrop = opts.onDrop;
     this.migrationPromise = runMigrations(db, buildMigrationSteps(), {
       ledger: REQUEST_LOG_LEDGER,
       primaryTable: REQUEST_LOG_TABLE,
     });
+    const interval = opts.flushIntervalMs ?? 1000;
+    if (interval > 0) {
+      this.timer = setInterval(() => this.flush({ background: true }), interval);
+      (this.timer as { unref?: () => void }).unref?.();
+    }
   }
 
   /** Async factory: awaits the same migration run as the constructor. */
-  static async create(db: Database): Promise<RequestLogStore> {
-    const store = new RequestLogStore(db);
+  static async create(db: Database, opts?: RequestLogStoreOptions): Promise<RequestLogStore> {
+    const store = new RequestLogStore(db, opts);
     await store.migrationPromise;
     return store;
   }
 
   // -- Write -----------------------------------------------------------------
 
+  /** Queue one row (memory only; see the class comment). Never touches the database. */
   write(entry: RequestLogEntry): void {
-    const createdAt = entry.createdAt.getTime() === 0 ? new Date() : entry.createdAt;
+    if (this.closed || this.queue.length >= this.maxQueue) {
+      this.drop(1);
+      return;
+    }
+    this.queue.push(toInsertArgs(entry));
+    if (this.queue.length >= FLUSH_BATCH) queueMicrotask(() => this.flush({ background: true }));
+  }
 
-    // query() caches the compiled statement (one prepare per process, not per request).
-    this.db
-      .query(
-        `INSERT INTO request_logs(trace_id, stage, model, provider, prompt_tokens, completion_tokens, total_tokens, error_message, created_at, key_id, cache_hit_tokens, reasoning_tokens, duration_ms, status, upstream_model)
-         VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-      )
-      .run(
-        entry.traceId,
-        entry.stage,
-        entry.model,
-        entry.provider,
-        entry.promptTokens,
-        entry.completionTokens,
-        entry.totalTokens,
-        entry.errorMessage,
-        createdAt.toISOString(),
-        entry.keyId !== undefined && entry.keyId !== "" ? entry.keyId : null,
-        Math.round(entry.cacheHitTokens ?? 0),
-        Math.round(entry.reasoningTokens ?? 0),
-        entry.durationMs !== undefined ? Math.round(entry.durationMs) : null,
-        entry.status ?? null,
-        entry.upstreamModel !== undefined && entry.upstreamModel !== "" ? entry.upstreamModel : null,
+  /** Rows waiting to be written. */
+  get pending(): number {
+    return this.queue.length;
+  }
+
+  /** Rows dropped so far (queue full / after close). */
+  get dropped(): number {
+    return this.droppedTotal;
+  }
+
+  /**
+   * Write every queued row in one transaction. Never throws: on failure (a
+   * locked database) the rows go back to the front of the queue (still
+   * bounded) for the next flush. `background`: short busy timeout.
+   */
+  flush(opts: { background?: boolean } = {}): void {
+    if (this.queue.length === 0 || this.closed) return;
+    const batch = this.queue;
+    this.queue = [];
+    try {
+      const write = () => {
+        const stmt = this.db.query(INSERT_SQL);
+        this.db.transaction(() => {
+          for (const args of batch) stmt.run(...args);
+        })();
+      };
+      if (opts.background) this.withBusyTimeout(FLUSH_BUSY_TIMEOUT_MS, write);
+      else write();
+    } catch (err) {
+      console.error(
+        `[request-log] could not write ${batch.length} request log row(s), will retry: ${err instanceof Error ? err.message : String(err)}`,
       );
+      const merged = batch.concat(this.queue);
+      const over = merged.length - this.maxQueue;
+      if (over > 0) {
+        // Keep the newest rows.
+        merged.splice(0, over);
+        this.drop(over);
+      }
+      this.queue = merged;
+    }
+  }
+
+  private drop(count: number): void {
+    this.droppedTotal += count;
+    try {
+      this.onDrop?.(count);
+    } catch {
+      // A metrics failure must not break logging.
+    }
+  }
+
+  private withBusyTimeout<T>(ms: number, fn: () => T): T {
+    const row = this.db.query("PRAGMA busy_timeout").get() as Record<string, number> | null;
+    const previous = row ? (Object.values(row)[0] ?? 1000) : 1000;
+    this.db.exec(`PRAGMA busy_timeout = ${ms}`);
+    try {
+      return fn();
+    } finally {
+      this.db.exec(`PRAGMA busy_timeout = ${previous}`);
+    }
   }
 
   // -- List ------------------------------------------------------------------
 
   list(query: RequestLogQuery): RequestLogListResult {
+    this.flush({ background: true });
     const limit = Math.min(Math.max(query.limit ?? DEFAULT_LIST_LIMIT, 1), MAX_LIST_LIMIT);
     const offset = Math.max(query.offset ?? 0, 0);
 
@@ -354,6 +481,7 @@ export class RequestLogStore {
   // -- Stats -----------------------------------------------------------------
 
   stats(query: RequestLogQuery): RequestLogStatsResult {
+    this.flush({ background: true });
     const { whereSQL, args } = buildWhereClause(query);
 
     const statsQuery = STATS_QUERY_TEMPLATE.replaceAll("{whereClause}", whereSQL);
@@ -401,6 +529,8 @@ export class RequestLogStore {
   // -- Delete ----------------------------------------------------------------
 
   delete(query: RequestLogMaintenanceQuery): number {
+    // Queued rows first, so a delete also covers rows logged just before it.
+    this.flush();
     const clauses: string[] = ["created_at < ?"];
     const args: SQLQueryBindings[] = [query.before.toISOString()];
 
@@ -428,7 +558,15 @@ export class RequestLogStore {
     this.db.query("SELECT 1").get();
   }
 
+  /** Write the queue (SIGTERM: the last request rows), stop the timer, close the database. */
   close(): void {
+    if (this.closed) return;
+    if (this.timer !== undefined) clearInterval(this.timer);
+    this.timer = undefined;
+    this.flush();
+    if (this.queue.length > 0) this.drop(this.queue.length);
+    this.queue = [];
+    this.closed = true;
     this.db.close();
   }
 }

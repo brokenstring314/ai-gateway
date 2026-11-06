@@ -42,6 +42,17 @@ async function cliKeys(args: string[], cfgPath: string) {
   return { stdout, stderr, code };
 }
 
+/** Retry `fn` until `ok` (at most 3 s): CLI changes reach the server within the key-store sync interval. */
+async function eventually(fn: () => Promise<Response>, ok: (r: Response) => boolean): Promise<Response> {
+  const deadline = Date.now() + 3000;
+  for (;;) {
+    const r = await fn();
+    if (ok(r) || Date.now() > deadline) return r;
+    await r.body?.cancel();
+    await Bun.sleep(50);
+  }
+}
+
 beforeAll(async () => {
   up = startMockUpstream("a");
   dataDir = join(mkdtempSync(join(tmpdir(), "aigw-e2e-latch-")), "data");
@@ -87,6 +98,16 @@ describe("bootstrap latch + CLI recovery", () => {
     const key = cli.stdout.trim();
     expect(cli.stderr).not.toContain(key);
     expect(g.logs()).not.toContain(key);
+    // CLI writes reach the running server's in-memory key snapshot within the sync interval (FC-1, ~1 s).
+    // Polled on /v1 (failed /admin attempts count towards the admin lockout).
+    expect(
+      (
+        await eventually(
+          () => g.fetch("/v1/models", { auth: key }),
+          (r) => r.status === 200,
+        )
+      ).status,
+    ).toBe(200);
     const list = await g.fetch("/admin/keys", { auth: key });
     expect(list.status).toBe(200);
     const names = ((await list.json()) as { keys: Array<{ name: string }> }).keys.map((k) => k.name);
@@ -102,6 +123,13 @@ describe("bootstrap latch + CLI recovery", () => {
       (k) => k.name === "recovered",
     )!;
     expect((await cliKeys(["revoke", recovered.id], g.configPath)).code).toBe(0);
+    const revokedAt = Date.now();
+    const after = await eventually(
+      () => g.fetch("/v1/models", { auth: key }),
+      (r) => r.status === 401,
+    );
+    expect(after.status).toBe(401);
+    expect(Date.now() - revokedAt).toBeLessThan(2500);
     expect((await g.fetch("/admin/keys", { auth: key })).status).toBe(401);
   });
 

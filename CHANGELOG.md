@@ -43,6 +43,28 @@ Fixes from the final red team of 2026-11-06 (admin surface and upstream handling
   `session_limit`, `login_rate_limited` (console sign-in), `upstream_response_too_large` (`/v1`). Cross-site `GET`s to
   `/admin/*` are now `403 csrf_rejected` (were only refused on writes).
 
+### Fixed
+
+- **No database I/O on the request path (final red team FC-1).** Every authenticated request used to read the key
+  store and run a synchronous `UPDATE api_keys` (with an fsync), plus a synchronous `INSERT` into `request_logs`:
+  on slow storage throughput fell ~7× (309 → 45 rps), and another process holding the key store's write lock (the
+  `ai-gateway keys` CLI, a `sqlite3` shell, a backup) froze the whole process, `/livez` included, for up to 5 s per
+  request. Now:
+  - store keys are validated against an in-memory snapshot keyed by SHA-256 hash (no plaintext kept). Changes through
+    the Admin API / console (revoke, rotate, patch, expiry, delete, reset) apply on the next request; changes by
+    another process are picked up by a background check of `PRAGMA data_version` every `KEY_STORE_SYNC_INTERVAL_MS`
+    (default 1000 ms) — **a key revoked or created with the CLI takes effect in a running server within about one
+    second**, no longer on the very next request. Expiry is still checked against the clock on every request;
+    revoked, expired and quota-exhausted keys are refused as before.
+  - `usageCount` / `lastUsedAt` are counted in memory (the Admin API shows the live values) and written in one
+    transaction by that background sync, the usage recorder's ~1 s flush and on shutdown.
+  - `request_logs` rows are queued and written in batches (`REQUEST_LOG_FLUSH_INTERVAL_MS`, default 1000 ms; also
+    before every `/admin/logs` read and on SIGTERM). The queue is bounded (10 000 rows); rows beyond it are dropped and
+    counted in the new metric `ai_gateway_request_log_dropped_total`.
+  - the key store uses `synchronous=NORMAL` (WAL); the server's connection has a 1 s busy timeout for admin writes,
+    and background writes give up after 25 ms when the database is locked and retry on the next tick instead of
+    blocking the event loop.
+
 ## [0.3.0] - 2026-11-05
 
 Upgrading from 0.2.x: read the **[migration guide](https://github.com/brokenstring314/ai-gateway/blob/v0.3.0/docs/migration-0.3.md)**

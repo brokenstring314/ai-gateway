@@ -23,6 +23,8 @@ describe("round-2: initRequestLogger never called", () => {
       body: JSON.stringify({ model: "m", messages: [{ role: "user", content: "x" }] }),
     });
     up.stop();
+    // Rows are batched since FC-1 (2026-11-06): write the queue before reading the table directly.
+    ls.flush();
     const rows = (ls as any).db ? (ls as any).db.query("SELECT count(*) AS n FROM request_logs").get() : null;
     console.log("chat status", r.status, "rows", rows);
     expect(r.status).toBe(200);

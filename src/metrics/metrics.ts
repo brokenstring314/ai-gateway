@@ -14,6 +14,7 @@
  *   - ai_gateway_circuit_breaker_state          gauge     {provider, state}
  *   - ai_gateway_mcp_server_up                  gauge     {server}
  *   - ai_gateway_rate_limit_rejections_total    counter   {provider}
+ *   - ai_gateway_request_log_dropped_total      counter   (request_logs rows dropped: queue full / store closed)
  *
  * Label values are sanitized before recording (control characters, quotes
  * and backslashes replaced, values trimmed and length-bounded) and the
@@ -116,6 +117,7 @@ export class Metrics {
   private readonly rateLimitRejections: Counter<string>;
   private readonly pluginBlocked: Counter<string>;
   private readonly guardrailDetections: Counter<string>;
+  private readonly requestLogDropped: Counter<string>;
 
   /** Active circuit breaker state per provider, used to zero stale states. */
   private readonly breakerStates = new Map<string, string>();
@@ -194,6 +196,12 @@ export class Metrics {
       registers: [this.registry],
     });
 
+    this.requestLogDropped = new Counter({
+      name: `${prefix}_request_log_dropped_total`,
+      help: "Request log rows dropped before reaching the log database (write queue full, or written after close)",
+      registers: [this.registry],
+    });
+
     if (options.enableDefaultMetrics) {
       collectDefaultMetrics({ register: this.registry, prefix });
     }
@@ -207,6 +215,11 @@ export class Metrics {
   /** Observe a request duration in seconds. */
   observeDuration(seconds: number, labels: RequestLabels): void {
     this.requestDurationSeconds.observe(this.requestLabelValues(labels), nonNegative(seconds));
+  }
+
+  /** Count request log rows that were dropped instead of written (FC-1 bounded write queue). */
+  recordRequestLogDropped(count = 1): void {
+    if (count > 0) this.requestLogDropped.inc(count);
   }
 
   /** Record input/output token usage for a provider and model. */

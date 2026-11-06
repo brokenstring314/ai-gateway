@@ -5,8 +5,17 @@
  *   - 3-step migration sequence via the migration runner
  *   - prepared statements cached on the store instance
  *   - SHA-256 hash lookup (plaintext key never stored)
- *   - non-fatal usage-counter update on ValidateKey
  *   - timing-safe hash comparison via timingSafeEqual
+ *
+ * Request path (FC-1): validateKey() never touches the database. Every key is
+ * held in an in-memory snapshot keyed by its SHA-256 hash. The snapshot is
+ * reloaded right after any write made through this store (admin API) and,
+ * for writes made by another process (`ai-gateway keys ...`, a sqlite3
+ * shell), when `PRAGMA data_version` changes — checked by a timer every
+ * KEY_STORE_SYNC_INTERVAL_MS (default 1000 ms), off the request path. So a
+ * key revoked or created by the CLI takes effect in a running server within
+ * about one interval. usage_count / last_used_at are counted in memory and
+ * written by the same timer (and on close).
  */
 
 import { Database, type Statement } from "bun:sqlite";
@@ -150,15 +159,44 @@ export function keyStorePath(dataDir: string): string {
  * sharing it uses: WAL journal (readers never block the writer) and a busy
  * timeout, so the CLI (`ai-gateway keys ...`) can write while the server runs.
  */
-export function openKeyStoreDatabase(path: string, opts: { create?: boolean } = {}): Database {
+export function openKeyStoreDatabase(path: string, opts: { create?: boolean; busyTimeoutMs?: number } = {}): Database {
   const db = new Database(path, { create: opts.create ?? true, readwrite: true });
-  db.exec("PRAGMA busy_timeout = 5000");
+  // The CLI may wait (default 5 s); the server passes a short timeout because
+  // bun:sqlite waits synchronously and would stall the event loop.
+  db.exec(`PRAGMA busy_timeout = ${Math.max(0, Math.floor(opts.busyTimeoutMs ?? 5000))}`);
   try {
     db.exec("PRAGMA journal_mode = WAL");
   } catch {
     // Another connection holds the database in rollback mode; keep its mode.
   }
+  // WAL + NORMAL: no fsync per commit; a power cut can lose the last commits, never corrupt the file.
+  db.exec("PRAGMA synchronous = NORMAL");
   return db;
+}
+
+/** Busy timeout of the server's key-store connection (admin writes). */
+export const SERVER_KEY_STORE_BUSY_TIMEOUT_MS = 1000;
+/** Busy timeout of the background sync / usage flush: never stall the event loop; retried next tick. */
+const BACKGROUND_BUSY_TIMEOUT_MS = 25;
+/** Default interval of the background sync (CLI changes, usage counters). */
+export const DEFAULT_KEY_STORE_SYNC_INTERVAL_MS = 1000;
+
+export interface KeyStoreOptions {
+  /**
+   * How often (ms) the store checks for writes by other processes and
+   * flushes usage counters. Default: KEY_STORE_SYNC_INTERVAL_MS or 1000,
+   * clamped to 50..10000. 0 = no timer (tests call syncNow()).
+   */
+  syncIntervalMs?: number;
+  /** Busy timeout restored after a background statement (the connection's own setting). Default 5000. */
+  busyTimeoutMs?: number;
+}
+
+function resolveSyncInterval(v: number | undefined): number {
+  if (v === 0) return 0;
+  const env = Number(process.env["KEY_STORE_SYNC_INTERVAL_MS"]);
+  const raw = v ?? (Number.isFinite(env) && env > 0 ? env : DEFAULT_KEY_STORE_SYNC_INTERVAL_MS);
+  return Math.min(10_000, Math.max(50, Math.floor(raw)));
 }
 
 export class KeyNotFoundError extends Error {
@@ -202,6 +240,10 @@ export function assertValidScopes(scopes: readonly unknown[]): asserts scopes is
     }
   }
 }
+
+/** Every column the in-memory snapshot needs (the hash is its map key). */
+const SNAPSHOT_SELECT =
+  "SELECT id, key_hash, key_display, name, scopes, created_at, revoked_at, expires_at, rotated_at, active, usage_count, last_used_at, allowed_models, quota_tokens, rpm, tpm, used_tokens, usage_reset_at, revision FROM api_keys";
 
 const KEY_ROW_SELECT =
   "SELECT id, key_display, name, scopes, created_at, revoked_at, expires_at, rotated_at, active, usage_count, last_used_at, allowed_models, quota_tokens, rpm, tpm, used_tokens, usage_reset_at, revision FROM api_keys";
@@ -331,8 +373,19 @@ function scopesIncludeAdmin(raw: string): boolean {
 // Row shape from SQLite (raw, before parsing into APIKey)
 // ---------------------------------------------------------------------------
 
+/** One snapshot entry: the stored hash (compared timing-safely) and the parsed key. */
+interface CachedKey {
+  readonly hash: string;
+  readonly key: APIKey;
+}
+
+function errMessage(err: unknown): string {
+  return err instanceof Error ? err.message : String(err);
+}
+
 interface KeyRow {
   id: string;
+  key_hash?: string;
   key_display: string;
   name: string;
   scopes: string;
@@ -400,24 +453,34 @@ function parseAllowedModels(raw: string | null): string[] | null {
 export class KeyStore {
   private readonly db: Database;
   private stmtGetByID!: Statement<KeyRow, [string]>;
-  private stmtGetByHash!: Statement<KeyRow, [string]>;
   private stmtRevoke!: Statement<unknown, [string, number, string]>;
   private stmtUpdate!: Statement<unknown, [string, string, string]>;
   private stmtSetExpiry!: Statement<unknown, [string | null, string]>;
   private stmtDelete!: Statement<unknown, [string]>;
-  private stmtUsage!: Statement<unknown, [string, string]>;
   private stmtRotate!: Statement<unknown, [string, string, string, string]>;
   private stmtGetLatch!: Statement<{ value: string }, [string]>;
   private stmtSetLatch!: Statement<unknown, [string, string]>;
   /** The latch is one-way, so once seen set it is cached. */
   private latchedAt: Date | null = null;
+  /** In-memory snapshot of every key, by SHA-256 hash; null until first needed. */
+  private snapshot: Map<string, CachedKey> | null = null;
+  /** `PRAGMA data_version` when the snapshot was loaded (changes on other connections' commits). */
+  private dataVersion = -1;
+  /** usage_count increments / last use not yet written, by key id. */
+  private pendingUsage = new Map<string, { count: number; lastUsedAt: Date }>();
+  private syncTimer: ReturnType<typeof setInterval> | undefined;
+  private readonly syncIntervalMs: number;
+  private readonly busyTimeoutMs: number;
+  private closed = false;
 
-  private constructor(db: Database) {
+  private constructor(db: Database, opts: KeyStoreOptions) {
     this.db = db;
+    this.syncIntervalMs = resolveSyncInterval(opts.syncIntervalMs);
+    this.busyTimeoutMs = opts.busyTimeoutMs ?? 5000;
   }
 
-  static async create(db: Database): Promise<KeyStore> {
-    const store = new KeyStore(db);
+  static async create(db: Database, opts: KeyStoreOptions = {}): Promise<KeyStore> {
+    const store = new KeyStore(db, opts);
     await runMigrations(db, keyStoreSteps(), {
       ledger: LEDGER,
       primaryTable: PRIMARY_TABLE,
@@ -428,16 +491,12 @@ export class KeyStore {
 
   private initStatements(): void {
     this.stmtGetByID = this.db.prepare<KeyRow, [string]>(`${KEY_ROW_SELECT} WHERE id = ?`);
-    this.stmtGetByHash = this.db.prepare<KeyRow, [string]>(`${KEY_ROW_SELECT} WHERE key_hash = ?`);
     this.stmtRevoke = this.db.prepare(
       "UPDATE api_keys SET revoked_at = ?, active = ?, revision = revision + 1 WHERE id = ?",
     );
     this.stmtUpdate = this.db.prepare("UPDATE api_keys SET name = ?, scopes = ?, revision = revision + 1 WHERE id = ?");
     this.stmtSetExpiry = this.db.prepare("UPDATE api_keys SET expires_at = ?, revision = revision + 1 WHERE id = ?");
     this.stmtDelete = this.db.prepare("DELETE FROM api_keys WHERE id = ?");
-    this.stmtUsage = this.db.prepare(
-      "UPDATE api_keys SET usage_count = usage_count + 1, last_used_at = ? WHERE id = ?",
-    );
     this.stmtRotate = this.db.prepare(
       "UPDATE api_keys SET key_hash = ?, key_display = ?, rotated_at = ?, revision = revision + 1 WHERE id = ?",
     );
@@ -475,16 +534,166 @@ export class KeyStore {
    * and setting the latch around it.
    */
   private latchedWrite<T>(grantsAdmin: boolean, opts: KeyWriteOptions | undefined, write: () => T): T {
-    return this.db
-      .transaction(() => {
-        if (opts?.requireUnlatched && this.stmtGetLatch.get(META_BOOTSTRAP_LATCH) !== null) {
-          throw new BootstrapLatchedError();
+    try {
+      return this.db
+        .transaction(() => {
+          if (opts?.requireUnlatched && this.stmtGetLatch.get(META_BOOTSTRAP_LATCH) !== null) {
+            throw new BootstrapLatchedError();
+          }
+          const result = write();
+          if (grantsAdmin) this.stmtSetLatch.run(META_BOOTSTRAP_LATCH, new Date().toISOString());
+          return result;
+        })
+        .immediate();
+    } finally {
+      this.afterWrite();
+    }
+  }
+
+  // -------------------------------------------------------------------------
+  // In-memory snapshot (FC-1)
+  // -------------------------------------------------------------------------
+
+  /**
+   * Reload the snapshot after a write through this store, so a revoke,
+   * rotate, expiry change or delete via the admin API takes effect on the
+   * very next request. Only when a snapshot exists (it is built lazily).
+   */
+  private afterWrite(): void {
+    if (this.snapshot !== null && !this.closed) this.loadSnapshot(false);
+  }
+
+  /** Load every key into memory. `background`: short busy timeout, keep the old snapshot on failure. */
+  private loadSnapshot(background: boolean): boolean {
+    try {
+      const run = () => {
+        const version = this.readDataVersion();
+        const rows = this.db.query<KeyRow, []>(SNAPSHOT_SELECT).all();
+        const next = new Map<string, CachedKey>();
+        for (const row of rows) {
+          if (typeof row.key_hash !== "string") continue;
+          next.set(row.key_hash, { hash: row.key_hash, key: parseRow(row) });
         }
-        const result = write();
-        if (grantsAdmin) this.stmtSetLatch.run(META_BOOTSTRAP_LATCH, new Date().toISOString());
-        return result;
-      })
-      .immediate();
+        this.snapshot = next;
+        this.dataVersion = version;
+      };
+      if (background) this.withBusyTimeout(BACKGROUND_BUSY_TIMEOUT_MS, run);
+      else run();
+      return true;
+    } catch (err) {
+      if (!background && this.snapshot === null) throw err;
+      console.warn(
+        `[keys] could not reload the API key snapshot, keeping the previous one and retrying: ${errMessage(err)}`,
+      );
+      // Force a retry on the next tick even if data_version does not change again.
+      this.dataVersion = -1;
+      return false;
+    }
+  }
+
+  private readDataVersion(): number {
+    const row = this.db.query("PRAGMA data_version").get() as { data_version: number } | null;
+    return row?.data_version ?? -1;
+  }
+
+  /** Run `fn` with a temporary busy timeout on this connection. */
+  private withBusyTimeout<T>(ms: number, fn: () => T): T {
+    this.db.exec(`PRAGMA busy_timeout = ${ms}`);
+    try {
+      return fn();
+    } finally {
+      this.db.exec(`PRAGMA busy_timeout = ${this.busyTimeoutMs}`);
+    }
+  }
+
+  /** The snapshot, built on first use (and the background sync started). */
+  private keys(): Map<string, CachedKey> {
+    if (this.snapshot === null) {
+      this.loadSnapshot(false);
+      this.startSync();
+    }
+    return this.snapshot as Map<string, CachedKey>;
+  }
+
+  /**
+   * Load the snapshot now and start the background sync (server startup), so
+   * not even the first request reads the database.
+   */
+  warm(): void {
+    this.keys();
+  }
+
+  private startSync(): void {
+    if (this.syncTimer !== undefined || this.syncIntervalMs === 0 || this.closed) return;
+    this.syncTimer = setInterval(() => this.syncNow(), this.syncIntervalMs);
+    (this.syncTimer as { unref?: () => void }).unref?.();
+  }
+
+  /**
+   * One background sync step (the timer calls it; tests may too): write
+   * pending usage counters, then reload the snapshot if another process
+   * committed to the database since the last load. Never throws; a busy
+   * database is retried on the next tick.
+   */
+  syncNow(): void {
+    if (this.closed) return;
+    this.flushUsageCounters();
+    if (this.snapshot === null) return;
+    let version: number;
+    try {
+      version = this.withBusyTimeout(BACKGROUND_BUSY_TIMEOUT_MS, () => this.readDataVersion());
+    } catch (err) {
+      console.warn(`[keys] could not check the API key store for changes, will retry: ${errMessage(err)}`);
+      return;
+    }
+    if (version !== this.dataVersion) this.loadSnapshot(true);
+  }
+
+  /**
+   * Write the in-memory usage_count increments and last-use times in one
+   * transaction (short busy timeout; on failure they are kept and retried).
+   * Called by the sync timer, the usage recorder's flush and close().
+   */
+  flushUsageCounters(): void {
+    if (this.pendingUsage.size === 0 || this.closed) return;
+    const batch = this.pendingUsage;
+    this.pendingUsage = new Map();
+    try {
+      this.withBusyTimeout(BACKGROUND_BUSY_TIMEOUT_MS, () => {
+        const stmt = this.db.query(
+          "UPDATE api_keys SET usage_count = usage_count + ?, last_used_at = CASE WHEN last_used_at IS NULL OR last_used_at < ? THEN ? ELSE last_used_at END WHERE id = ?",
+        );
+        this.db.transaction(() => {
+          for (const [id, u] of batch) {
+            const at = u.lastUsedAt.toISOString();
+            stmt.run(u.count, at, at, id);
+          }
+        })();
+      });
+    } catch (err) {
+      console.warn(`[keys] could not write usage counters of ${batch.size} key(s), will retry: ${errMessage(err)}`);
+      for (const [id, u] of batch) this.addPendingUsage(id, u.count, u.lastUsedAt);
+    }
+  }
+
+  private addPendingUsage(id: string, count: number, at: Date): void {
+    const cur = this.pendingUsage.get(id);
+    if (cur === undefined) this.pendingUsage.set(id, { count, lastUsedAt: at });
+    else {
+      cur.count += count;
+      if (at > cur.lastUsedAt) cur.lastUsedAt = at;
+    }
+  }
+
+  /** Persisted counters plus what is still pending in memory. */
+  private withPendingUsage(k: APIKey): APIKey {
+    const p = this.pendingUsage.get(k.id);
+    if (p === undefined) return k;
+    return {
+      ...k,
+      usageCount: k.usageCount + p.count,
+      lastUsedAt: k.lastUsedAt === null || p.lastUsedAt > k.lastUsedAt ? p.lastUsedAt : k.lastUsedAt,
+    };
   }
 
   // -------------------------------------------------------------------------
@@ -603,7 +812,7 @@ export class KeyStore {
   get(id: string): APIKey | null {
     const row = this.stmtGetByID.get(id);
     if (row === null) return null;
-    return parseRow(row);
+    return this.withPendingUsage(parseRow(row));
   }
 
   // -------------------------------------------------------------------------
@@ -612,7 +821,7 @@ export class KeyStore {
 
   list(): APIKey[] {
     const rows = this.db.query<KeyRow, []>(KEY_ROW_SELECT).all();
-    return rows.map(parseRow);
+    return rows.map((r) => this.withPendingUsage(parseRow(r)));
   }
 
   // -------------------------------------------------------------------------
@@ -620,10 +829,11 @@ export class KeyStore {
   // -------------------------------------------------------------------------
 
   /**
-   * Hash the provided key, look up by hash (timing-safe comparison), check
-   * active/revoked/expiry. On success, increment usage_count + update
-   * last_used_at (non-fatal if the counter update fails — log and still
-   * return the authenticated key).
+   * Hash the provided key, look it up in the in-memory snapshot (by hash,
+   * then a timing-safe comparison of the stored hash), check
+   * active/revoked/expiry against the current time. No database access: the
+   * usage counter and last-use time are counted in memory and written by the
+   * background sync (FC-1).
    *
    * Returns the APIKey (with plaintext key replaced by display form) on
    * success, null on failure.
@@ -632,32 +842,26 @@ export class KeyStore {
     if (key === "") return null;
 
     const hash = hashKey(key);
-    const row = this.stmtGetByHash.get(hash);
-    if (row === null) return null;
+    const cached = this.keys().get(hash);
+    if (cached === undefined) return null;
 
     // Timing-safe comparison — never use === for hash equality.
-    if (!timingSafeEqual(hash, hashKey(key))) return null;
+    if (!timingSafeEqual(cached.hash, hash)) return null;
 
-    const apiKey = parseRow(row);
-
-    if (!apiKey.active || apiKey.revokedAt !== null) return null;
-    if (apiKey.expiresAt !== null && new Date() > apiKey.expiresAt) {
-      return null;
-    }
-
-    // Auth check passed. Update usage counters; failure is non-fatal.
+    const k = cached.key;
+    if (!k.active || k.revokedAt !== null) return null;
     const now = new Date();
-    try {
-      this.stmtUsage.run(now.toISOString(), apiKey.id);
-      apiKey.usageCount += 1;
-      apiKey.lastUsedAt = now;
-    } catch (err) {
-      console.warn(
-        `failed to update key usage counter; authentication still succeeds — key_id=${apiKey.id} error=${err instanceof Error ? err.message : String(err)}`,
-      );
-    }
+    if (k.expiresAt !== null && now > k.expiresAt) return null;
 
-    return apiKey;
+    this.addPendingUsage(k.id, 1, now);
+    // A copy: callers may not change the snapshot.
+    return {
+      ...k,
+      scopes: [...k.scopes],
+      allowedModels: k.allowedModels === null ? null : [...k.allowedModels],
+      usageCount: k.usageCount + (this.pendingUsage.get(k.id)?.count ?? 0),
+      lastUsedAt: now,
+    };
   }
 
   // -------------------------------------------------------------------------
@@ -668,6 +872,7 @@ export class KeyStore {
   revoke(id: string): void {
     const now = new Date();
     const result = this.stmtRevoke.run(now.toISOString(), 0, id);
+    this.afterWrite();
     if (result.changes === 0) {
       throw new KeyNotFoundError(id);
     }
@@ -690,6 +895,7 @@ export class KeyStore {
     this.db
       .prepare("UPDATE api_keys SET allowed_models = ?, revision = revision + 1 WHERE id = ?")
       .run(allowedModels === null ? null : JSON.stringify(allowedModels), id);
+    this.afterWrite();
     return { ...current, allowedModels, revision: current.revision + 1 };
   }
 
@@ -768,6 +974,7 @@ export class KeyStore {
     const result = this.db
       .prepare("UPDATE api_keys SET used_tokens = 0, usage_reset_at = ?, revision = revision + 1 WHERE id = ?")
       .run(at.toISOString(), id);
+    this.afterWrite();
     if (result.changes === 0) throw new KeyNotFoundError(id);
     const updated = this.get(id);
     if (updated === null) throw new KeyNotFoundError(id);
@@ -780,10 +987,13 @@ export class KeyStore {
    * Keys that no longer exist are skipped.
    */
   saveUsedTokens(entries: Iterable<readonly [id: string, used: number]>): void {
-    const stmt = this.db.prepare("UPDATE api_keys SET used_tokens = ? WHERE id = ?");
-    this.db.transaction(() => {
-      for (const [id, used] of entries) stmt.run(Math.max(0, Math.floor(used)), id);
-    })();
+    // Background write (usage recorder timer / shutdown): short busy timeout, the caller retries.
+    this.withBusyTimeout(BACKGROUND_BUSY_TIMEOUT_MS, () => {
+      const stmt = this.db.query("UPDATE api_keys SET used_tokens = ? WHERE id = ?");
+      this.db.transaction(() => {
+        for (const [id, used] of entries) stmt.run(Math.max(0, Math.floor(used)), id);
+      })();
+    });
   }
 
   /** Persisted used tokens of every key with any usage (restored into the key meter at startup). */
@@ -802,6 +1012,7 @@ export class KeyStore {
   /** Set or clear (null) the expiration. Throws KeyNotFoundError if absent. */
   setExpiration(id: string, expiresAt: Date | null): void {
     const result = this.stmtSetExpiry.run(expiresAt ? expiresAt.toISOString() : null, id);
+    this.afterWrite();
     if (result.changes === 0) {
       throw new KeyNotFoundError(id);
     }
@@ -814,6 +1025,8 @@ export class KeyStore {
   /** Delete a key by ID. Throws KeyNotFoundError if absent. */
   delete(id: string): void {
     const result = this.stmtDelete.run(id);
+    this.pendingUsage.delete(id);
+    this.afterWrite();
     if (result.changes === 0) {
       throw new KeyNotFoundError(id);
     }
@@ -832,6 +1045,7 @@ export class KeyStore {
     const now = new Date();
 
     const result = this.stmtRotate.run(hashKey(newKey), displayKey(newKey), now.toISOString(), id);
+    this.afterWrite();
     if (result.changes === 0) {
       throw new KeyNotFoundError(id);
     }
@@ -864,6 +1078,13 @@ export class KeyStore {
 
   /** Close the underlying database. Safe to call once. */
   close(): void {
+    if (this.closed) return;
+    if (this.syncTimer !== undefined) clearInterval(this.syncTimer);
+    this.syncTimer = undefined;
+    // Last write of the usage counters (best effort; a still-locked database loses them).
+    this.flushUsageCounters();
+    this.closed = true;
+    this.snapshot = null;
     this.db.close();
   }
 }
