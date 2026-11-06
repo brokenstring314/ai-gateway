@@ -179,7 +179,7 @@ export function Login(props: { onDone: (s: SessionInfo) => void }) {
             if (r.data.csrfToken) setCsrfToken(r.data.csrfToken);
             props.onDone({ ...r.data, via: "session" });
           } catch (err) {
-            if (err instanceof ApiError && err.status === 429) {
+            if (err instanceof ApiError && err.status === 429 && err.code !== "login_rate_limited") {
               setError(t("login.locked", { s: fmtDuration(err.retryAfter ?? 60) }));
             } else if (err instanceof ApiError && err.status === 403) {
               setError(t("login.scope"));

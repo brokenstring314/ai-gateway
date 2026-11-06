@@ -69,6 +69,34 @@ export function csrfGuard(opts: { allowedOrigins?: () => readonly string[] | und
   };
 }
 
+/**
+ * Cross-site refusal for EVERY /admin request, run before any credential is
+ * looked at (final red team 2026-11-06 FA-1). A request with
+ * `Sec-Fetch-Site: cross-site`, or an `Origin` that is neither this server's
+ * origin nor one listed in `cors.origins` (a `*` there does not count for the
+ * Admin API), is answered `403 csrf_rejected` and never reaches the
+ * credential check — so it is never counted toward the per-IP lockout and a
+ * web page cannot lock the admin out. Requests without these headers (curl,
+ * CLI, scripts, same-origin GETs, which browsers send without Origin) pass.
+ */
+export function crossSiteGuard(opts: { allowedOrigins?: () => readonly string[] | undefined } = {}): MiddlewareHandler {
+  return async (c, next) => {
+    const site = c.req.header("Sec-Fetch-Site");
+    if (site !== undefined && site.toLowerCase() === "cross-site") {
+      return adminError(c, 403, "csrf_rejected", "Cross-site requests to the Admin API are not allowed");
+    }
+    const origin = c.req.header("Origin");
+    if (origin !== undefined && origin !== "") {
+      const self = new URL(c.req.url).origin;
+      const allowed = opts.allowedOrigins?.() ?? [];
+      if (origin !== self && !allowed.includes(origin)) {
+        return adminError(c, 403, "csrf_rejected", `Requests from origin ${origin} are not allowed on the Admin API`);
+      }
+    }
+    return next();
+  };
+}
+
 /** Parse If-Match: `"12"`, `W/"12"` or `12`. Undefined when absent; NaN when malformed. */
 export function parseIfMatch(header: string | undefined): number | undefined {
   if (header === undefined || header.trim() === "") return undefined;

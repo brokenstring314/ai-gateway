@@ -555,6 +555,11 @@ const ERRORS: Record<string, Pair> = {
   session_expired: ["会话已过期，请重新登录", "Session expired; sign in again"],
   login_locked: ["失败次数过多，请 {wait}后再试", "Too many failures; try again in {wait}"],
   auth_locked: ["失败次数过多，请 {wait}后再试", "Too many failures; try again in {wait}"],
+  login_rate_limited: ["登录太频繁，请 {wait}后再试", "Too many sign-ins; try again in {wait}"],
+  session_limit: [
+    "控制台会话已满（其他凭据占用），请稍后再试或先吊销不用的会话",
+    "Too many console sessions are open (held by other credentials); try again later or revoke unused ones",
+  ],
   insufficient_scope: ["权限不足：这个操作需要管理员权限", "Not allowed: this needs the admin scope"],
   csrf_token_invalid: ["安全校验失败，请刷新页面后重试", "Security check failed; reload the page and retry"],
   csrf_rejected: ["跨站请求被拒绝", "Cross-site request rejected"],

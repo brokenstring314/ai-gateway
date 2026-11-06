@@ -39,6 +39,15 @@ export interface ConsoleSessionOptions {
   readonly lockoutMinutes?: number;
   /** Cookie Secure flag: auto (https request or X-Forwarded-Proto: https), always or never. */
   readonly secureCookie?: "auto" | "always" | "never";
+  /** Live sessions per credential (default 5): a new sign-in ends that credential's oldest (FA-3). */
+  readonly maxSessionsPerCredential?: number;
+  /** Successful sign-ins per client IP per minute (default 20, FA-3). */
+  readonly maxLoginsPerMinute?: number;
+}
+
+/** Why `create` refused a session (FA-3): the table is full of other credentials' sessions. */
+export class SessionLimitError extends Error {
+  override name = "SessionLimitError";
 }
 
 export type SessionKind = "secret" | "bootstrap" | "key";
@@ -46,6 +55,8 @@ export type SessionKind = "secret" | "bootstrap" | "key";
 export interface ConsoleSession {
   /** Public id shown in the session list (not the cookie value). */
   readonly id: string;
+  /** Which credential signed in (store key id, adminSecret, bootstrap key + scope): the per-credential cap's key. */
+  readonly credential: string;
   readonly hash: string;
   readonly csrfToken: string;
   readonly actor: string;
@@ -73,7 +84,10 @@ export interface SessionView {
   userAgent: string;
 }
 
-const MAX_SESSIONS = 64;
+/** Live console sessions in total (all credentials). */
+export const MAX_SESSIONS = 64;
+export const DEFAULT_MAX_SESSIONS_PER_CREDENTIAL = 5;
+export const DEFAULT_MAX_LOGINS_PER_MINUTE = 20;
 /** Failures a minute (all IPs) above which every sign-in attempt is slowed down (RA1: was a hard 429 for everyone). */
 export const GLOBAL_SLOWDOWN_FAILURES_PER_MINUTE = 60;
 /** Slowdown per multiple of the threshold, and its ceiling. */
@@ -96,6 +110,9 @@ export class SessionManager {
   readonly maxFailures: number;
   readonly lockoutMs: number;
   readonly secureCookie: "auto" | "always" | "never";
+  readonly maxPerCredential: number;
+  readonly maxLoginsPerMinute: number;
+  private readonly logins = new Map<string, { start: number; count: number }>();
   private readonly sessions = new Map<string, ConsoleSession>();
   private readonly failures = new Map<string, { first: number; count: number; lockedUntil: number }>();
   private globalWindow = { start: 0, count: 0 };
@@ -109,6 +126,26 @@ export class SessionManager {
     this.maxFailures = opts.maxLoginFailures ?? 5;
     this.lockoutMs = (opts.lockoutMinutes ?? 15) * 60_000;
     this.secureCookie = opts.secureCookie ?? "auto";
+    this.maxPerCredential = opts.maxSessionsPerCredential ?? DEFAULT_MAX_SESSIONS_PER_CREDENTIAL;
+    this.maxLoginsPerMinute = opts.maxLoginsPerMinute ?? DEFAULT_MAX_LOGINS_PER_MINUTE;
+  }
+
+  /**
+   * Count one successful sign-in of this client IP (FA-3); returns seconds to
+   * wait when it is over `maxLoginsPerMinute` (the sign-in is then refused),
+   * else undefined. Failed sign-ins are limited by the lockout instead.
+   */
+  takeLogin(ip: string): number | undefined {
+    const t = this.now();
+    let w = this.logins.get(ip);
+    if (!w || t - w.start >= 60_000) {
+      if (this.logins.size > 10_000) this.logins.clear();
+      w = { start: t, count: 0 };
+      this.logins.set(ip, w);
+    }
+    if (w.count >= this.maxLoginsPerMinute) return Math.max(1, Math.ceil((w.start + 60_000 - t) / 1000));
+    w.count++;
+    return undefined;
   }
 
   /**
@@ -156,11 +193,21 @@ export class SessionManager {
     return false;
   }
 
-  loginSucceeded(ip: string): void {
-    this.failures.delete(ip);
-  }
+  // A successful sign-in never clears the IP's failures (final red team
+  // 2026-11-06 FA-2): otherwise a read_only key holder could interleave one
+  // valid sign-in every few guesses and guess adminSecret without limit.
+  // Failures age out with lockoutMinutes, exactly as on the header path.
 
-  /** Create a session; returns the cookie value (only ever sent to the browser) and the session. */
+  /**
+   * Create a session; returns the cookie value (only ever sent to the browser) and the session.
+   *
+   * Capacity (FA-3): each credential keeps at most `maxSessionsPerCredential`
+   * sessions — a new sign-in ends that credential's least recently used one.
+   * When the whole table (MAX_SESSIONS) is full, an admin-scope sign-in may end
+   * the least recently used session of a credential WITHOUT the admin scope;
+   * nothing ever ends another credential's admin session, and a read_only
+   * sign-in never ends anyone else's: it gets SessionLimitError instead.
+   */
   create(input: {
     actor: string;
     kind: SessionKind;
@@ -171,17 +218,29 @@ export class SessionManager {
     userAgent: string;
   }): { token: string; session: ConsoleSession } {
     this.sweep();
-    while (this.sessions.size >= MAX_SESSIONS) {
-      // Evict the least recently used session.
-      let oldest: ConsoleSession | undefined;
-      for (const s of this.sessions.values()) if (!oldest || s.lastSeenAt < oldest.lastSeenAt) oldest = s;
-      if (!oldest) break;
-      this.sessions.delete(oldest.hash);
+    const credential = credentialId(input);
+    const own = [...this.sessions.values()].filter((s) => s.credential === credential);
+    own.sort((a, b) => a.lastSeenAt - b.lastSeenAt);
+    while (own.length >= this.maxPerCredential) {
+      const oldest = own.shift();
+      if (oldest) this.sessions.delete(oldest.hash);
+    }
+    if (this.sessions.size >= MAX_SESSIONS) {
+      let victim: ConsoleSession | undefined;
+      if (input.scopes.includes("admin")) {
+        for (const s of this.sessions.values()) {
+          if (s.scopes.includes("admin")) continue;
+          if (!victim || s.lastSeenAt < victim.lastSeenAt) victim = s;
+        }
+      }
+      if (!victim) throw new SessionLimitError("Too many console sessions are open; try again later");
+      this.sessions.delete(victim.hash);
     }
     const token = randomToken();
     const t = this.now();
     const session: ConsoleSession = {
       id: `ses_${randomToken(9)}`,
+      credential,
       hash: sha256(token),
       csrfToken: randomToken(),
       actor: input.actor,
@@ -283,6 +342,13 @@ export class SessionManager {
       if (t >= s.expiresAt || t - s.lastSeenAt >= this.idleMs) this.sessions.delete(hash);
     }
   }
+}
+
+/** The credential a session belongs to: one store key, adminSecret, or a bootstrap key (by its scopes). */
+function credentialId(input: { kind: SessionKind; keyId?: string; scopes: readonly string[] }): string {
+  if (input.kind === "key") return `key:${input.keyId ?? ""}`;
+  if (input.kind === "bootstrap") return `bootstrap:${[...input.scopes].sort().join(",")}`;
+  return "secret";
 }
 
 /** Serialize a cookie for the console (Path=/admin, SameSite=Strict). */

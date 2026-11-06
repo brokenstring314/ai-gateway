@@ -317,6 +317,17 @@ function fromProviderError(p: ProviderError): GatewayError {
       cause: p,
     });
   }
+  if (p.origin === "too_large") {
+    // FS-1: the body passed maxUpstreamResponseBytes (decompressed); reading stopped there.
+    return new GatewayError("upstream_unavailable", {
+      status: 502,
+      message: "Upstream response too large",
+      type: "server_error",
+      code: "upstream_response_too_large",
+      target,
+      cause: p,
+    });
+  }
   if (p.origin === "invalid_body") {
     return new GatewayError("upstream_unavailable", {
       status: 502,

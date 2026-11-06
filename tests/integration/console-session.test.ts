@@ -8,7 +8,13 @@ import { afterAll, afterEach, beforeAll, describe, expect, it } from "bun:test";
 import { adminHarness, FakeUpstreams, type Harness, yamlTarget } from "./_admin-harness.js";
 
 const ups = new FakeUpstreams();
-const FILE = { strategy: { mode: "fallback", targets: ["a"] }, targets: [yamlTarget("a", ["gpt-x"])] };
+const FILE = {
+  strategy: { mode: "fallback", targets: ["a"] },
+  targets: [yamlTarget("a", ["gpt-x"])],
+  // These tests sign in from one client IP many times a minute; the per-IP
+  // limit on successful sign-ins (FA-3) has its own regression test.
+  console: { maxLoginsPerMinute: 1000 },
+};
 
 interface Signed {
   cookie: string;

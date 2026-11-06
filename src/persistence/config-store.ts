@@ -472,10 +472,28 @@ export type RuntimeSections = Pick<GatewayConfig, "targets" | "strategy"> & Part
 
 const SNAPSHOT_FORMAT = 2;
 
+/** Audit log retention defaults (final red team 2026-11-06 FA-3): newest 50,000 rows, at most 90 days. */
+export const DEFAULT_AUDIT_MAX_ROWS = 50_000;
+export const DEFAULT_AUDIT_RETENTION_DAYS = 90;
+/** Rows deleted per pruning step; steps yield to the event loop in between. */
+const AUDIT_PRUNE_BATCH = 5_000;
+/** Inserts between two background prunes. */
+const AUDIT_PRUNE_EVERY = 1_000;
+
+export interface AuditRetention {
+  readonly maxRows?: number;
+  readonly retentionDays?: number;
+}
+
 export class ConfigStore {
   /** Decrypted upstream keys by key id (memory only): runtime builds need no async decryption. */
   private readonly keyCache = new Map<string, string>();
   private lastBackupAt = 0;
+  private closed = false;
+  /** Set by startAuditRetention (server mode); undefined = never pruned. */
+  private auditRetention: { maxRows: number; retentionDays: number } | undefined;
+  private auditInsertsSincePrune = 0;
+  private auditPruneTimer: ReturnType<typeof setTimeout> | undefined;
 
   private constructor(
     private readonly db: Database,
@@ -499,7 +517,70 @@ export class ConfigStore {
   }
 
   close(): void {
+    this.closed = true;
+    if (this.auditPruneTimer !== undefined) clearTimeout(this.auditPruneTimer);
+    this.auditPruneTimer = undefined;
     this.db.close();
+  }
+
+  /**
+   * Keep the audit log bounded (FA-3: a sign-in loop could grow it without
+   * limit): at most `maxRows` newest rows (default 50,000) and nothing older
+   * than `retentionDays` (default 90). Pruning never runs on the request path:
+   * it is scheduled on a timer now and after every 1,000 inserts, and deletes
+   * in batches of 5,000 rows, yielding to the event loop between batches.
+   */
+  startAuditRetention(opts: AuditRetention = {}): void {
+    this.auditRetention = {
+      maxRows: opts.maxRows ?? DEFAULT_AUDIT_MAX_ROWS,
+      retentionDays: opts.retentionDays ?? DEFAULT_AUDIT_RETENTION_DAYS,
+    };
+    this.scheduleAuditPrune();
+  }
+
+  /**
+   * One pruning step: deletes at most `batch` rows over the row cap or past the
+   * retention age (oldest first). Returns how many rows it deleted (0 = done).
+   */
+  pruneAuditStep(batch = AUDIT_PRUNE_BATCH, now = Date.now()): number {
+    const r = this.auditRetention;
+    if (r === undefined || this.closed) return 0;
+    let deleted = 0;
+    const cutoff = new Date(now - r.retentionDays * 86_400_000).toISOString();
+    deleted += this.db
+      .prepare("DELETE FROM audit_log WHERE id IN (SELECT id FROM audit_log WHERE at < ? ORDER BY id LIMIT ?)")
+      .run(cutoff, batch).changes;
+    if (deleted < batch) {
+      const edge = this.db.query("SELECT id FROM audit_log ORDER BY id DESC LIMIT 1 OFFSET ?").get(r.maxRows) as {
+        id: number;
+      } | null;
+      if (edge !== null) {
+        deleted += this.db
+          .prepare("DELETE FROM audit_log WHERE id IN (SELECT id FROM audit_log WHERE id <= ? ORDER BY id LIMIT ?)")
+          .run(edge.id, batch - deleted).changes;
+      }
+    }
+    return deleted;
+  }
+
+  private scheduleAuditPrune(): void {
+    if (this.auditRetention === undefined || this.closed || this.auditPruneTimer !== undefined) return;
+    this.auditInsertsSincePrune = 0;
+    const step = () => {
+      this.auditPruneTimer = undefined;
+      let more = false;
+      try {
+        more = this.pruneAuditStep() > 0;
+      } catch (err) {
+        if (!this.closed) console.warn(`[config-store] audit log pruning failed: ${String(err)}`);
+      }
+      if (more && !this.closed) {
+        this.auditPruneTimer = setTimeout(step, 0);
+        (this.auditPruneTimer as { unref?: () => void }).unref?.();
+      }
+    };
+    this.auditPruneTimer = setTimeout(step, 0);
+    (this.auditPruneTimer as { unref?: () => void }).unref?.();
   }
 
   /** Whether literal upstream keys can be stored (GATEWAY_SECRET_KEY configured). */
@@ -1649,6 +1730,9 @@ export class ConfigStore {
         "INSERT INTO audit_log (at, actor, action, resource_type, resource_id, detail_json) VALUES (?, ?, ?, ?, ?, ?)",
       )
       .run(at, actor, action, resourceType, resourceId, detail === undefined ? null : JSON.stringify(detail));
+    if (this.auditRetention !== undefined && ++this.auditInsertsSincePrune >= AUDIT_PRUNE_EVERY) {
+      this.scheduleAuditPrune();
+    }
   }
 }
 

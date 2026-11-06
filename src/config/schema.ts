@@ -322,6 +322,20 @@ export const GatewayConfigSchema = strictObject({
     .positive()
     .optional()
     .default(10 * 1024 * 1024),
+  // Ceilings for reading upstream bodies, counted after decompression (FS-1):
+  // successful non-streaming bodies (default 32 MiB) and error bodies (64 KiB).
+  maxUpstreamResponseBytes: z
+    .number()
+    .int()
+    .min(1024)
+    .max(1024 * 1024 * 1024)
+    .optional(),
+  maxUpstreamErrorBodyBytes: z
+    .number()
+    .int()
+    .min(1024)
+    .max(16 * 1024 * 1024)
+    .optional(),
   requestTimeout: durationString("requestTimeout").optional(),
   plugins: z.array(PluginConfigSchema).optional(),
   aliases: z.record(z.string(), z.string()).optional(),
@@ -360,7 +374,14 @@ export const GatewayConfigSchema = strictObject({
     idleTimeoutMinutes: z.number().int().min(1).max(43_200).optional(),
     maxLoginFailures: z.number().int().min(1).max(100).optional(),
     lockoutMinutes: z.number().int().min(1).max(1440).optional(),
+    maxSessionsPerCredential: z.number().int().min(1).max(64).optional(),
+    maxLoginsPerMinute: z.number().int().min(1).max(1000).optional(),
     secureCookie: z.enum(["auto", "always", "never"]).optional(),
+  }).optional(),
+  // Audit log retention in config.sqlite (FA-3): newest maxRows rows, at most retentionDays old.
+  audit: strictObject({
+    maxRows: z.number().int().min(100).max(10_000_000).optional(),
+    retentionDays: z.number().int().min(1).max(3650).optional(),
   }).optional(),
   // Where targets/strategy/aliases/plugins/compatibility come from (0.3.0):
   // "database" (default; imported from this file on first start, then

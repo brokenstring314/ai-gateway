@@ -41,6 +41,7 @@ import { createAdminApp, type AdminAppOptions } from "./admin/handlers.js";
 import { createDashboardApp } from "./dashboard/index.js";
 import { registerStaticIcons, STATIC_ICON_PATHS } from "./server/static-icons.js";
 import { createProxyHandler, createProxyKeyValidator, resolveProxyTarget } from "./proxy/proxy.js";
+import { upstreamResponseLimits } from "./providers/bounded-body.js";
 import {
   compileRouteAllowlist,
   DEFAULT_PASSTHROUGH_ROUTES,
@@ -358,6 +359,7 @@ export function createApp(
         resolveTarget,
         isRouteAllowed,
         keyStore,
+        responseLimits: upstreamResponseLimits(config),
         // Normally the global auth middleware has already authenticated the
         // request; this fallback lets config.auth.keys through without a store.
         validateKey: (token) =>

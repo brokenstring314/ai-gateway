@@ -1,6 +1,6 @@
 // Console sessions (0.3.0 P6, plan §9.4): lifetime, idle timeout, CSRF token, login lockout.
 import { describe, expect, it } from "bun:test";
-import { cookieHeader, readCookie, SessionManager } from "@/admin/session";
+import { cookieHeader, readCookie, SessionLimitError, SessionManager } from "@/admin/session";
 
 function clock(start = 1_000_000) {
   let t = start;
@@ -78,11 +78,14 @@ describe("SessionManager", () => {
     expect(m.loginBlocked("a")).toBeUndefined();
   });
 
-  it("a success clears the failure count", () => {
-    const m = new SessionManager({ maxLoginFailures: 2 });
+  it("FA-2: there is no success reset; failures only age out with lockoutMinutes", () => {
+    const c = clock();
+    const m = new SessionManager({ maxLoginFailures: 2, lockoutMinutes: 10 }, c.now);
+    expect("loginSucceeded" in m).toBe(false);
     m.loginFailed("a");
-    m.loginSucceeded("a");
-    expect(m.loginFailed("a")).toBe(false);
+    c.advance(10 * 60_000);
+    expect(m.loginFailed("a")).toBe(false); // the first one aged out
+    expect(m.loginFailed("a")).toBe(true);
   });
 
   it("RA1: many failures overall slow sign-ins down (≤ 2 s) but never lock out a fresh IP", () => {
@@ -100,24 +103,62 @@ describe("SessionManager", () => {
     expect(m.loginDelayMs()).toBe(0);
   });
 
-  it("revoke by public id, end, and eviction of the least recently used beyond the cap", () => {
+  it("FA-3: a credential keeps at most maxSessionsPerCredential sessions; its own oldest is ended", () => {
     const c = clock();
     const m = new SessionManager({}, c.now);
+    expect(m.maxPerCredential).toBe(5);
     const first = m.create(who);
     c.advance(1);
     const tokens: string[] = [];
-    for (let i = 0; i < 63; i++) {
+    for (let i = 0; i < 4; i++) {
       tokens.push(m.create(who).token);
       c.advance(1);
     }
-    expect(m.size).toBe(64);
-    m.create(who); // evicts `first`, the least recently seen
+    expect(m.size).toBe(5);
+    const other = m.create({ ...who, actor: "key:k2", keyId: "k2" });
+    m.create(who); // ends `first`, k1's least recently seen, never k2's
     expect(m.touch(first.token)).toBeUndefined();
-    expect(m.size).toBe(64);
+    expect(m.touch(other.token)).toBeDefined();
+    expect(m.size).toBe(6);
     const s = m.touch(tokens[0]!)!;
     expect(m.revoke(s.id)).toBe(true);
     expect(m.revoke(s.id)).toBe(false);
     expect(m.touch(tokens[0]!)).toBeUndefined();
+  });
+
+  it("FA-3: a full table never ends another credential's session for a read_only sign-in; admin may end read_only ones", () => {
+    const c = clock();
+    const m = new SessionManager({ maxSessionsPerCredential: 1 }, c.now);
+    const admins: string[] = [];
+    for (let i = 0; i < 32; i++) {
+      admins.push(m.create({ ...who, actor: `key:a${i}`, keyId: `a${i}` }).token);
+      c.advance(1);
+    }
+    for (let i = 0; i < 32; i++) {
+      m.create({ ...who, actor: `key:r${i}`, keyId: `r${i}`, scopes: ["read_only"] });
+      c.advance(1);
+    }
+    expect(m.size).toBe(64);
+    expect(() => m.create({ ...who, actor: "key:rx", keyId: "rx", scopes: ["read_only"] })).toThrow(SessionLimitError);
+    // the same read_only credential signing in again replaces its own session
+    m.create({ ...who, actor: "key:r0", keyId: "r0", scopes: ["read_only"] });
+    expect(m.size).toBe(64);
+    // an admin sign-in ends the least recently used read_only session, never an admin one
+    m.create({ ...who, actor: "key:ax", keyId: "ax" });
+    expect(m.size).toBe(64);
+    for (const t of admins) expect(m.touch(t)).toBeDefined();
+  });
+
+  it("FA-3: successful sign-ins are limited per IP and minute", () => {
+    const c = clock();
+    const m = new SessionManager({ maxLoginsPerMinute: 3 }, c.now);
+    expect(m.takeLogin("a")).toBeUndefined();
+    expect(m.takeLogin("a")).toBeUndefined();
+    expect(m.takeLogin("a")).toBeUndefined();
+    expect(m.takeLogin("a")).toBe(60);
+    expect(m.takeLogin("b")).toBeUndefined();
+    c.advance(60_000);
+    expect(m.takeLogin("a")).toBeUndefined();
   });
 });
 

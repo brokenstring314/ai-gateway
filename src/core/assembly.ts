@@ -33,6 +33,7 @@ import { type KeyPool, KeyStateRegistry } from "../routing/key-pool.js";
 import type { PublicHostGuard } from "../security/url-guard.js";
 import { buildStrategyConfig } from "./strategy-config.js";
 import { requestTimeoutMs } from "../middleware/request-timeout.js";
+import { upstreamResponseLimits } from "../providers/bounded-body.js";
 import { streamMaxDurationMs } from "./stream-runner.js";
 
 export interface GatewayParts {
@@ -128,12 +129,14 @@ export function assembleGateway(config: GatewayConfig, hooks: AssemblyHooks, pre
   const load = hooks.load ?? new TargetLoad();
   const keyStateIds = new Set<string>();
   const pools = new Map<string, KeyPool>();
+  const responseLimits = upstreamResponseLimits(config);
   for (const target of config.targets) {
     // A disabled target is not registered: no traffic, bindings to it are skipped.
     if (target.enabled === false) continue;
     const provider = createProviderFromTarget(target, config.compatibility?.onUnsupportedParam, {
       keyState,
       ...(hooks.guard ? { guard: hooks.guard } : {}),
+      responseLimits,
     });
     registry.register(provider);
     if (provider.keyPool) pools.set(target.name, provider.keyPool);

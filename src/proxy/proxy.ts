@@ -28,6 +28,13 @@ import type { TargetConfig } from "@/config/types";
 import type { KeyStore } from "@/persistence/key-store";
 import { timingSafeEqual } from "@/auth/key-hash";
 import { isTimeoutAbort, isTimeoutError } from "@/core/outcome";
+import {
+  DEFAULT_UPSTREAM_RESPONSE_LIMITS,
+  limitStream,
+  readTextBounded,
+  type UpstreamResponseLimits,
+  UpstreamResponseTooLargeError,
+} from "@/providers/bounded-body";
 
 // ── Types ──
 
@@ -93,6 +100,8 @@ export interface ProxyHandlerOptions extends ProxyAuthOptions {
    * (e.g. a capped token limit); returning undefined continues unchanged.
    */
   beforeForward?: (c: Context, bodyText: string | undefined) => Promise<Response | { bodyText: string } | undefined>;
+  /** Upstream body limits, decompressed (FS-1; default 32 MiB success / 64 KiB error bodies). */
+  responseLimits?: UpstreamResponseLimits;
 }
 
 /** Minimal Hono env needed by the proxy handler (timeout signal). */
@@ -339,6 +348,9 @@ const INTERNAL_REQUEST_HEADERS = new Set([
   "x-admin-secret",
   "x-gateway-provider",
   "host",
+  // Bun's fetch asks for (and decodes) gzip / deflate / br / zstd itself; a
+  // client's own Accept-Encoding could ask for something it cannot decode.
+  "accept-encoding",
   "content-length",
   "expect",
   "connection",
@@ -453,6 +465,7 @@ export function proxyAuthMiddleware(opts: ProxyAuthOptions): MiddlewareHandler {
  */
 export function createProxyHandler(options: ProxyHandlerOptions): Handler<ProxyEnv> {
   const fetchImpl = options.fetchImpl ?? fetch;
+  const limits = options.responseLimits ?? DEFAULT_UPSTREAM_RESPONSE_LIMITS;
 
   return async (c) => {
     const authenticatedApiKey = (c.get as unknown as (key: string) => unknown)("apiKey");
@@ -569,14 +582,19 @@ export function createProxyHandler(options: ProxyHandlerOptions): Handler<ProxyE
     for (const name of HOP_BY_HOP_RESPONSE_HEADERS) {
       responseHeaders.delete(name);
     }
+    // FS-2: Bun has already decoded the body, so the upstream's
+    // Content-Encoding / Content-Length no longer describe it; and nothing the
+    // upstream says about the gateway's own origin (cookies, HSTS, CORS…) is
+    // passed on.
+    for (const name of UNSAFE_UPSTREAM_RESPONSE_HEADERS) {
+      responseHeaders.delete(name);
+    }
     responseHeaders.set("X-Gateway-Provider", provider);
 
     // Upstream error bodies may echo the operator's key (red team 2026-11-05
     // P3): read them (bounded) and scrub the channel's keys before passing on.
     if (upstream.status >= 400 && upstream.body !== null) {
-      const text = await readBounded(upstream, MAX_ERROR_BODY_BYTES);
-      responseHeaders.delete("content-length");
-      responseHeaders.delete("content-encoding");
+      const text = await readBounded(upstream, limits.maxErrorBodyBytes);
       if (text === undefined) {
         return openAIErrorResponse(
           upstream.status,
@@ -591,36 +609,64 @@ export function createProxyHandler(options: ProxyHandlerOptions): Handler<ProxyE
       });
     }
 
-    return new Response(upstream.body, {
+    if (upstream.body === null) {
+      return new Response(null, { status: upstream.status, headers: responseHeaders });
+    }
+    // FS-1/FS-2: a non-streaming body is bounded (decompressed bytes): a
+    // declared length over the limit is a 502 before anything is sent, a body
+    // that grows past it mid-transfer is cut off (the upstream is cancelled).
+    // SSE streams pass through as they come.
+    const isEventStream = /^\s*text\/event-stream\b/i.test(upstream.headers.get("content-type") ?? "");
+    if (isEventStream) {
+      return new Response(upstream.body, { status: upstream.status, headers: responseHeaders });
+    }
+    const declared = Number(upstream.headers.get("content-length"));
+    if (Number.isFinite(declared) && declared > limits.maxResponseBytes) {
+      await upstream.body.cancel().catch(() => undefined);
+      return tooLargeResponse();
+    }
+    return new Response(limitStream(upstream.body, limits.maxResponseBytes), {
       status: upstream.status,
       headers: responseHeaders,
     });
   };
 }
 
-/** Largest upstream error body passed on (scrubbed) through the pass-through proxy. */
-const MAX_ERROR_BODY_BYTES = 1024 * 1024;
+/**
+ * Upstream response headers the pass-through never copies (FS-2): the body is
+ * already decoded (content-encoding, content-length), and these would act on
+ * the gateway's own origin — its console cookies included.
+ */
+const UNSAFE_UPSTREAM_RESPONSE_HEADERS = [
+  "content-encoding",
+  "content-length",
+  "set-cookie",
+  "set-cookie2",
+  "clear-site-data",
+  "strict-transport-security",
+  "public-key-pins",
+  "public-key-pins-report-only",
+  "alt-svc",
+  "access-control-allow-origin",
+  "access-control-allow-credentials",
+  "access-control-allow-headers",
+  "access-control-allow-methods",
+  "access-control-expose-headers",
+  "access-control-max-age",
+];
 
-/** The body as text, or undefined when it is longer than `max` bytes (reading stops there). */
+function tooLargeResponse(): Response {
+  return openAIErrorResponse(502, "Upstream response too large", "server_error", "upstream_response_too_large");
+}
+
+/** The body as text, or undefined when it is longer than `max` decompressed bytes (reading stops there). */
 async function readBounded(res: Response, max: number): Promise<string | undefined> {
-  const reader = res.body!.getReader();
-  const parts: Uint8Array[] = [];
-  let total = 0;
   try {
-    for (;;) {
-      const { done, value } = await reader.read();
-      if (done) break;
-      total += value.byteLength;
-      if (total > max) {
-        await reader.cancel().catch(() => undefined);
-        return undefined;
-      }
-      parts.push(value);
-    }
-  } catch {
-    return parts.length > 0 ? new TextDecoder().decode(Buffer.concat(parts)) : "";
+    return await readTextBounded(res, max);
+  } catch (err) {
+    if (err instanceof UpstreamResponseTooLargeError) return undefined;
+    return "";
   }
-  return new TextDecoder().decode(Buffer.concat(parts));
 }
 
 // ── Error responses ──

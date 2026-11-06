@@ -70,6 +70,9 @@ export function seedConfig(extra: Record<string, unknown> = {}) {
     adminSecret: ADMIN_SECRET,
     requestTimeout: "30s",
     ...extra,
+    // A suite signs in from one IP dozens of times a minute; the per-IP limit
+    // on successful sign-ins (FA-3, default 20/min) is not what it tests.
+    console: { maxLoginsPerMinute: 1000, ...((extra["console"] as Record<string, unknown> | undefined) ?? {}) },
   };
 }
 

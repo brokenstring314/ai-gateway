@@ -15,6 +15,7 @@ import { expandEnvRefs, expandTargetEnvRefs } from "../config/envref.js";
 import { DEFAULT_KEY_COOLDOWN_SECONDS, KeyPool, KeyStateRegistry, type PoolKey } from "../routing/key-pool.js";
 import { defaultPublicHostGuard, type PublicHostGuard } from "../security/url-guard.js";
 import { createOpenAICompatProvider, type OpenAICompatProvider } from "../providers/openai-compat.js";
+import type { UpstreamResponseLimits } from "../providers/bounded-body.js";
 
 export interface ProviderPreset {
   /** Default base URL; absent when it is account/workspace specific. */
@@ -150,6 +151,8 @@ export interface ProviderBuildOptions {
   readonly keyState?: KeyStateRegistry;
   /** Request-time SSRF guard for targets with publicNetworkOnly (default: the shared guard). */
   readonly guard?: PublicHostGuard;
+  /** Upstream body read limits (FS-1; default 32 MiB / 64 KiB). */
+  readonly responseLimits?: UpstreamResponseLimits;
 }
 
 /**
@@ -191,5 +194,6 @@ export function createProviderFromTarget(
     extraHeaders: preset?.extraHeaders ? { ...preset.extraHeaders } : undefined,
     extraResponseFields: preset?.extraResponseFields,
     compatibility,
+    ...(build.responseLimits ? { responseLimits: build.responseLimits } : {}),
   });
 }

@@ -27,7 +27,13 @@ import type {
 import type { CompatibilityConfig } from "../config/types.js";
 import { type KeyPool, keyErrorText, type Lease, NoUsableKeyError } from "../routing/key-pool.js";
 import { enforceUnsupportedParams, ProviderCapability, supportsCapability } from "./capabilities.js";
-import { chunkFromJsonResponse, parseSSEStream } from "./sse-parser.js";
+import { chunkFromJsonBody, parseSSEStream } from "./sse-parser.js";
+import {
+  DEFAULT_UPSTREAM_RESPONSE_LIMITS,
+  readTextBounded,
+  type UpstreamResponseLimits,
+  UpstreamResponseTooLargeError,
+} from "./bounded-body.js";
 import { extractForwardableHeaders } from "./response-headers.js";
 import { scrubRecord, scrubSecrets } from "../security/secret-scrub.js";
 import {
@@ -64,6 +70,12 @@ export interface OpenAiCompatOptions {
   extraResponseFields?: readonly string[];
   extraHeaders?: Record<string, string>;
   compatibility?: CompatibilityConfig["onUnsupportedParam"];
+  /**
+   * Ceilings for reading upstream bodies, counted after decompression
+   * (FS-1): successful non-streaming bodies (default 32 MiB) and error
+   * bodies (default 64 KiB).
+   */
+  responseLimits?: UpstreamResponseLimits;
 }
 
 interface OpenAiErrorResponse {
@@ -90,6 +102,7 @@ export function createOpenAICompatProvider(opts: OpenAiCompatOptions): OpenAICom
   const compatibilityMode = opts.compatibility ?? "warn";
   const capabilityKey = opts.providerType ?? opts.name;
   const extraHeaders = opts.extraHeaders ?? {};
+  const limits = opts.responseLimits ?? DEFAULT_UPSTREAM_RESPONSE_LIMITS;
   const modelList: readonly ModelInfo[] = (opts.models ?? []).map((id) => ({
     id,
     ownedBy: opts.name,
@@ -151,7 +164,10 @@ export function createOpenAICompatProvider(opts: OpenAiCompatOptions): OpenAICom
       }
       const retryAfter = response.headers.get("Retry-After");
       // The channel's own keys never travel on in upstream error text (P3).
-      const err = scrubProviderError(await buildErrorFromResponse(opts.name, response, retryAfter), channelSecrets());
+      const err = scrubProviderError(
+        await buildErrorFromResponse(opts.name, response, retryAfter, limits.maxErrorBodyBytes, ctx.signal),
+        channelSecrets(),
+      );
       if (pool && KEY_STATUSES.has(response.status)) {
         pool.report(lease.id, response.status, retryAfter, keyErrorText(response.status, err.detail, lease.key));
         tried.add(lease.id);
@@ -162,6 +178,33 @@ export function createOpenAICompatProvider(opts: OpenAiCompatOptions): OpenAICom
     }
   }
 
+  /**
+   * A successful upstream body as text, read with the response limit (FS-1):
+   * past it the upstream transfer is cancelled and a 502
+   * `upstream_response_too_large` ProviderError is thrown.
+   */
+  async function readBodyText(ctx: RequestContext, response: Response): Promise<string> {
+    try {
+      return await readTextBounded(response, limits.maxResponseBytes);
+    } catch (err) {
+      if (err instanceof UpstreamResponseTooLargeError) {
+        throw new ProviderError(opts.name, 502, err.message, { origin: "too_large" });
+      }
+      if (isAbortError(err) || ctx.signal?.aborted) throw abortErrorFrom(err);
+      throw new ProviderError(opts.name, 502, "upstream body read failed", { origin: "invalid_body" });
+    }
+  }
+
+  /** `readBodyText` parsed as JSON (invalid JSON → 502 invalid_body). */
+  async function readJsonBody(ctx: RequestContext, response: Response): Promise<unknown> {
+    const text = await readBodyText(ctx, response);
+    try {
+      return JSON.parse(text) as unknown;
+    } catch {
+      throw new ProviderError(opts.name, 502, "invalid JSON in upstream response", { origin: "invalid_body" });
+    }
+  }
+
   /** POST a JSON body to `${baseURL}${path}` and return the parsed JSON (throws ProviderError). */
   async function postJSON(
     ctx: RequestContext,
@@ -169,12 +212,7 @@ export function createOpenAICompatProvider(opts: OpenAiCompatOptions): OpenAICom
     body: Record<string, unknown>,
   ): Promise<{ raw: Record<string, unknown>; response: Response }> {
     const response = await send(ctx, path, JSON.stringify(body));
-    let raw: unknown;
-    try {
-      raw = await response.json();
-    } catch {
-      throw new ProviderError(opts.name, 502, "invalid JSON in upstream response", { origin: "invalid_body" });
-    }
+    const raw = await readJsonBody(ctx, response);
     if (typeof raw !== "object" || raw === null) {
       throw new ProviderError(opts.name, 502, "unexpected upstream response shape", { origin: "invalid_body" });
     }
@@ -222,13 +260,7 @@ export function createOpenAICompatProvider(opts: OpenAiCompatOptions): OpenAICom
 
       const response = await send(ctx, "/chat/completions", JSON.stringify(transformed));
 
-      let raw: unknown;
-      try {
-        raw = await response.json();
-      } catch (err) {
-        if (isAbortError(err) || ctx.signal?.aborted) throw abortErrorFrom(err);
-        throw new ProviderError(opts.name, 502, "invalid JSON in upstream response", { origin: "invalid_body" });
-      }
+      const raw = await readJsonBody(ctx, response);
       if (!isValidChatBody(raw)) {
         throw new ProviderError(opts.name, 502, "unexpected upstream response shape", { origin: "invalid_body" });
       }
@@ -278,10 +310,9 @@ export function createOpenAICompatProvider(opts: OpenAiCompatOptions): OpenAICom
       // A 200 JSON body on a stream request (an error, or an upstream that
       // ignored stream:true) must not become an empty "successful" stream (T3-5).
       if (/\bjson\b/i.test(response.headers.get("content-type") ?? "")) {
-        const body = response;
         yield* scrubbedStream(
           (async function* () {
-            yield await chunkFromJsonResponse(body, ctx.signal, opts.name);
+            yield chunkFromJsonBody(await readBodyText(ctx, response), opts.name);
           })(),
         );
         return;
@@ -587,12 +618,25 @@ async function buildErrorFromResponse(
   providerName: string,
   response: Response,
   retryAfter: string | null,
+  maxBodyBytes: number,
+  signal: AbortSignal | null | undefined,
 ): Promise<ProviderError> {
   let message = `HTTP ${response.status}`;
   let upstream: UpstreamErrorBody | undefined;
 
+  // Bounded (FS-1): an error body is read for its message only, at most
+  // maxBodyBytes after decompression; a larger one keeps the status with a
+  // generic message, so key cooldown / failover still see the real status.
+  let text: string | undefined;
   try {
-    const body = (await response.json()) as Partial<OpenAiErrorResponse>;
+    text = await readTextBounded(response, maxBodyBytes);
+  } catch (err) {
+    if (err instanceof UpstreamResponseTooLargeError) message = `HTTP ${response.status} (error body too large)`;
+    else if (signal?.aborted || isAbortError(err)) throw abortErrorFrom(err);
+  }
+  try {
+    if (text === undefined) throw new Error("no body");
+    const body = JSON.parse(text) as Partial<OpenAiErrorResponse>;
     if (body?.error && typeof body.error === "object") {
       upstream = body.error as UpstreamErrorBody;
       if (typeof body.error.message === "string" && body.error.message) message = body.error.message;
@@ -601,8 +645,7 @@ async function buildErrorFromResponse(
       upstream = { message };
     }
   } catch {
-    const text = response.statusText;
-    if (text) message = text;
+    if (text !== undefined && response.statusText) message = response.statusText;
   }
 
   const err = new ProviderError(providerName, response.status, message, { origin: "upstream", upstream });
@@ -653,9 +696,10 @@ export interface UpstreamErrorBody {
  *  - "upstream": an HTTP error response (or SSE error event) from the target;
  *  - "transport": the request never got a response (DNS, refused, RST, TLS…);
  *  - "invalid_body": a 2xx response whose body could not be used;
+ *  - "too_large": a 2xx body over the response limit (FS-1; 502 upstream_response_too_large);
  *  - "local": raised by the gateway before / instead of calling upstream.
  */
-export type ProviderErrorOrigin = "upstream" | "transport" | "invalid_body" | "local";
+export type ProviderErrorOrigin = "upstream" | "transport" | "invalid_body" | "too_large" | "local";
 
 export class ProviderError extends Error {
   override name = "ProviderError";

@@ -28,6 +28,7 @@ import {
   readCookie,
   SESSION_COOKIE,
   type ConsoleSession,
+  SessionLimitError,
   type SessionManager,
 } from "./session.js";
 
@@ -176,16 +177,33 @@ export function registerSessionPublicRoutes(app: Hono<never>, deps: SessionDeps)
       }
       return adminError(c, 401, "invalid_credentials", "Invalid admin key");
     }
-    deps.sessions.loginSucceeded(ip);
-    const { token, session } = deps.sessions.create({
-      actor: cred.actor,
-      kind: cred.kind,
-      ...(cred.keyId !== undefined ? { keyId: cred.keyId } : {}),
-      ...(cred.credentialVersion !== undefined ? { credentialVersion: cred.credentialVersion } : {}),
-      scopes: cred.scopes,
-      ip,
-      userAgent: c.req.header("User-Agent") ?? "",
-    });
+    // A success does not clear the IP's failures (FA-2), and successful
+    // sign-ins are rate limited per IP (FA-3): a sign-in loop can neither reset
+    // the lockout nor churn the session table.
+    const loginWait = deps.sessions.takeLogin(ip);
+    if (loginWait !== undefined) {
+      c.header("Retry-After", String(loginWait));
+      return adminError(c, 429, "login_rate_limited", `Too many sign-ins; try again in ${loginWait}s`, {
+        retryAfter: loginWait,
+      });
+    }
+    let created: ReturnType<SessionManager["create"]>;
+    try {
+      created = deps.sessions.create({
+        actor: cred.actor,
+        kind: cred.kind,
+        ...(cred.keyId !== undefined ? { keyId: cred.keyId } : {}),
+        ...(cred.credentialVersion !== undefined ? { credentialVersion: cred.credentialVersion } : {}),
+        scopes: cred.scopes,
+        ip,
+        userAgent: c.req.header("User-Agent") ?? "",
+      });
+    } catch (err) {
+      if (!(err instanceof SessionLimitError)) throw err;
+      c.header("Retry-After", "60");
+      return adminError(c, 503, "session_limit", err.message, { retryAfter: 60 });
+    }
+    const { token, session } = created;
     setSessionCookies(c, deps, token, session.csrfToken);
     deps.audit?.(cred.actor, "console_login", session.id, { ip });
     const keyName = keyNameOf(deps, session.keyId);
@@ -277,9 +295,9 @@ export function sessionOrCredential(deps: SessionDeps, credentialAuth: Middlewar
  *    a valid key from a locked IP (checking it would answer the guess);
  *  - many failures overall (any IP) slow every attempt down (≤ 2 s), never
  *    refuse one (RA1);
- *  - a success does not clear the IP's failures (unlike the console, whose
- *    reset needs a full sign-in): otherwise a read_only key holder could
- *    interleave valid requests to guess adminSecret without limit.
+ *  - a success does not clear the IP's failures (nor does a console sign-in,
+ *    FA-2): otherwise a read_only key holder could interleave valid requests
+ *    to guess adminSecret without limit.
  * Requests without credential headers (and valid keys lacking the scope,
  * 403) are not counted.
  */

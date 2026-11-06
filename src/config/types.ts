@@ -210,6 +210,14 @@ export interface GatewayConfig {
   strategy: StrategyConfig;
   targets: TargetConfig[];
   maxRequestBytes?: number;
+  /**
+   * Largest successful non-streaming upstream body, counted after
+   * decompression (default 33554432 = 32 MiB). Larger → 502
+   * `upstream_response_too_large`, the upstream transfer is aborted.
+   */
+  maxUpstreamResponseBytes?: number;
+  /** Largest upstream error body read for its message, decompressed (default 65536 = 64 KiB). */
+  maxUpstreamErrorBodyBytes?: number;
   requestTimeout?: string;
   plugins?: PluginConfig[];
   aliases?: Record<string, string>;
@@ -272,15 +280,26 @@ export interface GatewayConfig {
   /**
    * Admin console sessions (0.3.0 P6). Defaults: 720-minute (12 h) lifetime,
    * 60-minute idle timeout, 5 failed sign-ins per client IP → 15-minute
-   * lockout, Secure cookie when the request is https ("auto").
+   * lockout, at most 5 sessions per credential and 20 successful sign-ins per
+   * client IP a minute, Secure cookie when the request is https ("auto").
    */
   console?: {
     sessionTtlMinutes?: number;
     idleTimeoutMinutes?: number;
     maxLoginFailures?: number;
     lockoutMinutes?: number;
+    /** Live console sessions per credential (default 5); a new sign-in ends that credential's oldest. */
+    maxSessionsPerCredential?: number;
+    /** Successful sign-ins per client IP per minute (default 20). */
+    maxLoginsPerMinute?: number;
     secureCookie?: "auto" | "always" | "never";
   };
+  /**
+   * Audit log retention in <dataDir>/config.sqlite (server mode): keep the
+   * newest `maxRows` rows (default 50000) and nothing older than
+   * `retentionDays` (default 90). Pruned in the background.
+   */
+  audit?: { maxRows?: number; retentionDays?: number };
   /**
    * Where the runtime sections (targets, strategy, aliases, plugins,
    * compatibility) come from. "database" (default): imported from this file

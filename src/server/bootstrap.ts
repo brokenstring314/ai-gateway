@@ -79,6 +79,8 @@ export async function bootstrap(configPath: string, overrides: ServeOverrides = 
   // start) unless runtimeConfig.source: file. Throws on a missing/wrong
   // GATEWAY_SECRET_KEY or a failed migration: never start half-configured.
   const runtime = await resolveRuntimeConfig(fileConfig, dataDir, { configPath });
+  // Audit log retention (FA-3): pruned in the background, never on the request path.
+  runtime.store?.startAuditRetention(fileConfig.audit ?? {});
   const config: GatewayConfig = runtime.config;
 
   // WAL + busy timeout: `ai-gateway keys ...` may write while the server runs.

@@ -37,7 +37,7 @@ import {
 import { getStatusHandler } from "./status-handlers.js";
 import type { ConfigStore } from "../persistence/config-store.js";
 import { registerRuntimeConfigApi, type RuntimeConfigApiOptions } from "./config-api.js";
-import { csrfGuard } from "./guards.js";
+import { crossSiteGuard, csrfGuard } from "./guards.js";
 import { type LogHandlerState, getLogsHandler, getLogsStatsHandler, deleteLogsHandler } from "./log-handlers.js";
 import { usageHandler } from "./usage-handlers.js";
 import type { UsageStore } from "../usage/usage-store.js";
@@ -107,6 +107,10 @@ export function createAdminApp(
         }
       : {}),
   };
+  // Before anything else, credentials included: no cross-site / foreign-origin
+  // request reaches the auth middleware, so none counts toward the lockout (FA-1).
+  app.use("*", crossSiteGuard({ allowedOrigins: () => config.cors?.origins }));
+
   // Console sign-in / sign-out: public (rate limited), before the auth middleware.
   registerSessionPublicRoutes(app as never, sessionDeps);
 
