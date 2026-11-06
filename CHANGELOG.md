@@ -2,6 +2,47 @@
 
 ## Unreleased
 
+### Security
+
+Fixes from the final red team of 2026-11-06 (admin surface and upstream handling; all reproduced, all medium):
+
+- **FA-1: a web page could lock the admin out.** `/admin` answered CORS `*` and its preflight approved
+  `X-Admin-Secret` for every origin, and failed credentials were counted before the cross-site check, so any page the
+  admin opened could send five bad credentials and lock the admin's IP out of the console sign-in and every header
+  credential for 15 minutes. `/admin/*` now never answers CORS (a preflight gets `204` without `Access-Control-*`
+  headers, whatever `cors.origins` says), and every `/admin` request from another site (`Sec-Fetch-Site: cross-site`,
+  or an `Origin` that is neither this server nor listed exactly in `cors.origins`; `*` does not count) is refused with
+  `403 csrf_rejected` before any credential is checked or counted. curl / the CLI (no `Origin`) are unaffected.
+- **FA-2: the console sign-in reset the lockout.** A successful sign-in cleared the IP's failure count, so a
+  `read_only` key holder could guess `adminSecret` without limit (four guesses, one valid sign-in, repeat). A success
+  no longer clears anything, on the console as on the header path; failures age out after `console.lockoutMinutes`.
+- **FA-3: a `read_only` key could sign every admin out.** The 64-slot session table evicted the least recently used
+  session on any sign-in. Sessions are now capped per credential (`console.maxSessionsPerCredential`, default 5: a
+  new sign-in ends that credential's own oldest session); a full table never gives up another credential's admin
+  session, and a sign-in without the admin scope never ends another credential's session (`503 session_limit`,
+  `Retry-After: 60`). Successful sign-ins are limited per client IP (`console.maxLoginsPerMinute`, default 20 →
+  `429 login_rate_limited`). The audit log keeps the newest `audit.maxRows` (50,000) rows and at most
+  `audit.retentionDays` (90) days, pruned in the background in batches, never on the request path.
+- **FS-1: decompression bomb.** Typed routes read upstream bodies whole after automatic decompression (a 255 KB gzip
+  answer took ~800 MB). Every non-streaming upstream body (chat, completions, embeddings, images, a JSON answer to a
+  stream request, error bodies) is now read with a bounded reader on the decompressed bytes:
+  `maxUpstreamResponseBytes` (default 32 MiB) → `502 upstream_response_too_large` with the upstream transfer
+  aborted; `maxUpstreamErrorBodyBytes` (default 64 KiB) → the upstream status with a generic message. SSE streams
+  keep the 4 MiB per-event limit.
+- **FS-2: pass-through sent `Content-Encoding: gzip` over a decoded body**, breaking every standard client whenever
+  the upstream compressed, and passed the upstream's `Set-Cookie` onto the gateway's origin. Success responses now
+  drop `Content-Encoding`, `Content-Length`, `Set-Cookie`, HSTS, `Clear-Site-Data`, `Alt-Svc`, `Public-Key-Pins` and
+  upstream CORS headers; the client's `Accept-Encoding` is no longer forwarded; a declared `Content-Length` over
+  `maxUpstreamResponseBytes` is `502 upstream_response_too_large` and a non-streaming body that grows past it is cut.
+  Pass-through error bodies are now read up to `maxUpstreamErrorBodyBytes` (was a fixed 1 MiB).
+
+### Changed
+
+- New config keys (startup settings): `console.maxSessionsPerCredential`, `console.maxLoginsPerMinute`,
+  `audit.maxRows`, `audit.retentionDays`, `maxUpstreamResponseBytes`, `maxUpstreamErrorBodyBytes`. New error codes:
+  `session_limit`, `login_rate_limited` (console sign-in), `upstream_response_too_large` (`/v1`). Cross-site `GET`s to
+  `/admin/*` are now `403 csrf_rejected` (were only refused on writes).
+
 ## [0.3.0] - 2026-11-05
 
 Upgrading from 0.2.x: read the **[migration guide](https://github.com/brokenstring314/ai-gateway/blob/v0.3.0/docs/migration-0.3.md)**

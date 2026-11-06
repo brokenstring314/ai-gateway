@@ -311,7 +311,7 @@ observability:
 
 Config is split in two layers:
 
-- **Startup settings** — `server`, `auth`, `adminSecret`, `cors`, `observability`, `mcpServers`, `requestTimeout`, `maxRequestBytes`, `passthroughProxy` — always come from the config file; changing them needs a restart.
+- **Startup settings** — `server`, `auth`, `adminSecret`, `cors`, `observability`, `mcpServers`, `requestTimeout`, `maxRequestBytes`, `maxUpstreamResponseBytes`, `maxUpstreamErrorBodyBytes`, `audit`, `passthroughProxy` — always come from the config file; changing them needs a restart.
 - **Runtime resources** — `targets` (channels), `strategy`, `aliases`, `plugins`, `compatibility`, `models`, `limits` — live in `<data dir>/config.sqlite` by default (`runtimeConfig.source: database`), so the admin API and console (0.3.0) can change them without a restart.
 
 On the first start with an empty store, the file's runtime sections are imported once (logged as `[config] imported N target(s)…`, recorded as config version 1). From then on the store is the source of truth: if the file's runtime sections change, startup prints a warning that they are **ignored**. To replace the stored config with the file, run `ai-gateway config import --force -c config.yaml` and restart. `ai-gateway config status -c config.yaml` shows the channels (key hints only) and recent versions.
@@ -824,8 +824,21 @@ console:
   idleTimeoutMinutes: 60
   maxLoginFailures: 5        # per client IP, then lockout
   lockoutMinutes: 15
+  maxSessionsPerCredential: 5  # per key / adminSecret; a new sign-in ends that credential's oldest session
+  maxLoginsPerMinute: 20     # successful sign-ins per client IP
   secureCookie: auto         # auto | always | never
+
+audit:                       # audit log retention in config.sqlite (pruned in the background)
+  maxRows: 50000
+  retentionDays: 90
 ```
+
+A successful sign-in does not reset the failure count (failures age out after `lockoutMinutes`). A `read_only` key can
+never end an admin's session: each credential is capped at its own sessions, and when all 64 slots are held by other
+credentials a sign-in without the admin scope gets `503 session_limit` instead of evicting anyone. `/admin/*` never
+answers CORS and refuses cross-site requests (`Sec-Fetch-Site: cross-site` or a foreign `Origin`) with
+`403 csrf_rejected` before any credential is checked, so a web page cannot lock the admin out
+([Admin API rules](docs/admin-api.md#rules-for-every-endpoint)).
 
 Bearer / `X-Admin-Secret` access to the Admin API works as before, but failed header credentials share this per-IP lockout (`429 auth_locked`). The page and its hashed assets carry no data and are
 served without auth with a strict CSP (`default-src 'none'; script-src 'self'; style-src 'self'; connect-src 'self';
@@ -1359,6 +1372,21 @@ maxRequestBytes: 10485760  # 10 MB (default)
 
 Both the `Content-Length` header and actual body size are enforced.
 
+### Upstream Response Size Limits
+
+```yaml
+maxUpstreamResponseBytes: 33554432   # 32 MiB (default): successful non-streaming upstream bodies
+maxUpstreamErrorBodyBytes: 65536     # 64 KiB (default): upstream error bodies
+```
+
+Counted after decompression (the gateway's HTTP client decodes gzip / deflate / br / zstd itself), so a small
+compressed "bomb" cannot fill memory. A successful non-streaming body over the limit (chat, completions, embeddings,
+images, a JSON answer to a stream request) is `502 upstream_response_too_large` and the upstream transfer is aborted;
+an error body over its limit keeps the upstream status with a generic message. Pass-through routes refuse a declared
+`Content-Length` over the limit with the same `502` and cut a non-streaming body that grows past it; SSE streams are
+limited per event (4 MiB). Pass-through responses never carry the upstream's `Content-Encoding`, `Content-Length`,
+`Set-Cookie`, HSTS, `Clear-Site-Data`, `Alt-Svc` or CORS headers.
+
 ### Security Headers
 
 All responses include:
@@ -1381,6 +1409,9 @@ cors:
   #   the browser's Access-Control-Request-Headers (needed for SDK headers such as
   #   x-stainless-*, openai-organization, openai-project)
 ```
+
+CORS applies to the API only: `/admin/*` never sends `Access-Control-*` headers, whatever `origins` says (the console
+is same-origin).
 
 ### Request Timeout
 

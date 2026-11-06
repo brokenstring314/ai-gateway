@@ -308,7 +308,7 @@ observability:
 
 配置分两层：
 
-- **启动配置** —— `server`、`auth`、`adminSecret`、`cors`、`observability`、`mcpServers`、`requestTimeout`、`maxRequestBytes`、`passthroughProxy` —— 始终来自配置文件，修改需要重启。
+- **启动配置** —— `server`、`auth`、`adminSecret`、`cors`、`observability`、`mcpServers`、`requestTimeout`、`maxRequestBytes`、`maxUpstreamResponseBytes`、`maxUpstreamErrorBodyBytes`、`audit`、`passthroughProxy` —— 始终来自配置文件，修改需要重启。
 - **运行时资源** —— `targets`（渠道）、`strategy`、`aliases`、`plugins`、`compatibility`、`models`、`limits` —— 默认存放在 `<数据目录>/config.sqlite`（`runtimeConfig.source: database`），这样 0.3.0 的管理 API 和控制台可以不重启就修改它们。
 
 库为空时首次启动，会把配置文件里的运行时段落导入一次（日志 `[config] imported N target(s)…`，记为配置版本 1）。之后以库为准：配置文件的运行时段落再有改动，启动时会警告这些改动**被忽略**。要用文件覆盖库中配置，执行 `ai-gateway config import --force -c config.yaml` 后重启。`ai-gateway config status -c config.yaml` 查看渠道（只显示 key 尾号）和最近的版本。
@@ -758,8 +758,19 @@ console:
   idleTimeoutMinutes: 60     # 空闲超时
   maxLoginFailures: 5        # 每个客户端 IP，超过即锁定
   lockoutMinutes: 15
+  maxSessionsPerCredential: 5  # 每个 key / adminSecret 最多几个会话；再登录会结束它自己最旧的会话
+  maxLoginsPerMinute: 20     # 每个客户端 IP 每分钟成功登录次数
   secureCookie: auto         # auto | always | never
+
+audit:                       # config.sqlite 中审计日志的保留策略（后台清理）
+  maxRows: 50000
+  retentionDays: 90
 ```
+
+登录成功不会清零失败次数（失败记录在 `lockoutMinutes` 后自然过期）。`read_only` 密钥永远不能挤掉管理员的会话：每个凭据只占自己的名额，
+64 个名额都被其他凭据占满时，没有 admin 权限的登录会得到 `503 session_limit`，而不是挤掉别人。`/admin/*` 不响应任何 CORS，
+跨站请求（`Sec-Fetch-Site: cross-site` 或外来 `Origin`）在检查凭据之前就以 `403 csrf_rejected` 拒绝，所以网页无法把管理员锁在外面
+（见 [Admin API 规则](docs/admin-api.md#rules-for-every-endpoint)）。
 
 用 Bearer / `X-Admin-Secret` 调 Admin API 的方式不变，但请求头凭据的失败也计入这个按 IP 的锁定（`429 auth_locked`）。页面和带哈希的静态资源不含数据，无需认证，均带严格 CSP（`default-src 'none';
 script-src 'self'; style-src 'self'; connect-src 'self'; frame-ancestors 'none'`，无内联脚本、无 eval、无第三方来源）以及
@@ -1255,6 +1266,19 @@ maxRequestBytes: 10485760  # 10 MB（默认）
 
 同时检查 `Content-Length` 头/和实际请求体大小。
 
+### 上游响应大小限制
+
+```yaml
+maxUpstreamResponseBytes: 33554432   # 32 MiB（默认）：上游非流式成功响应体
+maxUpstreamErrorBodyBytes: 65536     # 64 KiB（默认）：上游错误响应体
+```
+
+按解压后的字节计数（网关的 HTTP 客户端会自动解压 gzip / deflate / br / zstd），小小的压缩“炸弹”撑不爆内存。非流式成功响应
+（chat、completions、embeddings、images、流式请求收到的 JSON 响应）超限时返回 `502 upstream_response_too_large` 并中断上游传输；
+错误响应体超限时保留上游状态码，只给通用错误信息。透传路由遇到声明的 `Content-Length` 超限同样返回 `502`，非流式响应体中途超限会被截断；
+SSE 流按单个事件限制（4 MiB）。透传响应不再带上游的 `Content-Encoding`、`Content-Length`、`Set-Cookie`、HSTS、`Clear-Site-Data`、
+`Alt-Svc` 和 CORS 头。
+
 ### 安全头
 
 所有响应包含：
@@ -1277,6 +1301,8 @@ cors:
   #   Access-Control-Request-Headers（SDK 的 x-stainless-*、openai-organization、
   #   openai-project 等请求头需要）
 ```
+
+CORS 只作用于 API：无论 `origins` 怎么配，`/admin/*` 都不会返回 `Access-Control-*` 头（控制台是同源的）。
 
 ### 请求超时
 

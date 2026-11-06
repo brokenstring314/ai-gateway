@@ -15,14 +15,24 @@ restart. Client keys with token quota / RPM / TPM and usage statistics: [Key lim
   `X-Admin-Secret` or `Authorization: Bearer` counts as a failure of the client IP in the same counter as the console
   sign-in ([Console sessions](#console-sessions) → Lockout): `console.maxLoginFailures` (5) failures within
   `console.lockoutMinutes` (15) lock that IP out, and every header credential from it — valid or not — then gets
-  `429 auth_locked` + `Retry-After` until the lockout ends (checking it would answer the guess). A success does
-  **not** clear the IP's failures, so a `read_only` key holder cannot interleave valid requests to keep guessing
-  `adminSecret`. Requests without credential headers and valid keys lacking the scope (`403`) are not counted. Many
+  `429 auth_locked` + `Retry-After` until the lockout ends (checking it would answer the guess). A success — a valid
+  header credential or a successful console sign-in (since the final red team 2026-11-06, FA-2) — does **not** clear
+  the IP's failures, so a `read_only` key holder cannot interleave valid requests or sign-ins to keep guessing
+  `adminSecret`; failures only age out after `console.lockoutMinutes`. Requests without credential headers and valid keys lacking the scope (`403`) are not counted. Many
   failures overall only slow attempts down (≤ 2 s), never refuse them. The lockout is audited once
   (`admin_auth_locked`, client IP). Other IPs are unaffected.
+- **No CORS, no cross-site requests** (since the final red team 2026-11-06, FA-1). `/admin/*` never answers CORS,
+  whatever `cors.origins` says: a preflight gets `204` without any `Access-Control-*` header, so a browser never
+  sends `X-Admin-Secret` / `Authorization` from another origin (the console is same-origin). Every `/admin` request,
+  `GET` included, coming from another site (`Sec-Fetch-Site: cross-site`, or an `Origin` that is neither this server
+  nor listed exactly in `cors.origins` — a `*` there does not count for the Admin API) is refused with
+  `403 csrf_rejected` **before** any credential is checked, so it never counts toward the lockout: a web page cannot
+  lock the admin's IP out. Requests without `Origin` / `Sec-Fetch-Site` (curl, the CLI, scripts, same-origin `GET`s)
+  are unaffected. Before this fix any page the admin visited could send five bad credentials and lock the admin's IP
+  out for 15 minutes.
 - **CSRF.** Credentials travel only in headers, which a browser never adds by itself. In addition every write is
-  refused when it comes from another site (`Sec-Fetch-Site: cross-site`, or an `Origin` that is neither this
-  server nor in `cors.origins`: `403 csrf_rejected`) or carries a non-JSON body (`415 unsupported_media_type`).
+  refused when it comes from another site (`403 csrf_rejected`, as above) or carries a non-JSON body
+  (`415 unsupported_media_type`).
   Requests authenticated by the console's session cookie additionally need the double-submit CSRF token
   (`X-CSRF-Token`, see [Console sessions](#console-sessions)).
 - **Strict bodies.** Unknown fields, wrong types and out-of-range values are `400 invalid_request` with the field.
@@ -237,8 +247,17 @@ server-side session:
   `Sec-Fetch-Site` / JSON-only guard above applies as well.
 - **Lifetime.** 12 h absolute, 60 min idle (`console.sessionTtlMinutes`, `console.idleTimeoutMinutes`); expired or
   unknown cookies get `401 session_expired` and are cleared. Sessions live in process memory only (a restart signs
-  everyone out; at most 64, least recently used evicted) — no database read anywhere, and `/v1/*` never looks at
-  cookies.
+  everyone out) — no database read anywhere, and `/v1/*` never looks at cookies.
+- **Session limits** (since the final red team 2026-11-06, FA-3; was one global least-recently-used table of 64, so 64
+  `read_only` sign-ins signed every admin out). Each credential (one store key, `adminSecret`, a bootstrap key) keeps
+  at most `console.maxSessionsPerCredential` (5) sessions: its next sign-in ends **its own** least recently used
+  session. At most 64 sessions exist in total; when they are all taken, an `admin`-scope sign-in may end the least
+  recently used session of a credential without the `admin` scope, but nothing ends another credential's admin
+  session and a `read_only` sign-in never ends anyone else's — it gets `503 session_limit` (`Retry-After: 60`).
+  Successful sign-ins are limited to `console.maxLoginsPerMinute` (20) per client IP: more get
+  `429 login_rate_limited` + `Retry-After` (failed ones are limited by the lockout). The audit log keeps the newest
+  `audit.maxRows` (50,000) rows and nothing older than `audit.retentionDays` (90); it is pruned in the background
+  (on start and every 1,000 entries, in batches), never on the request path.
 - **Credential follows.** A session from a key-store key is re-checked on every admin request: revoked, **rotated**
   (since 0.3.0, red team RA4; also a rotation by the CLI on the same database), expired or without `admin` /
   `read_only` → ended. `POST /admin/keys/:id/rotate` and `…/revoke` end that key's sessions at once (audit detail
@@ -248,7 +267,10 @@ server-side session:
   records `console_login`, `console_logout`, `console_session_revoked` and `console_login_failed` (client IP, never the
   key), with the session's actor (`key:<id>`, `admin-secret`, `bootstrap-key`) on every write.
 - **Lockout.** `console.maxLoginFailures` (5) failures from one client IP lock it out for `console.lockoutMinutes`
-  (15). There is no global lockout: while 60 or more sign-ins fail per minute across all IPs, every sign-in attempt
+  (15). A successful sign-in does not reset the count (FA-2): failures age out after `console.lockoutMinutes`, so an
+  admin who mistyped a few times and then signed in still has the remaining attempts only until the window passes.
+  A session that is already signed in keeps working while its IP is locked (the cookie path never checks the
+  lockout). There is no global lockout: while 60 or more sign-ins fail per minute across all IPs, every sign-in attempt
   is only slowed down (500 ms per multiple of 60, at most 2 s) before its key is checked, so a flood of bad attempts
   can never lock the real admin out of an IP that is not locked (red team RA1; was a hard `429` for everyone).
   The client IP is the TCP peer; `X-Forwarded-For` / `X-Real-IP` count only from a proxy listed in `TRUSTED_PROXIES`
