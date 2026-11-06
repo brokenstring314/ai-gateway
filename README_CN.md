@@ -17,12 +17,12 @@
 **Docker 镜像**（linux/amd64、linux/arm64），来自 GitHub Container Registry：
 
 ```bash
-docker pull ghcr.io/brokenstring314/ai-gateway:0.3.1   # 或 :0.3、:latest
+docker pull ghcr.io/brokenstring314/ai-gateway:0.3.2   # 或 :0.3、:latest
 docker run -d --name ai-gateway -p 3000:3000 \
   -v "$PWD/config.yaml:/config/config.yaml:ro" \
   -v ai-gateway-data:/data \
   -e OPENAI_API_KEY \
-  ghcr.io/brokenstring314/ai-gateway:0.3.1
+  ghcr.io/brokenstring314/ai-gateway:0.3.2
 ```
 
 镜像的运行要求（生产模式、必须开启 auth）见下文 [Docker](#docker)。
@@ -34,7 +34,7 @@ docker run -d --name ai-gateway -p 3000:3000 \
 README.md 和 `config.example.yaml`。
 
 ```bash
-V=0.3.1 P=linux-x64
+V=0.3.2 P=linux-x64
 curl -LO https://github.com/brokenstring314/ai-gateway/releases/download/v$V/ai-gateway-$V-$P.tar.gz
 curl -LO https://github.com/brokenstring314/ai-gateway/releases/download/v$V/SHA256SUMS
 sha256sum --ignore-missing -c SHA256SUMS

@@ -2,6 +2,24 @@
 
 ## Unreleased
 
+## [0.3.2] - 2026-11-06
+
+Re-release of 0.3.1: the gateway code is unchanged. The v0.3.1 release workflow failed in its binary smoke test, so
+0.3.1 has container images but no GitHub release or binaries; 0.3.2 is the release to install. **Upgrading from
+0.3.0: everything in [0.3.1](https://github.com/brokenstring314/ai-gateway/blob/v0.3.2/CHANGELOG.md#031---2026-11-06) applies** — read
+[Upgrading from 0.3.0 to 0.3.1](https://github.com/brokenstring314/ai-gateway/blob/v0.3.2/docs/migration-0.3.md#upgrading-from-030-to-031)
+([中文](https://github.com/brokenstring314/ai-gateway/blob/v0.3.2/docs/migration-0.3.zh.md#从-030-升级到-031)): cross-site
+`GET /admin` is `403`, a CLI key revoke takes effect within ~1 s, `max_tokens` is sent upstream (set each model's
+`maxOutputTokens` to the upstream's real limit), new config keys, a 64 KiB pass-through error-body cap and new error
+codes (`request_exceeds_quota`, `request_exceeds_tpm`, `invalid_n`, `content_filtered`, `upstream_response_too_large`,
+`session_limit`, `login_rate_limited`).
+
+### Fixed
+
+- Release smoke test (`scripts/binary-smoke.sh`): after creating an admin key with the CLI while the server runs, wait
+  for the key-store sync (`KEY_STORE_SYNC_INTERVAL_MS`, default 1 s, since 0.3.1) before using it — it used the key
+  at once and got `401`. It now waits 1.5 s and retries at most 3 times (each `401` counts toward the per-IP lockout).
+
 ## [0.3.1] - 2026-11-06
 
 Security and robustness release from the final red team of 2026-11-06 (admin surface, upstream handling, quota /

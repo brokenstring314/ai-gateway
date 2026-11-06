@@ -78,8 +78,19 @@ code="$(status -X POST -H 'content-type: application/json' -d '{"model":"gpt-4o"
 ADMIN_KEY="$("$BIN" keys create --admin --name smoke -c config.yaml --data-dir "$WORK/data")" || fail "keys create failed"
 [ -n "$ADMIN_KEY" ] || fail "keys create printed no key"
 "$BIN" keys list -c config.yaml --data-dir "$WORK/data" | grep -q smoke || fail "keys list does not show the new key"
-code="$(status -H "Authorization: Bearer $ADMIN_KEY" "$BASE/admin/keys")"
-[ "$code" = "200" ] || fail "GET /admin/keys with the CLI-created admin key returned $code"
+# Since 0.3.1 (FC-1) a running server picks up keys created by another process
+# (the CLI) through a background PRAGMA data_version check every
+# KEY_STORE_SYNC_INTERVAL_MS (default 1000 ms), not on the very next request.
+# Wait past one interval, then retry at most 3 times: every 401 for a presented
+# credential counts toward the per-IP lockout (5), so never poll faster.
+sleep 1.5
+code=""
+for _ in 1 2 3; do
+  code="$(status -H "Authorization: Bearer $ADMIN_KEY" "$BASE/admin/keys")"
+  [ "$code" = "200" ] && break
+  sleep 1
+done
+[ "$code" = "200" ] || fail "GET /admin/keys with the CLI-created admin key returned $code (after waiting for the key-store sync)"
 # Console sign-in: the admin key buys an HttpOnly session cookie.
 curl -s --max-time 3 -D login.headers -o /dev/null -H 'content-type: application/json' \
   -d "{\"key\":\"$ADMIN_KEY\"}" "$BASE/admin/session/login" || fail "console login request failed"

@@ -221,6 +221,8 @@ Do these before (or right after) the first 0.3.0 start:
 
 ## Upgrading from 0.3.0 to 0.3.1
 
+This applies unchanged to 0.3.2 (a re-release of 0.3.1 with a release-workflow fix; 0.3.1 has no GitHub release).
+
 0.3.1 is a drop-in upgrade: same data directory, same config file, no migration step and no new required setting.
 Replace the binary / image, restart, and check these behaviour changes (details in
 [CHANGELOG.md](../CHANGELOG.md#031---2026-11-06)):
